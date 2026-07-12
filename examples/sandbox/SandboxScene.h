@@ -9,11 +9,31 @@ class Application;
 struct SandboxSceneConfig
 {
     std::string GltfPath;
+    std::string HdriPath;
+    std::string NightPreset = "natural";
     bool SampleGltf = false;
     bool FlashlightOn = false;
     bool ShadowDebug = false;
     bool ShadowStress = false;
     bool ShadowBenchmark = false;
+    bool LocalLightShowcase = false;
+    bool HdriStudio = false;
+    bool DayNightShowcase = false;
+    float SunAzimuthDegrees = 255.0f;
+    float SunElevationDegrees = 15.0f;
+    float DayNightCycleSeconds = 24.0f;
+    float StarDensity = 0.006f;
+    float StarIntensity = 4.0f;
+    float StarSize = 1.0f;
+    float StarTwinkle = 0.18f;
+    float MilkyWayIntensity = 0.32f;
+    float NightSkyIntensity = 1.0f;
+    float NightHorizonGlow = 1.0f;
+    float StarTwinkleSpeed = 1.0f;
+    float NightSkyRotationSpeed = 0.35f;
+    bool StarsEnabled = true;
+    bool MilkyWayEnabled = true;
+    bool AnimateNightSky = true;
 };
 
 void PopulateSandboxScene(engine::Application& app, const SandboxSceneConfig& config);

@@ -7,12 +7,16 @@ struct GLFWwindow;
 
 namespace engine {
 
+class Window;
+
 // Polls keyboard/mouse state each frame from a GLFW window. Kept independent
 // of any render backend so both the GL and Vulkan paths can share it.
 class Input
 {
 public:
-    void Attach(GLFWwindow* window);
+    ~Input();
+
+    void Attach(Window& window);
     void NewFrame();
 
     bool IsKeyDown(int glfwKeyCode) const;
@@ -23,8 +27,7 @@ public:
     float GetScrollDelta() const { return m_scrollDelta; }
 
 private:
-    static void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
-
+    Window* m_ownerWindow = nullptr;
     GLFWwindow* m_window = nullptr;
     glm::vec2 m_mousePos{0.0f};
     glm::vec2 m_lastMousePos{0.0f};

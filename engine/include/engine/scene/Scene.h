@@ -8,6 +8,7 @@
 #include "engine/scene/Mesh.h"
 #include "engine/scene/Material.h"
 #include "engine/scene/Lights.h"
+#include "engine/scene/Environment.h"
 #include "engine/scene/RenderSettings.h"
 
 namespace engine {
@@ -17,6 +18,7 @@ struct MeshInstance
     std::shared_ptr<MeshData> Mesh;
     Material Mat;
     glm::mat4 Transform{1.0f};
+    bool CastsShadows = true;
 };
 
 // A minimal scene container: no ECS, just flat lists. Enough for the sandbox
@@ -33,8 +35,12 @@ public:
     std::vector<SpotLight>& SpotLights() { return m_spotLights; }
     const std::vector<SpotLight>& SpotLights() const { return m_spotLights; }
 
+    std::vector<AreaLight>& AreaLights() { return m_areaLights; }
+    const std::vector<AreaLight>& AreaLights() const { return m_areaLights; }
+
     DirectionalLight Sun;
     SkySettings Sky;
+    EnvironmentSettings Environment;
     PostProcessSettings PostProcess;
     FogSettings Fog;
     ShadowSettings Shadows;
@@ -42,11 +48,13 @@ public:
     void AddInstance(std::shared_ptr<MeshData> mesh, const Material& mat, const glm::mat4& transform);
     void AddPointLight(const PointLight& light);
     void AddSpotLight(const SpotLight& light);
+    void AddAreaLight(const AreaLight& light);
 
 private:
     std::vector<MeshInstance> m_instances;
     std::vector<PointLight> m_pointLights;
     std::vector<SpotLight> m_spotLights;
+    std::vector<AreaLight> m_areaLights;
 };
 
 } // namespace engine

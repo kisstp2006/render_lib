@@ -34,6 +34,11 @@ private:
     void DestroySceneTargets();
     void RenderBloom(float threshold, float exposure);
     void SaveScreenshot();
+    void InitLocalLightResources();
+    void DestroyLocalLightResources();
+    void RenderLocalLightShadows(const Scene& scene);
+    void BindLocalLights();
+    void UpdateLightCookieAtlas();
 
     GLMesh& GetOrCreateMesh(const std::shared_ptr<MeshData>& data);
     GLTexture& GetOrCreateTexture(const std::shared_ptr<TextureData>& data);
@@ -45,6 +50,7 @@ private:
 
     std::unique_ptr<GLShader> m_pbrShader;
     std::unique_ptr<GLShader> m_shadowShader;
+    std::unique_ptr<GLShader> m_pointShadowShader;
     std::unique_ptr<GLShader> m_skyShader;
     std::unique_ptr<GLShader> m_bloomDownShader;
     std::unique_ptr<GLShader> m_bloomUpShader;
@@ -65,10 +71,47 @@ private:
     float m_shadowGpuMaxMs = 0.0f;
     int m_shadowGpuSamples = 0;
 
-    // Spot (flashlight) shadow map
-    unsigned int m_spotShadowFbo = 0;
-    unsigned int m_spotShadowMap = 0;
-    int m_spotShadowSize = 2048;
+    static constexpr int kMaxPointLights = 8;
+    static constexpr int kMaxSpotLights = 4;
+    static constexpr int kMaxAreaLights = 4;
+    static constexpr int kMaxPointShadows = 4;
+    static constexpr int kLocalShadowTileSize = 1024;
+    static constexpr int kLocalShadowAtlasSize = 4096;
+    static constexpr int kCookieAtlasSize = 1024;
+    static constexpr int kCookieTileSize = 256;
+
+    struct LocalLightFrameData
+    {
+        int PointCount = 0;
+        int SpotCount = 0;
+        int AreaCount = 0;
+        std::array<const PointLight*, kMaxPointLights> Points{};
+        std::array<const SpotLight*, kMaxSpotLights> Spots{};
+        std::array<const AreaLight*, kMaxAreaLights> Areas{};
+        std::array<int, kMaxPointLights> PointShadowSlots{};
+        std::array<int, kMaxPointLights> PointCookieSlots{};
+        std::array<glm::mat4, kMaxSpotLights> SpotMatrices{};
+        std::array<glm::vec4, kMaxSpotLights> SpotShadowRects{};
+        std::array<int, kMaxSpotLights> SpotCookieSlots{};
+        std::array<glm::mat4, kMaxAreaLights> AreaMatrices{};
+        std::array<glm::vec4, kMaxAreaLights> AreaShadowRects{};
+        std::array<int, kMaxAreaLights> AreaCookieSlots{};
+    } m_localLights;
+
+    unsigned int m_localShadowAtlasFbo = 0;
+    unsigned int m_localShadowAtlas = 0;
+    unsigned int m_pointShadowFbo = 0;
+    unsigned int m_pointShadowArray = 0;
+    int m_pointShadowSize = 512;
+    unsigned int m_cookieAtlas = 0;
+    std::unordered_map<const TextureData*, int> m_cookieSlots;
+    unsigned int m_localShadowTimeQueries[2]{};
+    int m_localShadowQueryIndex = 0;
+    int m_localShadowQueryFrames = 0;
+    float m_localShadowTotalMs = 0.0f;
+    float m_localShadowMinMs = 1.0e9f;
+    float m_localShadowMaxMs = 0.0f;
+    int m_localShadowSamples = 0;
 
     // Auto-exposure state
     float m_autoExposure = 1.0f;

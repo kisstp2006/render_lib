@@ -1,14 +1,26 @@
 #include "engine/core/Input.h"
+#include "engine/core/Window.h"
 
 #include <GLFW/glfw3.h>
 
 namespace engine {
 
-void Input::Attach(GLFWwindow* window)
+Input::~Input()
 {
-    m_window = window;
-    glfwSetWindowUserPointer(window, this);
-    glfwSetScrollCallback(window, &Input::ScrollCallback);
+    if (m_ownerWindow)
+        m_ownerWindow->SetScrollCallback({});
+}
+
+void Input::Attach(Window& window)
+{
+    if (m_ownerWindow)
+        m_ownerWindow->SetScrollCallback({});
+
+    m_ownerWindow = &window;
+    m_window = window.Handle();
+    window.SetScrollCallback([this](double, double yoffset) {
+        m_scrollAccum += static_cast<float>(yoffset);
+    });
 }
 
 void Input::NewFrame()
@@ -41,13 +53,6 @@ bool Input::IsKeyDown(int glfwKeyCode) const
 bool Input::IsMouseButtonDown(int glfwButton) const
 {
     return m_window && glfwGetMouseButton(m_window, glfwButton) == GLFW_PRESS;
-}
-
-void Input::ScrollCallback(GLFWwindow* window, double /*xoffset*/, double yoffset)
-{
-    auto* self = static_cast<Input*>(glfwGetWindowUserPointer(window));
-    if (self)
-        self->m_scrollAccum += static_cast<float>(yoffset);
 }
 
 } // namespace engine

@@ -22,7 +22,6 @@ constexpr int kUnitMrao = 3;
 constexpr int kUnitIrradiance = 4;
 constexpr int kUnitPrefilter = 5;
 constexpr int kUnitBrdfLut = 6;
-constexpr int kUnitSpotShadow = 7;
 constexpr int kUnitEmissive = 8;
 constexpr int kUnitOcclusion = 9;
 constexpr std::array<int, kShadowCascadeCount> kUnitCascades{0, 10, 11, 12};
@@ -40,10 +39,18 @@ float TonemapScalar(float x, const PostProcessSettings& pp)
 
 void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
 {
-    m_environment->EnsureBaked(scene.Sun, scene.Sky);
+    m_environment->EnsureBaked(scene.Sun, scene.Sky, scene.Environment);
 
     const float aspect = m_height > 0 ? static_cast<float>(m_width) / static_cast<float>(m_height) : 1.0f;
     const glm::vec3 lightDir = glm::normalize(scene.Sun.Direction);
+    const float sunElevation = glm::degrees(std::asin(glm::clamp(-lightDir.y, -1.0f, 1.0f)));
+    const bool proceduralDayNight = scene.Environment.Source == EnvironmentSource::ProceduralSky
+                                 && scene.Sky.EnableDayNightCycle;
+    const DayNightState dayNight = proceduralDayNight ? EvaluateDayNight(sunElevation) : DayNightState{};
+    const glm::vec3 effectiveSunColor = scene.Sun.Color * dayNight.SunTint
+                                      * (scene.Sun.Intensity * dayNight.DirectSunAmount);
+    const bool sunShadowsActive = scene.Sun.CastsShadows && dayNight.DirectSunAmount > 0.001f
+                               && scene.Sun.Intensity > 0.0f;
     CascadeShadowConfig cascadeConfig;
     cascadeConfig.MaxDistance = scene.Shadows.MaxDistance;
     cascadeConfig.SplitLambda = scene.Shadows.CascadeSplitLambda;
@@ -52,7 +59,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     const CascadeShadowData cascades = BuildCascadeShadows(camera, aspect, lightDir, cascadeConfig);
 
     // --- Four-cascade sun shadow pass ---
-    if (scene.Sun.CastsShadows)
+    if (sunShadowsActive)
     {
         const int readQuery = (m_shadowQueryIndex + 1) % 2;
         if (m_shadowQueryFrames > 0)
@@ -85,6 +92,8 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
             m_shadowShader->SetMat4("uLightSpaceMatrix", cascades.LightMatrices[cascade]);
             for (const auto& instance : scene.Instances())
             {
+                if (!instance.CastsShadows)
+                    continue;
                 m_shadowShader->SetMat4("uModel", instance.Transform);
                 const Material& mat = instance.Mat;
                 m_shadowShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
@@ -112,58 +121,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         }
     }
 
-    // --- Spot (flashlight) shadow pass ---
-    // The first enabled, shadow-casting spot among the first 4 gets the map.
-    const auto& spots = scene.SpotLights();
-    std::vector<const SpotLight*> activeSpots;
-    for (const auto& spot : spots)
-    {
-        if (spot.Enabled && activeSpots.size() < 4)
-            activeSpots.push_back(&spot);
-    }
-
-    int spotShadowIndex = -1;
-    glm::mat4 spotShadowMatrix{1.0f};
-    for (size_t i = 0; i < activeSpots.size(); ++i)
-    {
-        if (activeSpots[i]->CastsShadows)
-        {
-            spotShadowIndex = static_cast<int>(i);
-            break;
-        }
-    }
-
-    if (spotShadowIndex >= 0)
-    {
-        const SpotLight& spot = *activeSpots[spotShadowIndex];
-        const glm::vec3 dir = glm::normalize(spot.Direction);
-        const glm::vec3 up = std::abs(dir.y) > 0.99f ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
-        const glm::mat4 spotView = glm::lookAt(spot.Position, spot.Position + dir, up);
-        const glm::mat4 spotProj = glm::perspective(glm::radians(spot.OuterConeDeg * 2.0f), 1.0f, 0.1f, spot.Range);
-        spotShadowMatrix = spotProj * spotView;
-
-        glViewport(0, 0, m_spotShadowSize, m_spotShadowSize);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_spotShadowFbo);
-        glClear(GL_DEPTH_BUFFER_BIT);
-        glCullFace(GL_FRONT);
-
-        m_shadowShader->Use();
-        m_shadowShader->SetMat4("uLightSpaceMatrix", spotShadowMatrix);
-        for (const auto& instance : scene.Instances())
-        {
-            m_shadowShader->SetMat4("uModel", instance.Transform);
-            const Material& mat = instance.Mat;
-            m_shadowShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
-            m_shadowShader->SetBool("uHasAlbedoMap", mat.AlbedoMap != nullptr);
-            m_shadowShader->SetFloat("uBaseColorAlpha", mat.BaseColorAlpha);
-            m_shadowShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
-            m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
-            BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-            GetOrCreateMesh(instance.Mesh).Draw();
-        }
-
-        glCullFace(GL_BACK);
-    }
+    RenderLocalLightShadows(scene);
 
     // --- Main HDR pass (MSAA) ---
     glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFbo);
@@ -180,8 +138,8 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     m_pbrShader->SetVec3("uCameraPos", camera.Position);
 
     m_pbrShader->SetVec3("uSunDirection", lightDir);
-    m_pbrShader->SetVec3("uSunColor", scene.Sun.Color * scene.Sun.Intensity);
-    m_pbrShader->SetBool("uSunCastsShadows", scene.Sun.CastsShadows);
+    m_pbrShader->SetVec3("uSunColor", effectiveSunColor);
+    m_pbrShader->SetBool("uSunCastsShadows", sunShadowsActive);
     m_pbrShader->SetFloat("uCascadeBlendFraction", scene.Shadows.CascadeBlendFraction);
     m_pbrShader->SetBool("uDebugCascades", scene.Shadows.DebugCascades);
     for (int cascade = 0; cascade < kShadowCascadeCount; ++cascade)
@@ -194,35 +152,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         m_pbrShader->SetInt("uShadowMaps" + index, kUnitCascades[cascade]);
     }
 
-    const auto& lights = scene.PointLights();
-    const int lightCount = static_cast<int>(std::min<size_t>(lights.size(), 8));
-    m_pbrShader->SetInt("uPointLightCount", lightCount);
-    for (int i = 0; i < lightCount; ++i)
-    {
-        const std::string base = "uPointLights[" + std::to_string(i) + "].";
-        m_pbrShader->SetVec3(base + "Position", lights[i].Position);
-        m_pbrShader->SetVec3(base + "Color", lights[i].Color * lights[i].Intensity);
-        m_pbrShader->SetFloat(base + "Radius", lights[i].Radius);
-    }
-
-    m_pbrShader->SetInt("uSpotLightCount", static_cast<int>(activeSpots.size()));
-    for (size_t i = 0; i < activeSpots.size(); ++i)
-    {
-        const SpotLight& spot = *activeSpots[i];
-        const std::string base = "uSpotLights[" + std::to_string(i) + "].";
-        m_pbrShader->SetVec3(base + "Position", spot.Position);
-        m_pbrShader->SetVec3(base + "Direction", glm::normalize(spot.Direction));
-        m_pbrShader->SetVec3(base + "Color", spot.Color * spot.Intensity);
-        m_pbrShader->SetFloat(base + "Range", spot.Range);
-        m_pbrShader->SetFloat(base + "CosInner", std::cos(glm::radians(spot.InnerConeDeg)));
-        m_pbrShader->SetFloat(base + "CosOuter", std::cos(glm::radians(spot.OuterConeDeg)));
-    }
-
-    m_pbrShader->SetInt("uSpotShadowIndex", spotShadowIndex);
-    m_pbrShader->SetMat4("uSpotShadowMatrix", spotShadowMatrix);
-    glActiveTexture(GL_TEXTURE0 + kUnitSpotShadow);
-    glBindTexture(GL_TEXTURE_2D, m_spotShadowMap);
-    m_pbrShader->SetInt("uSpotShadowMap", kUnitSpotShadow);
+    BindLocalLights();
 
     const FogSettings& fog = scene.Fog;
     m_pbrShader->SetBool("uFogEnabled", fog.Enabled);
@@ -287,6 +217,38 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     m_skyShader->SetMat4("uInvView", glm::inverse(view));
     m_environment->BindEnvironmentMap(0);
     m_skyShader->SetInt("uEnvMap", 0);
+    m_skyShader->SetFloat("uBackgroundMultiplier", std::exp2(scene.Environment.BackgroundExposureEV));
+    m_skyShader->SetBool("uUseProceduralSky", scene.Environment.Source == EnvironmentSource::ProceduralSky);
+    m_skyShader->SetVec3("uZenithColor", scene.Sky.ZenithColor);
+    m_skyShader->SetVec3("uHorizonColor", scene.Sky.HorizonColor);
+    m_skyShader->SetVec3("uGroundColor", scene.Sky.GroundColor);
+    m_skyShader->SetVec3("uNightZenithColor", scene.Sky.NightZenithColor);
+    m_skyShader->SetVec3("uNightHorizonColor", scene.Sky.NightHorizonColor);
+    m_skyShader->SetVec3("uMilkyWayColor", scene.Sky.MilkyWayColor);
+    m_skyShader->SetVec3("uStarWarmColor", scene.Sky.StarWarmColor);
+    m_skyShader->SetVec3("uStarCoolColor", scene.Sky.StarCoolColor);
+    m_skyShader->SetFloat("uSkyIntensity", scene.Sky.SkyIntensity);
+    m_skyShader->SetFloat("uNightSkyIntensity", scene.Sky.NightSkyIntensity);
+    m_skyShader->SetFloat("uNightHorizonGlow", scene.Sky.NightHorizonGlow);
+    m_skyShader->SetBool("uDrawProceduralSun", scene.Environment.Source == EnvironmentSource::ProceduralSky
+                                              && scene.Sky.SunIntensity > 0.0f);
+    m_skyShader->SetVec3("uSunDirection", scene.Sun.Direction);
+    m_skyShader->SetVec3("uSunColor", scene.Sun.Color * dayNight.SunTint);
+    m_skyShader->SetFloat("uSunIntensity", scene.Sky.SunIntensity);
+    m_skyShader->SetFloat("uSunAngularRadius", glm::radians(scene.Sky.SunAngularRadiusDeg));
+    m_skyShader->SetBool("uEnableDayNightCycle", proceduralDayNight);
+    m_skyShader->SetFloat("uStarIntensity", scene.Sky.StarIntensity);
+    m_skyShader->SetFloat("uStarDensity", scene.Sky.StarDensity);
+    m_skyShader->SetFloat("uStarSize", scene.Sky.StarSize);
+    m_skyShader->SetFloat("uStarTwinkle", scene.Sky.StarTwinkle);
+    m_skyShader->SetFloat("uStarTwinkleSpeed", scene.Sky.StarTwinkleSpeed);
+    m_skyShader->SetFloat("uMilkyWayIntensity", scene.Sky.MilkyWayIntensity);
+    m_skyShader->SetFloat("uNightSkyRotationDegrees", scene.Sky.NightSkyRotationDegrees);
+    m_skyShader->SetFloat("uNightSkyRotationSpeed", scene.Sky.NightSkyRotationSpeed);
+    m_skyShader->SetBool("uStarsEnabled", scene.Sky.StarsEnabled);
+    m_skyShader->SetBool("uMilkyWayEnabled", scene.Sky.MilkyWayEnabled);
+    m_skyShader->SetBool("uAnimateNightSky", scene.Sky.AnimateNightSky);
+    m_skyShader->SetFloat("uTime", static_cast<float>(glfwGetTime()));
     glBindVertexArray(m_emptyVao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glDepthMask(GL_TRUE);

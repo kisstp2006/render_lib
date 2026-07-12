@@ -45,6 +45,7 @@ void GLRenderBackend::Init(Window& window)
     const std::string shaderDir = ENGINE_SHADER_DIR;
     m_pbrShader = std::make_unique<GLShader>(shaderDir + "/gl/pbr.vert", shaderDir + "/gl/pbr.frag");
     m_shadowShader = std::make_unique<GLShader>(shaderDir + "/gl/shadow.vert", shaderDir + "/gl/shadow.frag");
+    m_pointShadowShader = std::make_unique<GLShader>(shaderDir + "/gl/point_shadow.vert", shaderDir + "/gl/point_shadow.frag");
     m_skyShader = std::make_unique<GLShader>(shaderDir + "/gl/sky.vert", shaderDir + "/gl/sky.frag");
     m_bloomDownShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/bloom_downsample.frag");
     m_bloomUpShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/bloom_upsample.frag");
@@ -57,6 +58,7 @@ void GLRenderBackend::Init(Window& window)
     m_defaultWhite = std::make_unique<GLTexture>(*white);
     m_defaultNormal = std::make_unique<GLTexture>(*flatNormal);
     InitShadowMap();
+    InitLocalLightResources();
     CreateSceneTargets(m_width, m_height);
 
     glGenBuffers(2, m_exposurePbos);
@@ -67,6 +69,7 @@ void GLRenderBackend::Init(Window& window)
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glGenQueries(2, m_shadowTimeQueries);
+    glGenQueries(2, m_localShadowTimeQueries);
     log::Info("GL renderer initialized (HDR + MSAA + IBL + bloom)");
 }
 
@@ -79,19 +82,20 @@ void GLRenderBackend::Shutdown()
     m_environment.reset();
     m_pbrShader.reset();
     m_shadowShader.reset();
+    m_pointShadowShader.reset();
     m_skyShader.reset();
     m_bloomDownShader.reset();
     m_bloomUpShader.reset();
     m_postShader.reset();
     DestroySceneTargets();
+    DestroyLocalLightResources();
 
     if (m_emptyVao) glDeleteVertexArrays(1, &m_emptyVao);
     glDeleteTextures(kShadowCascadeCount, m_shadowMaps.data());
     if (m_shadowFbo) glDeleteFramebuffers(1, &m_shadowFbo);
-    if (m_spotShadowMap) glDeleteTextures(1, &m_spotShadowMap);
-    if (m_spotShadowFbo) glDeleteFramebuffers(1, &m_spotShadowFbo);
     glDeleteBuffers(2, m_exposurePbos);
     glDeleteQueries(2, m_shadowTimeQueries);
+    glDeleteQueries(2, m_localShadowTimeQueries);
     m_exposurePbos[0] = m_exposurePbos[1] = 0;
 }
 

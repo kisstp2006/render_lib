@@ -32,6 +32,35 @@ int main(int argc, char** argv)
         else if (argument == "--shadow-debug") sceneConfig.ShadowDebug = true;
         else if (argument == "--shadow-stress") sceneConfig.ShadowStress = true;
         else if (argument == "--shadow-benchmark") sceneConfig.ShadowBenchmark = true;
+        else if (argument == "--light-showcase") sceneConfig.LocalLightShowcase = true;
+        else if (argument == "--hdri" && i + 1 < argc) sceneConfig.HdriPath = argv[++i];
+        else if (argument == "--sun-azimuth" && i + 1 < argc) sceneConfig.SunAzimuthDegrees = std::strtof(argv[++i], nullptr);
+        else if (argument == "--sun-elevation" && i + 1 < argc) sceneConfig.SunElevationDegrees = std::strtof(argv[++i], nullptr);
+        else if (argument == "--day-night-seconds" && i + 1 < argc) sceneConfig.DayNightCycleSeconds = std::strtof(argv[++i], nullptr);
+        else if (argument == "--star-density" && i + 1 < argc) sceneConfig.StarDensity = std::strtof(argv[++i], nullptr);
+        else if (argument == "--star-intensity" && i + 1 < argc) sceneConfig.StarIntensity = std::strtof(argv[++i], nullptr);
+        else if (argument == "--star-size" && i + 1 < argc) sceneConfig.StarSize = std::strtof(argv[++i], nullptr);
+        else if (argument == "--star-twinkle" && i + 1 < argc) sceneConfig.StarTwinkle = std::strtof(argv[++i], nullptr);
+        else if (argument == "--milky-way" && i + 1 < argc) sceneConfig.MilkyWayIntensity = std::strtof(argv[++i], nullptr);
+        else if (argument == "--night-brightness" && i + 1 < argc) sceneConfig.NightSkyIntensity = std::strtof(argv[++i], nullptr);
+        else if (argument == "--night-horizon-glow" && i + 1 < argc) sceneConfig.NightHorizonGlow = std::strtof(argv[++i], nullptr);
+        else if (argument == "--star-twinkle-speed" && i + 1 < argc) sceneConfig.StarTwinkleSpeed = std::strtof(argv[++i], nullptr);
+        else if (argument == "--night-sky-speed" && i + 1 < argc) sceneConfig.NightSkyRotationSpeed = std::strtof(argv[++i], nullptr);
+        else if (argument == "--night-preset" && i + 1 < argc) sceneConfig.NightPreset = argv[++i];
+        else if (argument == "--no-stars") sceneConfig.StarsEnabled = false;
+        else if (argument == "--no-milky-way") sceneConfig.MilkyWayEnabled = false;
+        else if (argument == "--static-night-sky") sceneConfig.AnimateNightSky = false;
+        else if (argument == "--day-night-showcase")
+        {
+            sceneConfig.DayNightShowcase = true;
+            sceneConfig.SampleGltf = true;
+            sceneConfig.GltfPath = std::string(ENGINE_ASSET_DIR) + "/WaterBottle.glb";
+        }
+        else if (argument == "--hdri-studio")
+        {
+            sceneConfig.HdriStudio = true;
+            sceneConfig.HdriPath = std::string(ENGINE_ASSET_DIR) + "/studio_small_09_1k.hdr";
+        }
         else if (argument == "--sample-gltf")
         {
             sceneConfig.SampleGltf = true;
@@ -45,13 +74,17 @@ int main(int argc, char** argv)
     {
         PopulateSandboxScene(app, sceneConfig);
     }
-    catch (const GltfLoadError& error)
+    catch (const std::exception& error)
     {
         std::fprintf(stderr, "%s\n", error.what());
         return EXIT_FAILURE;
     }
 
-    SandboxControls controls(app, sceneConfig.FlashlightOn, screenshotPath, screenshotFrame);
+    SandboxControls controls(app, sceneConfig.FlashlightOn,
+                             !sceneConfig.LocalLightShowcase && !sceneConfig.HdriStudio,
+                             sceneConfig.LocalLightShowcase, sceneConfig.DayNightShowcase,
+                             sceneConfig.DayNightCycleSeconds, sceneConfig.SunAzimuthDegrees,
+                             sceneConfig.SunElevationDegrees, screenshotPath, screenshotFrame);
     app.SetUpdateCallback([&controls](float deltaTime) { controls.Update(deltaTime); });
     app.Run();
     return EXIT_SUCCESS;

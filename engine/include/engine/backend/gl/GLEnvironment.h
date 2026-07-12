@@ -1,6 +1,8 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
+#include <unordered_map>
 
 #include <glm/glm.hpp>
 
@@ -9,12 +11,12 @@
 
 namespace engine {
 
-// Bakes and owns the image-based lighting set derived from the procedural
-// sky: environment cubemap (also used as the visible skybox), irradiance
+// Bakes and owns the image-based lighting set derived from a procedural sky
+// or a linear HDR equirectangular panorama: environment cubemap, irradiance
 // convolution for diffuse ambient, GGX-prefiltered specular mip chain, and
 // the split-sum BRDF LUT (the same lookup VRF samples in EnvBRDF /
-// environment.slang). Bake() is cheap enough to re-run whenever the sun or
-// sky settings change.
+// environment.slang). A bake key prevents unchanged inputs from doing GPU
+// work on subsequent frames.
 class GLEnvironment
 {
 public:
@@ -24,8 +26,8 @@ public:
     GLEnvironment(const GLEnvironment&) = delete;
     GLEnvironment& operator=(const GLEnvironment&) = delete;
 
-    // Re-bakes if the sun/sky inputs changed since the last call.
-    void EnsureBaked(const DirectionalLight& sun, const SkySettings& sky);
+    // Re-bakes only when the active source or an IBL-affecting input changes.
+    void EnsureBaked(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment);
 
     void BindEnvironmentMap(int unit) const;   // skybox + raw reflections
     void BindIrradianceMap(int unit) const;    // diffuse ambient
@@ -35,8 +37,8 @@ public:
     static constexpr int kPrefilterMips = 5;
 
 private:
-    void Bake(const DirectionalLight& sun, const SkySettings& sky);
-    void RenderToCubemapFace(unsigned int cubemap, int face, int mip, int size);
+    void Bake(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment);
+    unsigned int GetOrCreatePanorama(const std::shared_ptr<HdrImageData>& image);
 
     unsigned int m_envCubemap = 0;        // 256^2, mipmapped for prefilter source
     unsigned int m_irradianceCubemap = 0; // 32^2
@@ -46,9 +48,11 @@ private:
     unsigned int m_emptyVao = 0;
 
     std::unique_ptr<GLShader> m_skyGenShader;
+    std::unique_ptr<GLShader> m_equirectShader;
     std::unique_ptr<GLShader> m_irradianceShader;
     std::unique_ptr<GLShader> m_prefilterShader;
     std::unique_ptr<GLShader> m_brdfShader;
+    std::unordered_map<std::shared_ptr<HdrImageData>, unsigned int> m_panoramaCache;
 
     struct BakeKey
     {
@@ -56,8 +60,13 @@ private:
         glm::vec3 SunColor{0.0f};
         float SunIntensity = -1.0f;
         SkySettings Sky;
+        EnvironmentSource Source = EnvironmentSource::ProceduralSky;
+        const HdrImageData* Hdri = nullptr;
+        float ExposureEV = 0.0f;
+        float RotationDegrees = 0.0f;
         bool Valid = false;
     } m_lastBake;
+    std::chrono::steady_clock::time_point m_lastBakeTime{};
 };
 
 } // namespace engine

@@ -11,28 +11,6 @@ namespace {
 
 constexpr int kBloomLevels = 6;
 
-void CreateDepthTarget(unsigned int& fbo, unsigned int& texture, int size)
-{
-    glGenFramebuffers(1, &fbo);
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, size, size, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-    const float border[] = {1.0f, 1.0f, 1.0f, 1.0f};
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, texture, 0);
-    glDrawBuffer(GL_NONE);
-    glReadBuffer(GL_NONE);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-        throw std::runtime_error("Shadow map framebuffer incomplete");
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
 } // namespace
 
 void GLRenderBackend::InitShadowMap()
@@ -58,7 +36,6 @@ void GLRenderBackend::InitShadowMap()
             throw std::runtime_error("Cascade shadow framebuffer incomplete");
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    CreateDepthTarget(m_spotShadowFbo, m_spotShadowMap, m_spotShadowSize);
 }
 
 void GLRenderBackend::CreateSceneTargets(int width, int height)

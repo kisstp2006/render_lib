@@ -32,6 +32,7 @@ std::shared_ptr<TextureData> MakeSolidColor(glm::vec4 color, bool srgb = true);
 std::shared_ptr<TextureData> MakeChecker(int size, int cells, glm::vec3 colorA, glm::vec3 colorB);
 // Flat +Z tangent-space normal (128, 128, 255) - the "no-op" normal map.
 std::shared_ptr<TextureData> MakeFlatNormal();
+std::shared_ptr<TextureData> MakeLightCookie(int size = 256);
 
 } // namespace textures
 

@@ -37,6 +37,7 @@ Window::Window(const WindowDesc& desc)
 
     glfwSetWindowUserPointer(m_handle, this);
     glfwSetFramebufferSizeCallback(m_handle, &Window::FramebufferSizeCallback);
+    glfwSetScrollCallback(m_handle, &Window::ScrollCallbackDispatcher);
 
     if (desc.api == GraphicsApi::OpenGL)
     {
@@ -85,6 +86,13 @@ void Window::FramebufferSizeCallback(GLFWwindow* window, int width, int height)
 
     if (self->m_resizeCallback)
         self->m_resizeCallback(width, height);
+}
+
+void Window::ScrollCallbackDispatcher(GLFWwindow* window, double xoffset, double yoffset)
+{
+    auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (self && self->m_scrollCallback)
+        self->m_scrollCallback(xoffset, yoffset);
 }
 
 } // namespace engine

@@ -1,5 +1,7 @@
 #include "engine/core/Camera.h"
 #include "engine/render/CascadedShadows.h"
+#include "engine/scene/Texture.h"
+#include "engine/scene/Environment.h"
 
 #include <cmath>
 #include <cstdio>
@@ -110,6 +112,81 @@ void TestTexelStabilization()
             "sub-texel lateral camera motion must not move the nearest shadow projection");
 }
 
+void TestProceduralLightCookie()
+{
+    const auto cookie = textures::MakeLightCookie(64);
+    Require(cookie && cookie->Width == 64 && cookie->Height == 64, "procedural cookie must have the requested dimensions");
+    const auto sample = [&](int x, int y) { return cookie->Pixels[(static_cast<size_t>(y) * cookie->Width + x) * 4]; };
+    Require(sample(32, 32) > 100, "cookie center must transmit light");
+    Require(sample(0, 0) == 0, "cookie corners must block light");
+}
+
+void TestHdrEnvironmentLoadingAndCache()
+{
+    const std::string path = std::string(TEST_ASSET_DIR) + "/studio_small_09_1k.hdr";
+    const auto first = environments::LoadHdrFromFile(path);
+    const auto second = environments::LoadHdrFromFile(path);
+    Require(first != nullptr, "HDR environment must load");
+    Require(first == second, "repeated HDR loads must reuse the CPU cache");
+    Require(first->Width == 1024 && first->Height == 512 && first->Channels == 3,
+            "HDR environment dimensions and channels must be preserved");
+    Require(first->Pixels.size() == static_cast<size_t>(first->Width) * first->Height * 3,
+            "HDR environment must contain tightly packed RGB floats");
+    bool hasHdrValue = false;
+    for (float value : first->Pixels)
+    {
+        Require(std::isfinite(value) && value >= 0.0f, "HDR pixels must be finite positive linear radiance");
+        hasHdrValue = hasHdrValue || value > 1.0f;
+    }
+    Require(hasHdrValue, "HDR loader must preserve radiance above the LDR range");
+
+    bool missingFileReported = false;
+    try
+    {
+        environments::LoadHdrFromFile(std::string(TEST_ASSET_DIR) + "/does-not-exist.hdr");
+    }
+    catch (const EnvironmentLoadError& error)
+    {
+        missingFileReported = std::string(error.what()).find("does not exist") != std::string::npos;
+    }
+    Require(missingFileReported, "missing HDR assets must report a useful error");
+
+    bool invalidFileReported = false;
+    try
+    {
+        environments::LoadHdrFromFile(std::string(TEST_ASSET_DIR) + "/WaterBottle.glb");
+    }
+    catch (const EnvironmentLoadError& error)
+    {
+        invalidFileReported = std::string(error.what()).find("not a valid Radiance") != std::string::npos;
+    }
+    Require(invalidFileReported, "non-HDR assets must report their invalid format");
+}
+
+void TestDayNightTransitions()
+{
+    const DayNightState day = EvaluateDayNight(30.0f);
+    Require(day.DayAmount > 0.999f && day.NightAmount < 0.001f,
+            "high sun elevation must produce daylight");
+    Require(day.DirectSunAmount > 0.999f, "daylight must keep direct sun lighting enabled");
+
+    const DayNightState sunset = EvaluateDayNight(0.0f);
+    Require(sunset.TwilightAmount > 0.8f, "sunset must strongly activate twilight scattering");
+    Require(sunset.DirectSunAmount > 0.0f && sunset.DirectSunAmount < 1.0f,
+            "direct sunlight must fade continuously around the horizon");
+    Require(sunset.SunTint.g < day.SunTint.g, "low sun must become warmer than midday sun");
+
+    const DayNightState nauticalTwilight = EvaluateDayNight(-12.0f);
+    Require(nauticalTwilight.NightAmount > 0.0f && nauticalTwilight.NightAmount < 1.0f,
+            "nautical twilight must transition toward night");
+    Require(nauticalTwilight.DirectSunAmount < 0.001f,
+            "sun below the horizon must not provide direct lighting");
+
+    const DayNightState night = EvaluateDayNight(-20.0f);
+    Require(night.NightAmount > 0.999f && night.DayAmount < 0.001f,
+            "sun below astronomical twilight must produce full night");
+}
+
 } // namespace
 
 int main()
@@ -117,6 +194,9 @@ int main()
     TestSplitDistribution();
     TestCoverageAndResolution();
     TestTexelStabilization();
+    TestProceduralLightCookie();
+    TestHdrEnvironmentLoadingAndCache();
+    TestDayNightTransitions();
     std::puts("Cascaded shadow tests passed");
     return EXIT_SUCCESS;
 }

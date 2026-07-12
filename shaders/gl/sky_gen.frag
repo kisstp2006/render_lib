@@ -17,7 +17,12 @@ uniform float uSunAngularRadius; // radians
 uniform vec3 uZenithColor;
 uniform vec3 uHorizonColor;
 uniform vec3 uGroundColor;
+uniform vec3 uNightZenithColor;
+uniform vec3 uNightHorizonColor;
+uniform float uNightSkyIntensity;
+uniform float uNightHorizonGlow;
 uniform float uSkyIntensity;
+uniform bool uEnableDayNightCycle;
 
 void main()
 {
@@ -25,9 +30,34 @@ void main()
     vec3 toSun = normalize(-uSunDirection);
 
     float h = dir.y;
-    vec3 sky = mix(uHorizonColor, uZenithColor, pow(clamp(h, 0.0, 1.0), 0.55));
-    vec3 ground = mix(uHorizonColor * 0.85, uGroundColor, pow(clamp(-h, 0.0, 1.0), 0.4));
-    vec3 color = (h >= 0.0 ? sky : ground) * uSkyIntensity;
+    vec3 daySky = mix(uHorizonColor, uZenithColor, pow(clamp(h, 0.0, 1.0), 0.55));
+    vec3 dayGround = mix(uHorizonColor * 0.85, uGroundColor, pow(clamp(-h, 0.0, 1.0), 0.4));
+
+    float sunElevation = degrees(asin(clamp(toSun.y, -1.0, 1.0)));
+    float dayAmount = uEnableDayNightCycle ? smoothstep(-6.0, 6.0, sunElevation) : 1.0;
+    float nightAmount = uEnableDayNightCycle ? 1.0 - smoothstep(-18.0, -6.0, sunElevation) : 0.0;
+    float twilightAmount = uEnableDayNightCycle
+        ? smoothstep(-18.0, -6.0, sunElevation) * (1.0 - smoothstep(2.0, 12.0, sunElevation)) : 0.0;
+
+    vec3 nightSky = mix(uNightHorizonColor * uNightHorizonGlow, uNightZenithColor,
+                        pow(clamp(h, 0.0, 1.0), 0.45)) * uNightSkyIntensity;
+    vec3 nightGround = uNightZenithColor * (0.12 * uNightSkyIntensity);
+    vec3 daylightBase = h >= 0.0 ? daySky : dayGround;
+    vec3 nightBase = h >= 0.0 ? nightSky : nightGround;
+    float twilightWeight = max(0.0, 1.0 - dayAmount - nightAmount);
+    vec3 twilightBase = mix(nightBase, daylightBase, smoothstep(-18.0, 0.0, sunElevation));
+    vec3 color = (daylightBase * dayAmount + twilightBase * twilightWeight + nightBase * nightAmount)
+               * uSkyIntensity;
+
+    // Warm scattering remains concentrated around the sunset horizon and in
+    // the sun's azimuth through civil and nautical twilight.
+    vec3 horizonDir = normalize(vec3(dir.x, 0.0, dir.z) + vec3(0.0, 0.0, 1e-5));
+    vec3 horizonSun = normalize(vec3(toSun.x, 0.0, toSun.z) + vec3(0.0, 0.0, 1e-5));
+    float towardSun = pow(max(dot(horizonDir, horizonSun), 0.0), 3.0);
+    float horizonBand = exp(-abs(h) * 7.0);
+    vec3 duskColor = mix(vec3(0.18, 0.025, 0.22), vec3(1.55, 0.20, 0.025), towardSun);
+    color += duskColor * horizonBand * twilightAmount * (0.32 + 0.68 * towardSun) * uSkyIntensity;
+    color += uSunColor * pow(max(dot(dir, toSun), 0.0), 12.0) * twilightAmount * 0.10;
 
     // Sun disk + glow, faded out as the sun dips below the horizon
     float cosAngle = dot(dir, toSun);

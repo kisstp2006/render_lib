@@ -3,7 +3,8 @@
 
 #include <glad/gl.h>
 
-#include <cstring>
+#include <chrono>
+#include <cmath>
 
 namespace engine {
 
@@ -38,6 +39,21 @@ glm::mat3 FaceBasisMatrix(int face)
     return glm::mat3(f.Right, f.Up, f.Forward);
 }
 
+bool SameSky(const SkySettings& a, const SkySettings& b)
+{
+    return a.ZenithColor == b.ZenithColor
+        && a.HorizonColor == b.HorizonColor
+        && a.GroundColor == b.GroundColor
+        && a.NightZenithColor == b.NightZenithColor
+        && a.NightHorizonColor == b.NightHorizonColor
+        && a.NightSkyIntensity == b.NightSkyIntensity
+        && a.NightHorizonGlow == b.NightHorizonGlow
+        && a.SunAngularRadiusDeg == b.SunAngularRadiusDeg
+        && a.SunIntensity == b.SunIntensity
+        && a.SkyIntensity == b.SkyIntensity
+        && a.EnableDayNightCycle == b.EnableDayNightCycle;
+}
+
 unsigned int CreateCubemap(int size, bool mipmapped)
 {
     unsigned int tex = 0;
@@ -63,6 +79,7 @@ unsigned int CreateCubemap(int size, bool mipmapped)
 GLEnvironment::GLEnvironment(const std::string& shaderDir)
 {
     m_skyGenShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/sky_gen.frag");
+    m_equirectShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/equirect_to_cube.frag");
     m_irradianceShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/irradiance.frag");
     m_prefilterShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/prefilter.frag");
     m_brdfShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/brdf_lut.frag");
@@ -98,6 +115,11 @@ GLEnvironment::GLEnvironment(const std::string& shaderDir)
 
 GLEnvironment::~GLEnvironment()
 {
+    for (const auto& [image, texture] : m_panoramaCache)
+    {
+        (void)image;
+        glDeleteTextures(1, &texture);
+    }
     glDeleteTextures(1, &m_envCubemap);
     glDeleteTextures(1, &m_irradianceCubemap);
     glDeleteTextures(1, &m_prefilterCubemap);
@@ -106,48 +128,112 @@ GLEnvironment::~GLEnvironment()
     glDeleteVertexArrays(1, &m_emptyVao);
 }
 
-void GLEnvironment::EnsureBaked(const DirectionalLight& sun, const SkySettings& sky)
+void GLEnvironment::EnsureBaked(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment)
 {
-    const bool dirty = !m_lastBake.Valid
-        || m_lastBake.SunDir != sun.Direction
-        || m_lastBake.SunColor != sun.Color
-        || m_lastBake.SunIntensity != sun.Intensity
-        || std::memcmp(&m_lastBake.Sky, &sky, sizeof(SkySettings)) != 0;
+    const bool sourceChanged = !m_lastBake.Valid || m_lastBake.Source != environment.Source;
+    const bool sunDirectionChanged = environment.Source == EnvironmentSource::ProceduralSky
+                                  && m_lastBake.SunDir != sun.Direction;
+    const bool proceduralSettingsChanged = environment.Source == EnvironmentSource::ProceduralSky
+        && (m_lastBake.SunColor != sun.Color
+            || m_lastBake.SunIntensity != sun.Intensity
+            || !SameSky(m_lastBake.Sky, sky));
+    const bool hdriChanged = environment.Source == EnvironmentSource::EquirectangularHdr
+        && (m_lastBake.Hdri != environment.Hdri.get()
+            || m_lastBake.ExposureEV != environment.ExposureEV
+            || m_lastBake.RotationDegrees != environment.RotationDegrees);
+    const bool dirty = sourceChanged || sunDirectionChanged || proceduralSettingsChanged || hdriChanged;
 
     if (!dirty)
         return;
 
-    Bake(sun, sky);
+    // A moving sun updates the screen-resolution disk, direct lighting and
+    // shadows every frame. Throttle only the expensive derived IBL bake; any
+    // source or artist-setting change remains immediate.
+    const bool directionOnly = m_lastBake.Valid && !sourceChanged && sunDirectionChanged
+                            && !proceduralSettingsChanged && !hdriChanged;
+    const auto now = std::chrono::steady_clock::now();
+    if (directionOnly && now - m_lastBakeTime < std::chrono::milliseconds(350))
+        return;
+
+    if (environment.Source == EnvironmentSource::EquirectangularHdr && !environment.Hdri)
+        throw EnvironmentLoadError("Equirectangular HDR environment selected, but no HDR image was assigned");
+
+    Bake(sun, sky, environment);
 
     m_lastBake.SunDir = sun.Direction;
     m_lastBake.SunColor = sun.Color;
     m_lastBake.SunIntensity = sun.Intensity;
     m_lastBake.Sky = sky;
+    m_lastBake.Source = environment.Source;
+    m_lastBake.Hdri = environment.Hdri.get();
+    m_lastBake.ExposureEV = environment.ExposureEV;
+    m_lastBake.RotationDegrees = environment.RotationDegrees;
     m_lastBake.Valid = true;
+    m_lastBakeTime = std::chrono::steady_clock::now();
 }
 
-void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky)
+unsigned int GLEnvironment::GetOrCreatePanorama(const std::shared_ptr<HdrImageData>& image)
 {
+    if (const auto found = m_panoramaCache.find(image); found != m_panoramaCache.end())
+        return found->second;
+
+    unsigned int texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, image->Width, image->Height, 0, GL_RGB, GL_FLOAT, image->Pixels.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    m_panoramaCache.emplace(image, texture);
+    return texture;
+}
+
+void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment)
+{
+    const auto bakeStart = std::chrono::steady_clock::now();
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
     glBindVertexArray(m_emptyVao);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
-    // 1) Procedural sky -> environment cubemap
-    m_skyGenShader->Use();
-    m_skyGenShader->SetVec3("uSunDirection", glm::normalize(sun.Direction));
-    m_skyGenShader->SetVec3("uSunColor", sun.Color);
-    m_skyGenShader->SetFloat("uSunIntensity", sky.SunIntensity);
-    m_skyGenShader->SetFloat("uSunAngularRadius", glm::radians(sky.SunAngularRadiusDeg));
-    m_skyGenShader->SetVec3("uZenithColor", sky.ZenithColor);
-    m_skyGenShader->SetVec3("uHorizonColor", sky.HorizonColor);
-    m_skyGenShader->SetVec3("uGroundColor", sky.GroundColor);
-    m_skyGenShader->SetFloat("uSkyIntensity", sky.SkyIntensity);
+    // 1) Active source -> environment cubemap.
+    GLShader* sourceShader = nullptr;
+    if (environment.Source == EnvironmentSource::EquirectangularHdr)
+    {
+        sourceShader = m_equirectShader.get();
+        sourceShader->Use();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, GetOrCreatePanorama(environment.Hdri));
+        sourceShader->SetInt("uEquirectangularMap", 0);
+        sourceShader->SetFloat("uRotation", glm::radians(environment.RotationDegrees));
+        sourceShader->SetFloat("uIntensity", std::exp2(environment.ExposureEV));
+    }
+    else
+    {
+        sourceShader = m_skyGenShader.get();
+        sourceShader->Use();
+        sourceShader->SetVec3("uSunDirection", glm::normalize(sun.Direction));
+        const float elevation = glm::degrees(std::asin(glm::clamp(-glm::normalize(sun.Direction).y, -1.0f, 1.0f)));
+        const DayNightState dayNight = sky.EnableDayNightCycle ? EvaluateDayNight(elevation) : DayNightState{};
+        sourceShader->SetVec3("uSunColor", sun.Color * dayNight.SunTint);
+        sourceShader->SetFloat("uSunIntensity", sky.SunIntensity);
+        sourceShader->SetFloat("uSunAngularRadius", glm::radians(sky.SunAngularRadiusDeg));
+        sourceShader->SetVec3("uZenithColor", sky.ZenithColor);
+        sourceShader->SetVec3("uHorizonColor", sky.HorizonColor);
+        sourceShader->SetVec3("uGroundColor", sky.GroundColor);
+        sourceShader->SetVec3("uNightZenithColor", sky.NightZenithColor);
+        sourceShader->SetVec3("uNightHorizonColor", sky.NightHorizonColor);
+        sourceShader->SetFloat("uNightSkyIntensity", sky.NightSkyIntensity);
+        sourceShader->SetFloat("uNightHorizonGlow", sky.NightHorizonGlow);
+        sourceShader->SetFloat("uSkyIntensity", sky.SkyIntensity);
+        sourceShader->SetBool("uEnableDayNightCycle", sky.EnableDayNightCycle);
+    }
 
     glViewport(0, 0, kEnvSize, kEnvSize);
     for (int face = 0; face < 6; ++face)
     {
-        m_skyGenShader->SetMat3("uFaceBasis", FaceBasisMatrix(face));
+        sourceShader->SetMat3("uFaceBasis", FaceBasisMatrix(face));
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, m_envCubemap, 0);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
@@ -195,7 +281,10 @@ void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky)
     glEnable(GL_CULL_FACE);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    log::Info("IBL: environment re-baked");
+    glFinish(); // Bake timing is a rare diagnostic event, never a per-frame sync.
+    const float milliseconds = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - bakeStart).count();
+    const std::string sourceName = environment.Source == EnvironmentSource::EquirectangularHdr ? "HDRI" : "procedural sky";
+    log::Info("IBL: " + sourceName + " re-baked in " + std::to_string(milliseconds) + " ms");
 }
 
 void GLEnvironment::BindEnvironmentMap(int unit) const

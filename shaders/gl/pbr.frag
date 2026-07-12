@@ -29,6 +29,8 @@ struct PointLight
     vec3 Position;
     vec3 Color;
     float Radius;
+    int ShadowIndex;
+    int CookieIndex;
 };
 
 uniform int uPointLightCount;
@@ -42,13 +44,35 @@ struct SpotLight
     float Range;
     float CosInner;
     float CosOuter;
+    mat4 Matrix;
+    vec4 ShadowRect;
+    int CookieIndex;
 };
 
 uniform int uSpotLightCount;
 uniform SpotLight uSpotLights[4];
-uniform int uSpotShadowIndex; // which spot samples the spot shadow map, -1 = none
-uniform mat4 uSpotShadowMatrix;
-uniform sampler2D uSpotShadowMap; // unit 7
+
+struct AreaLight
+{
+    vec3 Position;
+    vec3 Direction;
+    vec3 Right;
+    vec3 Up;
+    vec3 Color;
+    vec2 HalfSize;
+    vec2 Softness;
+    float Range;
+    float MinRoughness;
+    mat4 Matrix;
+    vec4 ShadowRect;
+    int CookieIndex;
+};
+
+uniform int uAreaLightCount;
+uniform AreaLight uAreaLights[4];
+uniform sampler2D uLocalShadowAtlas;
+uniform samplerCubeArray uPointShadowMaps;
+uniform sampler2D uLightCookieAtlas;
 
 // Gradient fog, same shape as VRF fog.slang ApplyGradientFog:
 // distance ramp ^ exp  *  height ramp ^ exp  *  opacity -> mix to color.
@@ -194,32 +218,84 @@ float SampleCascadedShadow(vec3 worldPos, float NoL, out int cascadeIndex)
     return visibility;
 }
 
-float SampleSpotShadow(vec3 worldPos, float NoL)
+float SampleCookie(int slot, vec2 uv)
 {
-    vec4 lightSpacePos = uSpotShadowMatrix * vec4(worldPos, 1.0);
-    if (lightSpacePos.w <= 0.0)
+    if (slot <= 0)
         return 1.0;
+    const float scale = 0.25;
+    vec2 offset = vec2(slot % 4, slot / 4) * scale;
+    return texture(uLightCookieAtlas, offset + clamp(uv, 0.0, 1.0) * scale).r;
+}
+
+bool ProjectLocalLight(mat4 matrix, vec3 worldPos, out vec2 uv, out float depth)
+{
+    vec4 lightSpacePos = matrix * vec4(worldPos, 1.0);
+    if (lightSpacePos.w <= 0.0)
+        return false;
 
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
     proj = proj * 0.5 + 0.5;
+    uv = proj.xy;
+    depth = proj.z;
+    return proj.z >= 0.0 && proj.z <= 1.0 && all(greaterThanEqual(proj.xy, vec2(0.0))) && all(lessThanEqual(proj.xy, vec2(1.0)));
+}
 
-    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
+float SampleProjectedShadow(mat4 matrix, vec4 atlasRect, vec3 worldPos, float NoL)
+{
+    if (atlasRect.z <= 0.0)
+        return 1.0;
+    vec2 uv;
+    float depth;
+    if (!ProjectLocalLight(matrix, worldPos, uv, depth))
         return 1.0;
 
     float bias = max(0.002 * (1.0 - NoL), 0.0004);
     float shadow = 0.0;
-    vec2 texel = 1.0 / vec2(textureSize(uSpotShadowMap, 0));
+    vec2 texel = 1.0 / vec2(textureSize(uLocalShadowAtlas, 0));
+    vec2 atlasUv = atlasRect.xy + uv * atlasRect.zw;
+    vec2 atlasMin = atlasRect.xy + texel * 0.5;
+    vec2 atlasMax = atlasRect.xy + atlasRect.zw - texel * 0.5;
 
     for (int x = -1; x <= 1; ++x)
     {
         for (int y = -1; y <= 1; ++y)
         {
-            float closestDepth = texture(uSpotShadowMap, proj.xy + vec2(x, y) * texel).r;
-            shadow += (proj.z - bias) > closestDepth ? 0.0 : 1.0;
+            vec2 sampleUv = clamp(atlasUv + vec2(x, y) * texel, atlasMin, atlasMax);
+            float closestDepth = texture(uLocalShadowAtlas, sampleUv).r;
+            shadow += (depth - bias) > closestDepth ? 0.0 : 1.0;
         }
     }
 
     return shadow / 9.0;
+}
+
+float SamplePointShadow(PointLight light, vec3 worldPos)
+{
+    if (light.ShadowIndex < 0)
+        return 1.0;
+    vec3 fromLight = worldPos - light.Position;
+    float distanceToLight = length(fromLight);
+    vec3 direction = fromLight / max(distanceToLight, 1e-4);
+    float disk = 0.003 + 0.02 * distanceToLight / light.Radius;
+    const vec3 offsets[8] = vec3[8](
+        vec3(1,1,1), vec3(-1,1,1), vec3(1,-1,1), vec3(-1,-1,1),
+        vec3(1,1,-1), vec3(-1,1,-1), vec3(1,-1,-1), vec3(-1,-1,-1));
+    float visibility = 0.0;
+    for (int i = 0; i < 8; ++i)
+    {
+        float stored = texture(uPointShadowMaps, vec4(direction + offsets[i] * disk, float(light.ShadowIndex))).r * light.Radius;
+        visibility += distanceToLight - 0.035 <= stored ? 1.0 : 0.0;
+    }
+    return visibility / 8.0;
+}
+
+float SamplePointCookie(PointLight light, vec3 worldPos)
+{
+    if (light.CookieIndex <= 0)
+        return 1.0;
+    vec3 direction = normalize(worldPos - light.Position);
+    vec2 uv = vec2(atan(direction.z, direction.x) / (2.0 * PI) + 0.5, asin(clamp(direction.y, -1.0, 1.0)) / PI + 0.5);
+    return SampleCookie(light.CookieIndex, uv);
 }
 
 void ApplyGradientFog(inout vec3 color, vec3 worldPos)
@@ -302,7 +378,9 @@ void main()
         float window = 1.0 - distRatio * distRatio * distRatio * distRatio;
         float attenuation = (window * window) / (dist * dist + 1.0);
 
-        L0 += EvaluateLight(N, V, L, uPointLights[i].Color, albedo, F0, roughness, metallic) * attenuation;
+        float shadow = SamplePointShadow(uPointLights[i], vWorldPos);
+        float cookie = SamplePointCookie(uPointLights[i], vWorldPos);
+        L0 += EvaluateLight(N, V, L, uPointLights[i].Color, albedo, F0, roughness, metallic) * attenuation * shadow * cookie;
     }
 
     // Spot lights (Source 2 spot: smooth inner->outer cone falloff)
@@ -321,14 +399,45 @@ void main()
         float window = 1.0 - distRatio * distRatio * distRatio * distRatio;
         float attenuation = (window * window) / (dist * dist + 1.0);
 
-        float shadow = 1.0;
-        if (i == uSpotShadowIndex)
-        {
-            float NoL = max(dot(N, L), 0.0);
-            shadow = NoL > 0.0 ? SampleSpotShadow(vWorldPos, NoL) : 1.0;
-        }
+        float NoL = max(dot(N, L), 0.0);
+        float shadow = NoL > 0.0 ? SampleProjectedShadow(uSpotLights[i].Matrix, uSpotLights[i].ShadowRect, vWorldPos, NoL) : 1.0;
+        vec2 projectedUv;
+        float projectedDepth;
+        float cookie = ProjectLocalLight(uSpotLights[i].Matrix, vWorldPos, projectedUv, projectedDepth)
+            ? SampleCookie(uSpotLights[i].CookieIndex, projectedUv) : 0.0;
 
-        L0 += EvaluateLight(N, V, L, uSpotLights[i].Color, albedo, F0, roughness, metallic) * attenuation * cone * shadow;
+        L0 += EvaluateLight(N, V, L, uSpotLights[i].Color, albedo, F0, roughness, metallic) * attenuation * cone * shadow * cookie;
+    }
+
+    // Source 2 barn/rect-inspired finite rectangular lights.
+    for (int i = 0; i < uAreaLightCount; ++i)
+    {
+        AreaLight light = uAreaLights[i];
+        vec3 fromCenter = vWorldPos - light.Position;
+        vec3 closest = light.Position
+            + light.Right * clamp(dot(fromCenter, light.Right), -light.HalfSize.x, light.HalfSize.x)
+            + light.Up * clamp(dot(fromCenter, light.Up), -light.HalfSize.y, light.HalfSize.y);
+        vec3 toLight = closest - vWorldPos;
+        float dist = length(toLight);
+        vec3 L = toLight / max(dist, 1e-4);
+        float facing = max(dot(-L, light.Direction), 0.0);
+        float distRatio = clamp(dist / light.Range, 0.0, 1.0);
+        float window = 1.0 - pow(distRatio, 4.0);
+        float attenuation = window * window / (dist * dist + 1.0);
+
+        vec2 projectedUv;
+        float projectedDepth;
+        if (!ProjectLocalLight(light.Matrix, vWorldPos, projectedUv, projectedDepth))
+            continue;
+        vec2 centered = abs(projectedUv - 0.5);
+        vec2 edge = vec2(1.0) - smoothstep(vec2(0.5) - light.Softness * 0.5, vec2(0.5), centered);
+        float barn = edge.x * edge.y;
+        float cookie = SampleCookie(light.CookieIndex, projectedUv);
+        float NoL = max(dot(N, L), 0.0);
+        float shadow = NoL > 0.0 ? SampleProjectedShadow(light.Matrix, light.ShadowRect, vWorldPos, NoL) : 1.0;
+        float areaRoughness = max(roughness, light.MinRoughness);
+        L0 += EvaluateLight(N, V, L, light.Color, albedo, F0, areaRoughness, metallic)
+            * attenuation * facing * barn * cookie * shadow;
     }
 
     // Image-based ambient (split-sum, same shape as VRF EnvBRDF)

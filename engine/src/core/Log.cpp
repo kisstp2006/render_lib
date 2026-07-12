@@ -17,6 +17,7 @@ void Write(Level level, const std::string& message)
     }
 
     std::fprintf(stream, "%s%s\n", prefix, message.c_str());
+    std::fflush(stream);
 }
 
 } // namespace engine::log

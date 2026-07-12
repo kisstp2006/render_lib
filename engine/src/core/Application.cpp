@@ -17,7 +17,7 @@ Application::Application(const WindowDesc& desc)
     : m_desc(desc)
 {
     m_window = std::make_unique<Window>(desc);
-    m_input.Attach(m_window->Handle());
+    m_input.Attach(*m_window);
 
     if (desc.api == GraphicsApi::OpenGL)
     {

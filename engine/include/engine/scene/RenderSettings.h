@@ -9,9 +9,28 @@ struct SkySettings
     glm::vec3 ZenithColor{0.18f, 0.32f, 0.66f};
     glm::vec3 HorizonColor{0.72f, 0.80f, 0.94f};
     glm::vec3 GroundColor{0.23f, 0.21f, 0.19f};
+    glm::vec3 NightZenithColor{0.003f, 0.008f, 0.028f};
+    glm::vec3 NightHorizonColor{0.018f, 0.028f, 0.070f};
+    glm::vec3 MilkyWayColor{0.22f, 0.30f, 0.65f};
+    glm::vec3 StarWarmColor{1.0f, 0.68f, 0.46f};
+    glm::vec3 StarCoolColor{0.62f, 0.78f, 1.0f};
     float SunAngularRadiusDeg = 1.2f;
     float SunIntensity = 80.0f;
     float SkyIntensity = 1.0f;
+    float NightSkyIntensity = 1.0f;
+    float NightHorizonGlow = 1.0f;
+    float StarIntensity = 4.0f;
+    float StarDensity = 0.006f;
+    float StarSize = 1.0f;
+    float StarTwinkle = 0.18f;
+    float StarTwinkleSpeed = 1.0f;
+    float MilkyWayIntensity = 0.32f;
+    float NightSkyRotationDegrees = 0.0f;
+    float NightSkyRotationSpeed = 0.35f;
+    bool StarsEnabled = true;
+    bool MilkyWayEnabled = true;
+    bool AnimateNightSky = true;
+    bool EnableDayNightCycle = true;
 };
 
 struct PostProcessSettings

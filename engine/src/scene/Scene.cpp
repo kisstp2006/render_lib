@@ -17,4 +17,9 @@ void Scene::AddSpotLight(const SpotLight& light)
     m_spotLights.push_back(light);
 }
 
+void Scene::AddAreaLight(const AreaLight& light)
+{
+    m_areaLights.push_back(light);
+}
+
 } // namespace engine

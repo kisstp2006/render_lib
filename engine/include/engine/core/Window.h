@@ -40,13 +40,18 @@ public:
     using ResizeCallback = std::function<void(int, int)>;
     void SetResizeCallback(ResizeCallback callback) { m_resizeCallback = std::move(callback); }
 
+    using ScrollCallback = std::function<void(double, double)>;
+    void SetScrollCallback(ScrollCallback callback) { m_scrollCallback = std::move(callback); }
+
 private:
     static void FramebufferSizeCallback(GLFWwindow* window, int width, int height);
+    static void ScrollCallbackDispatcher(GLFWwindow* window, double xoffset, double yoffset);
 
     GLFWwindow* m_handle = nullptr;
     int m_width;
     int m_height;
     ResizeCallback m_resizeCallback;
+    ScrollCallback m_scrollCallback;
 };
 
 } // namespace engine

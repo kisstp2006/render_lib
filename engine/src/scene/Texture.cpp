@@ -3,6 +3,9 @@
 
 #include <stb_image.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace engine::textures {
 
 namespace {
@@ -103,6 +106,31 @@ std::shared_ptr<TextureData> MakeFlatNormal()
     data->Height = 1;
     data->SRGB = false;
     data->Pixels = {128, 128, 255, 255};
+    return data;
+}
+
+std::shared_ptr<TextureData> MakeLightCookie(int size)
+{
+    size = std::max(size, 8);
+    auto data = std::make_shared<TextureData>();
+    data->Width = size;
+    data->Height = size;
+    data->SRGB = false;
+    data->Pixels.resize(static_cast<size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y)
+    {
+        for (int x = 0; x < size; ++x)
+        {
+            const glm::vec2 uv = (glm::vec2(x, y) + 0.5f) / static_cast<float>(size) * 2.0f - 1.0f;
+            const float radius = glm::length(uv);
+            const float radial = 1.0f - glm::smoothstep(0.72f, 1.0f, radius);
+            const float blades = 0.62f + 0.38f * std::cos(std::atan2(uv.y, uv.x) * 6.0f);
+            const float value = glm::clamp(radial * blades, 0.0f, 1.0f);
+            uint8_t* pixel = &data->Pixels[(static_cast<size_t>(y) * size + x) * 4];
+            pixel[0] = pixel[1] = pixel[2] = static_cast<uint8_t>(value * 255.0f);
+            pixel[3] = 255;
+        }
+    }
     return data;
 }
 

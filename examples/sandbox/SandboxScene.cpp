@@ -6,6 +6,7 @@
 #include "engine/scene/Scene.h"
 #include "engine/scene/Texture.h"
 
+#include <cmath>
 #include <memory>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -13,6 +14,28 @@
 using namespace engine;
 
 namespace {
+
+void ApplyNightPreset(SkySettings& sky, const std::string& preset)
+{
+    if (preset == "cool")
+    {
+        sky.StarWarmColor = {0.72f, 0.82f, 1.0f};
+        sky.StarCoolColor = {0.38f, 0.62f, 1.0f};
+        sky.MilkyWayColor = {0.16f, 0.30f, 0.95f};
+    }
+    else if (preset == "warm")
+    {
+        sky.StarWarmColor = {1.0f, 0.48f, 0.20f};
+        sky.StarCoolColor = {1.0f, 0.86f, 0.62f};
+        sky.MilkyWayColor = {0.72f, 0.24f, 0.18f};
+    }
+    else if (preset == "fantasy")
+    {
+        sky.StarWarmColor = {1.0f, 0.42f, 0.86f};
+        sky.StarCoolColor = {0.38f, 0.88f, 1.0f};
+        sky.MilkyWayColor = {0.64f, 0.18f, 1.0f};
+    }
+}
 
 void AddProceduralMaterialGrid(Scene& scene, const std::shared_ptr<MeshData>& sphereMesh)
 {
@@ -59,19 +82,209 @@ void AddShadowStressScene(Scene& scene)
     }
 }
 
+void AddShowcaseObjects(Scene& scene, const std::shared_ptr<MeshData>& cube, float centerZ)
+{
+    Material neutral;
+    neutral.Albedo = {0.42f, 0.45f, 0.50f};
+    neutral.Roughness = 0.55f;
+    for (float centerX : {-7.0f, 7.0f})
+    {
+        for (int i = -1; i <= 1; ++i)
+        {
+            glm::mat4 transform = glm::translate(glm::mat4(1.0f), {centerX + i * 2.3f, 0.5f + (i + 1) * 0.45f, centerZ});
+            transform = glm::scale(transform, {0.7f, 1.5f + (i + 1) * 0.45f, 0.7f});
+            scene.AddInstance(cube, neutral, transform);
+        }
+    }
+}
+
+void PopulateLocalLightShowcase(Application& app, const SandboxSceneConfig& config)
+{
+    Scene& scene = app.GetScene();
+    scene.Sun.Intensity = 0.0f;
+    scene.Sun.CastsShadows = false;
+    scene.Sky.SkyIntensity = 0.10f;
+    scene.Fog.Enabled = false;
+    scene.PostProcess.Exposure = 1.45f;
+    scene.PostProcess.AutoExposure = false;
+    scene.Shadows.LogPerformance = config.ShadowBenchmark;
+
+    const auto plane = std::make_shared<MeshData>(primitives::MakePlane(55.0f, 1));
+    const auto cube = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    const auto sphere = std::make_shared<MeshData>(primitives::MakeSphere(0.28f, 20, 20));
+    const auto cookie = textures::MakeLightCookie();
+
+    Material floor;
+    floor.Albedo = {0.32f, 0.34f, 0.37f};
+    floor.Roughness = 0.72f;
+    floor.AlbedoMap = textures::MakeChecker(256, 16, {0.26f, 0.27f, 0.30f}, {0.39f, 0.40f, 0.43f});
+    scene.AddInstance(plane, floor, glm::mat4(1.0f));
+
+    AddShowcaseObjects(scene, cube, 9.0f);
+    AddShowcaseObjects(scene, cube, 0.0f);
+    AddShowcaseObjects(scene, cube, -9.0f);
+
+    const auto addEmitter = [&](glm::vec3 position, glm::vec3 color, glm::vec3 scale) {
+        Material emitter;
+        emitter.Albedo = color;
+        emitter.Emissive = color * 8.0f;
+        emitter.Roughness = 0.35f;
+        glm::mat4 transform = glm::translate(glm::mat4(1.0f), position);
+        transform = glm::scale(transform, scale);
+        scene.AddInstance(scale.x == scale.y && scale.y == scale.z ? sphere : cube, emitter, transform);
+        scene.Instances().back().CastsShadows = false;
+    };
+
+    for (int side : {-1, 1})
+    {
+        PointLight point;
+        point.Position = {side * 7.0f, 4.2f, 9.0f};
+        point.Color = {1.0f, 0.28f, 0.12f};
+        point.Intensity = 650.0f;
+        point.Radius = 11.0f;
+        point.CastsShadows = side < 0;
+        point.Cookie = cookie;
+        scene.AddPointLight(point);
+        addEmitter(point.Position, point.Color, {1, 1, 1});
+
+        SpotLight spot;
+        spot.Position = {side * 7.0f, 6.0f, 2.0f};
+        spot.Direction = glm::normalize(glm::vec3(0, -1, -0.30f));
+        spot.Color = {0.15f, 0.42f, 1.0f};
+        spot.Intensity = 1100.0f;
+        spot.Range = 16.0f;
+        spot.InnerConeDeg = 18.0f;
+        spot.OuterConeDeg = 32.0f;
+        spot.CastsShadows = side < 0;
+        spot.Cookie = cookie;
+        scene.AddSpotLight(spot);
+        addEmitter(spot.Position, spot.Color, {0.7f, 0.35f, 0.7f});
+
+        AreaLight area;
+        area.Position = {side * 7.0f, 6.0f, -9.0f};
+        area.Direction = {0, -1, 0};
+        area.Up = {0, 0, -1};
+        area.Color = {0.22f, 1.0f, 0.38f};
+        area.Intensity = 950.0f;
+        area.Range = 15.0f;
+        area.Size = {4.0f, 1.5f};
+        area.Softness = {0.20f, 0.28f};
+        area.BarnAngleDeg = 42.0f;
+        area.CastsShadows = side < 0;
+        area.Cookie = cookie;
+        scene.AddAreaLight(area);
+        addEmitter(area.Position, area.Color, {2.0f, 0.15f, 0.75f});
+    }
+
+    Camera& camera = app.GetCamera();
+    camera.Position = {0.0f, 11.0f, 28.0f};
+    camera.Yaw = -90.0f;
+    camera.Pitch = -18.0f;
+}
+
+void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config)
+{
+    Scene& scene = app.GetScene();
+    scene.Environment.Hdri = environments::LoadHdrFromFile(config.HdriPath);
+    scene.Environment.Source = EnvironmentSource::EquirectangularHdr;
+    scene.Environment.ExposureEV = -0.5f;
+    scene.Environment.BackgroundExposureEV = -0.75f;
+    scene.Environment.RotationDegrees = 15.0f;
+    scene.Sun.Intensity = 0.0f;
+    scene.Sun.CastsShadows = false;
+    scene.Fog.Enabled = false;
+    scene.PostProcess.AutoExposure = false;
+    scene.PostProcess.Exposure = 1.25f;
+    scene.PostProcess.BloomStrength = 0.08f;
+
+    const auto plane = std::make_shared<MeshData>(primitives::MakePlane(30.0f, 1));
+    const auto cube = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    const auto sphere = std::make_shared<MeshData>(primitives::MakeSphere(1.0f, 64, 64));
+
+    Material floor;
+    floor.Albedo = {0.18f, 0.19f, 0.21f};
+    floor.Roughness = 0.42f;
+    scene.AddInstance(plane, floor, glm::translate(glm::mat4(1.0f), {0.0f, -1.0f, 0.0f}));
+
+    Material pedestal;
+    pedestal.Albedo = {0.24f, 0.25f, 0.27f};
+    pedestal.Metallic = 0.05f;
+    pedestal.Roughness = 0.28f;
+    glm::mat4 pedestalTransform = glm::translate(glm::mat4(1.0f), {0.0f, -0.65f, 0.0f});
+    pedestalTransform = glm::scale(pedestalTransform, {2.2f, 0.35f, 2.2f});
+    scene.AddInstance(cube, pedestal, pedestalTransform);
+
+    const glm::vec3 colors[] = {{0.92f, 0.20f, 0.10f}, {0.92f, 0.72f, 0.25f}, {0.72f, 0.76f, 0.82f}};
+    const glm::vec3 positions[] = {{-4.4f, 0.15f, -2.0f}, {-2.5f, 0.15f, -2.3f}, {3.5f, 0.15f, -2.0f}};
+    const float metallic[] = {0.0f, 1.0f, 1.0f};
+    const float roughness[] = {0.18f, 0.08f, 0.48f};
+    for (int i = 0; i < 3; ++i)
+    {
+        Material material;
+        material.Albedo = colors[i];
+        material.Metallic = metallic[i];
+        material.Roughness = roughness[i];
+        const glm::vec3 position = positions[i];
+        scene.AddInstance(sphere, material, glm::translate(glm::mat4(1.0f), position));
+    }
+
+    glm::mat4 bottleTransform = glm::translate(glm::mat4(1.0f), {0.0f, 0.48f, 0.2f});
+    bottleTransform = glm::scale(bottleTransform, glm::vec3(13.0f));
+    LoadGltfScene(std::string(ENGINE_ASSET_DIR) + "/WaterBottle.glb", scene, bottleTransform);
+
+    Camera& camera = app.GetCamera();
+    camera.Position = {0.0f, 1.7f, 8.0f};
+    camera.Yaw = -90.0f;
+    camera.Pitch = -10.0f;
+}
+
 } // namespace
 
 void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config)
 {
+    if (config.HdriStudio)
+    {
+        PopulateHdriStudio(app, config);
+        return;
+    }
+    if (config.LocalLightShowcase)
+    {
+        PopulateLocalLightShowcase(app, config);
+        return;
+    }
     Scene& scene = app.GetScene();
-    scene.Sun.Direction = glm::normalize(glm::vec3(-0.35f, -0.65f, -0.25f));
+    const float sunAzimuth = glm::radians(config.SunAzimuthDegrees);
+    const float sunElevation = glm::radians(config.SunElevationDegrees);
+    const glm::vec3 toSun{
+        std::cos(sunElevation) * std::cos(sunAzimuth),
+        std::sin(sunElevation),
+        std::cos(sunElevation) * std::sin(sunAzimuth)};
+    scene.Sun.Direction = -toSun;
     scene.Sun.Color = {1.0f, 0.95f, 0.85f};
     scene.Sun.Intensity = 7.0f;
     scene.Sky.SkyIntensity = 0.45f;
+    scene.Sky.StarDensity = glm::clamp(config.StarDensity, 0.0f, 0.05f);
+    scene.Sky.StarIntensity = glm::max(config.StarIntensity, 0.0f);
+    scene.Sky.StarSize = glm::clamp(config.StarSize, 0.25f, 4.0f);
+    scene.Sky.StarTwinkle = glm::clamp(config.StarTwinkle, 0.0f, 1.0f);
+    scene.Sky.MilkyWayIntensity = glm::max(config.MilkyWayIntensity, 0.0f);
+    scene.Sky.NightSkyIntensity = glm::max(config.NightSkyIntensity, 0.0f);
+    scene.Sky.NightHorizonGlow = glm::max(config.NightHorizonGlow, 0.0f);
+    scene.Sky.StarTwinkleSpeed = glm::max(config.StarTwinkleSpeed, 0.0f);
+    scene.Sky.NightSkyRotationSpeed = config.NightSkyRotationSpeed;
+    scene.Sky.StarsEnabled = config.StarsEnabled;
+    scene.Sky.MilkyWayEnabled = config.MilkyWayEnabled;
+    scene.Sky.AnimateNightSky = config.AnimateNightSky;
+    ApplyNightPreset(scene.Sky, config.NightPreset);
     scene.PostProcess.Exposure = 1.7f;
     scene.PostProcess.AutoExposure = true;
     scene.Shadows.DebugCascades = config.ShadowDebug;
     scene.Shadows.LogPerformance = config.ShadowBenchmark;
+    if (!config.HdriPath.empty())
+    {
+        scene.Environment.Hdri = environments::LoadHdrFromFile(config.HdriPath);
+        scene.Environment.Source = EnvironmentSource::EquirectangularHdr;
+    }
 
     auto sphereMesh = std::make_shared<MeshData>(primitives::MakeSphere(0.9f, 48, 48));
     auto planeMesh = std::make_shared<MeshData>(primitives::MakePlane(config.ShadowStress ? 180.0f : 40.0f, 1));

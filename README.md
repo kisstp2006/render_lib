@@ -11,14 +11,23 @@ Current feature set (OpenGL backend):
 - **HDR pipeline**: MSAA RGBA16F scene target, resolve, post pass to backbuffer
 - **PBR**: Cook-Torrance GGX with the same D/G/F terms as VRF's `pbr.slang`;
   albedo/normal/MRAO texture maps (Source 2 channel convention) + scalars
-- **IBL**: procedural HDR sky baked to a cubemap, irradiance convolution,
-  GGX-prefiltered specular mips, split-sum BRDF LUT (VRF `EnvBRDF` shape);
-  re-baked automatically whenever the sun/sky settings change
-- **Lights**: directional sun, point lights, Source 2-style spots with
-  inner/outer cone (see VRF `SceneLight`); the first shadow-casting spot gets
-  a 2048 px perspective shadow map — the sandbox binds it to `F` as a
-  camera-attached flashlight
-- **Local shadows**: 2048 px perspective shadow map for the first shadow-casting spot
+- **IBL**: procedural sky or linear Radiance `.hdr` equirectangular panorama
+  converted to a cubemap, irradiance convolution, GGX-prefiltered specular
+  mips and split-sum BRDF LUT (VRF `EnvBRDF` shape); cached CPU/GPU source
+  data and key-based re-baking only when an IBL input changes. The low-
+  resolution procedural IBL cubemap is never displayed as the background;
+  the visible procedural sky is evaluated directly at screen resolution.
+- **Procedural sun**: screen-resolution anti-aliased HDR disk and halo driven
+  by the same directional-light vector as direct lighting and CSM shadows
+- **Day/night sky**: solar-elevation-driven sunset and civil/nautical/
+  astronomical twilight, warm fading direct sun, dark night IBL and a stable
+  procedural HDR star field; artist controls cover night brightness/horizon,
+  star density/intensity/size/twinkle and procedural Milky Way color/strength
+- **Local lights**: up to 8 point, 4 spot and 4 Source 2 barn/rect-inspired
+  area lights with finite-luminaire response, soft rectangular edges and
+  per-light cookies
+- **Local shadows**: up to 4 omnidirectional point shadows in a cubemap array;
+  all active spot and area shadows packed into a shared 4096 px atlas
 - **Cascaded sun shadows**: four camera-fitted, texel-stabilized cascades with
   logarithmic/linear split blending, PCF, transition blending and a debug view
 - **Gradient fog**: distance x height ramps with exponents, mirroring VRF's
@@ -108,12 +117,40 @@ Run with `--vulkan` to use the Vulkan backend once it's further along
 (currently it only proves out the swapchain round-trip with a clear color).
 Run with `--sample-gltf` for the bundled Khronos Water Bottle, or with
 `--gltf path/to/scene.glb` to load another static glTF 2.0 scene.
+Use `--hdri path/to/environment.hdr` with any scene, or `--hdri-studio` for
+the bundled CC0 Poly Haven product-lighting showcase.
+Use `--day-night-showcase` for an automatically rotating directional light
+and a complete day/sunset/twilight/starry-night/sunrise loop. Its default
+cycle is 24 seconds; override it with `--day-night-seconds N`.
 
 **Controls:** right-click + mouse to look around, WASD to move, Q/E for
 down/up, hold Shift to move faster. I/K/J/L move the sun (sky + IBL re-bake
 live), F toggles the flashlight, C toggles cascade debug colors, F12 saves a
 PNG render into `renders/`. `--shadow-stress --shadow-benchmark` runs the CSM
-stress scene with asynchronous GPU timing.
+stress scene with asynchronous GPU timing. `--light-showcase` displays point,
+spot and barn/area lights side by side, with shadowed examples on the left and
+unshadowed examples on the right. In this showcase, T toggles shadows for all
+three right-side lights while the left-side reference remains shadowed. When
+an HDRI is loaded, H switches between it and the procedural sky, `[`/`]`
+rotate it by 15 degrees, and `-`/`=` change IBL exposure by 0.25 EV.
+For deterministic sky tests, `--sun-azimuth degrees` and
+`--sun-elevation degrees` set the initial procedural-sun position; I/K can
+move the sun down to -30 degrees for a complete sunset-to-night transition.
+In the automatic showcase, P pauses/resumes time and comma/period halve or
+double the cycle speed. The visible sun, direct light and CSM move every
+frame, while direction-only IBL rebuilds are throttled to 350 ms.
+Night-sky controls in the same showcase are B for stars, N for the Milky Way,
+M to freeze/resume sky rotation and R to cycle natural/cool/warm/fantasy color
+presets. Up/down change star density, while left/right change star intensity.
+
+Night-sky command-line overrides are `--star-density`, `--star-intensity`,
+`--star-size`, `--star-twinkle`, `--milky-way`, `--night-brightness` and
+`--night-horizon-glow`. Animation and appearance can also be configured with
+`--star-twinkle-speed`, `--night-sky-speed`, and `--night-preset` (natural,
+cool, warm or fantasy). `--no-stars`, `--no-milky-way` and
+`--static-night-sky` disable the corresponding effects. The same switches,
+colors and numeric values are available to applications through `Scene::Sky`
+(`SkySettings`) without depending on the OpenGL backend.
 
 ## Roadmap
 
@@ -124,20 +161,22 @@ Rough order, each step buildable/testable on its own:
    renders of real content".
 2. **Cascaded shadow maps** — complete: four stabilized cascades, blended
    transitions, PCF, debug visualization and GPU benchmark mode.
-3. **HDR equirect environment loading** (stb_image supports .hdr) as an
-   alternative to the procedural sky for studio-style product renders.
+3. **HDR equirect environment loading** — complete: linear float Radiance HDR
+   loading, cubemap conversion, irradiance/GGX bake, yaw and separate IBL/
+   background exposure, source switching, caching, diagnostics and a CC0
+   studio product-render test scene.
 4. **Color grading LUT + FXAA/TAA** to finish the Source 2 post stack — see
    `ValveResourceFormat/Renderer/Shaders/post_processing.frag.slang`
    (`g_tColorCorrectionLUT`) for the reference behavior.
 5. **Vulkan PBR parity** — shader modules (compile the GLSL to SPIR-V at
    build time via `glslang`/`glslc`), pipeline + descriptor layout, depth
    buffer, shadow pass — matching what `GLRenderBackend` already does.
-6. **More local-light features**: shadow maps for all spots (atlas), light
-   cookies/projected textures, barn-door area lights (VRF `lighting.barn`).
+6. **More local-light features** — complete: point cubemap shadows, shared
+   spot/area shadow atlas, cookie atlas and Source 2-style barn/rect area lights.
 7. Only *then* revisit whether a shared RHI abstraction actually pays for
    itself between the two backends.
 
-Done so far: HDR+MSAA pipeline, IBL (irradiance/prefilter/BRDF LUT),
+Done so far: HDR+MSAA pipeline, procedural/HDRI IBL (irradiance/prefilter/BRDF LUT),
 sun shadow mapping with PCF, Jimenez bloom, VRF-parameterized Uncharted
 tonemap, textured materials with normal mapping, PNG capture, static glTF/GLB
 scene loading with the CC0 Khronos Water Bottle sample.
