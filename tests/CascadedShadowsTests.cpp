@@ -1,11 +1,16 @@
 #include "engine/core/Camera.h"
 #include "engine/render/CascadedShadows.h"
+#include "engine/render/TemporalAA.h"
+#include "engine/scene/ColorGrading.h"
 #include "engine/scene/Texture.h"
 #include "engine/scene/Environment.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <stdexcept>
 
 #include <glm/gtc/epsilon.hpp>
 
@@ -187,6 +192,84 @@ void TestDayNightTransitions()
             "sun below astronomical twilight must produce full night");
 }
 
+void TestColorGradingLut()
+{
+    const auto identity = color_grading::MakeIdentity(4);
+    Require(identity->Values.size() == 64, "identity LUT must contain size^3 samples");
+    Require(glm::all(glm::epsilonEqual(identity->Values.front(), glm::vec3(0.0f), 1e-6f)),
+            "identity LUT must begin at black");
+    Require(glm::all(glm::epsilonEqual(identity->Values.back(), glm::vec3(1.0f), 1e-6f)),
+            "identity LUT must end at white");
+    Require(identity->Values[1].r > identity->Values[0].r && identity->Values[1].g == 0.0f,
+            "LUT storage must use red-fastest .cube/OpenGL ordering");
+
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "renderer_test_lut.cube";
+    {
+        std::ofstream file(path);
+        file << "TITLE \"test\"\nLUT_3D_SIZE 2\nDOMAIN_MIN -1 0 0\nDOMAIN_MAX 1 2 3\n"
+             << "0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    }
+    const auto loaded = color_grading::LoadCube(path.string());
+    Require(loaded->Size == 2 && loaded->Values.size() == 8, ".cube loader must preserve dimensions and samples");
+    Require(loaded->DomainMin.x == -1.0f && loaded->DomainMax.z == 3.0f,
+            ".cube loader must preserve input domain metadata");
+    std::filesystem::remove(path);
+
+    const std::filesystem::path malformedPath = std::filesystem::temp_directory_path() / "renderer_bad_lut.cube";
+    {
+        std::ofstream file(malformedPath);
+        file << "LUT_3D_SIZE 2\n0 0 0\n";
+    }
+    bool malformedReported = false;
+    try
+    {
+        color_grading::LoadCube(malformedPath.string());
+    }
+    catch (const std::runtime_error& error)
+    {
+        malformedReported = std::string(error.what()).find("expected 8 RGB samples") != std::string::npos;
+    }
+    std::filesystem::remove(malformedPath);
+    Require(malformedReported, "malformed .cube files must report the expected sample count");
+
+    bool usefulError = false;
+    try
+    {
+        color_grading::LoadCube(path.string());
+    }
+    catch (const std::runtime_error& error)
+    {
+        usefulError = std::string(error.what()).find(path.string()) != std::string::npos;
+    }
+    Require(usefulError, "missing .cube files must report the asset path");
+}
+
+void TestTemporalSamplingAndCuts()
+{
+    glm::vec2 average(0.0f);
+    for (uint64_t i = 0; i < 8; ++i)
+    {
+        const glm::vec2 jitter = TemporalJitterPixels(i);
+        Require(glm::all(glm::greaterThanEqual(jitter, glm::vec2(-0.5f)))
+                    && glm::all(glm::lessThan(jitter, glm::vec2(0.5f))),
+                "Halton jitter must remain inside one centered pixel");
+        average += jitter;
+    }
+    average /= 8.0f;
+    Require(glm::length(average) < 0.12f, "the temporal jitter cycle must remain approximately centered");
+
+    const glm::mat4 projection(1.0f);
+    const glm::mat4 jittered = ApplyProjectionJitter(projection, {0.5f, -0.5f}, 100, 50);
+    Require(std::abs(jittered[2][0] - 0.01f) < 1e-6f && std::abs(jittered[2][1] + 0.02f) < 1e-6f,
+            "projection jitter must convert pixel offsets to NDC");
+    Require(!IsTemporalCameraCut({0, 0, 0}, {0.1f, 0, 0}, {0, 0, -1}, {0.01f, 0, -1}, 60, 60),
+            "ordinary camera motion must preserve TAA history");
+    Require(IsTemporalCameraCut({0, 0, 0}, {10, 0, 0}, {0, 0, -1}, {0, 0, -1}, 60, 60),
+            "camera teleports must invalidate TAA history");
+    Require(IsTemporalCameraCut({0, 0, 0}, {0, 0, 0}, {0, 0, -1}, {0, 0, 1}, 60, 60),
+            "large view rotations must invalidate TAA history");
+}
+
 } // namespace
 
 int main()
@@ -197,6 +280,8 @@ int main()
     TestProceduralLightCookie();
     TestHdrEnvironmentLoadingAndCache();
     TestDayNightTransitions();
-    std::puts("Cascaded shadow tests passed");
+    TestColorGradingLut();
+    TestTemporalSamplingAndCuts();
+    std::puts("Renderer tests passed");
     return EXIT_SUCCESS;
 }

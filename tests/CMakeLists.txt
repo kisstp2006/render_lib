@@ -8,4 +8,4 @@ else()
     target_compile_options(engine_tests PRIVATE -Wall -Wextra)
 endif()
 
-add_test(NAME engine_cascaded_shadows COMMAND engine_tests)
+add_test(NAME engine_renderer_core COMMAND engine_tests)

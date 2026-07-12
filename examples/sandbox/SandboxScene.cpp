@@ -1,6 +1,7 @@
 #include "SandboxScene.h"
 
 #include "engine/core/Application.h"
+#include "engine/scene/ColorGrading.h"
 #include "engine/scene/GltfLoader.h"
 #include "engine/scene/Mesh.h"
 #include "engine/scene/Scene.h"
@@ -8,12 +9,41 @@
 
 #include <cmath>
 #include <memory>
+#include <stdexcept>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 using namespace engine;
 
 namespace {
+
+void ApplyPostConfig(Scene& scene, const SandboxSceneConfig& config)
+{
+    if (config.AntiAliasing == "none")
+        scene.PostProcess.AntiAliasing = AntiAliasingMode::None;
+    else if (config.AntiAliasing == "fxaa")
+        scene.PostProcess.AntiAliasing = AntiAliasingMode::Fxaa;
+    else if (config.AntiAliasing == "taa")
+        scene.PostProcess.AntiAliasing = AntiAliasingMode::Taa;
+    else
+        throw std::runtime_error("Unknown anti-aliasing mode '" + config.AntiAliasing
+                                 + "' (expected none, fxaa or taa)");
+
+    if (!config.ColorLutPath.empty())
+        scene.PostProcess.ColorLut = color_grading::LoadCube(config.ColorLutPath);
+    else if (config.CinematicLut || config.PostShowcase)
+        scene.PostProcess.ColorLut = color_grading::MakeCinematic();
+    scene.PostProcess.ColorLutWeight = scene.PostProcess.ColorLut
+        ? glm::clamp(config.ColorLutWeight, 0.0f, 1.0f) : 0.0f;
+    scene.PostProcess.LogPerformance = config.PostBenchmark;
+    scene.PostProcess.FxaaSubpixel = glm::clamp(config.FxaaSubpixel, 0.0f, 1.0f);
+    scene.PostProcess.FxaaEdgeThreshold = glm::clamp(config.FxaaEdgeThreshold, 0.0312f, 0.333f);
+    scene.PostProcess.FxaaEdgeThresholdMin = glm::clamp(config.FxaaEdgeThresholdMin, 0.0f, 0.0833f);
+    scene.PostProcess.TaaHistoryWeight = glm::clamp(config.TaaHistoryWeight, 0.0f, 0.98f);
+    scene.PostProcess.TaaSharpen = glm::clamp(config.TaaSharpen, 0.0f, 1.0f);
+    scene.PostProcess.TaaJitterScale = glm::clamp(config.TaaJitterScale, 0.0f, 2.0f);
+    scene.PostProcess.TaaDepthThreshold = glm::clamp(config.TaaDepthThreshold, 0.00001f, 0.1f);
+}
 
 void ApplyNightPreset(SkySettings& sky, const std::string& preset)
 {
@@ -182,6 +212,76 @@ void PopulateLocalLightShowcase(Application& app, const SandboxSceneConfig& conf
     camera.Pitch = -18.0f;
 }
 
+void PopulatePostShowcase(Application& app, const SandboxSceneConfig&)
+{
+    Scene& scene = app.GetScene();
+    scene.Sun.Direction = glm::normalize(glm::vec3(-0.45f, -0.85f, -0.30f));
+    scene.Sun.Intensity = 6.0f;
+    scene.Sky.SkyIntensity = 0.38f;
+    scene.Fog.Enabled = false;
+    scene.PostProcess.Exposure = 1.55f;
+    scene.PostProcess.AutoExposure = false;
+    scene.PostProcess.BloomStrength = 0.08f;
+
+    const auto plane = std::make_shared<MeshData>(primitives::MakePlane(35.0f, 1));
+    const auto cube = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    const auto sphere = std::make_shared<MeshData>(primitives::MakeSphere(0.8f, 48, 48));
+
+    Material floor;
+    floor.Albedo = {0.30f, 0.32f, 0.36f};
+    floor.Roughness = 0.72f;
+    floor.AlbedoMap = textures::MakeChecker(512, 32, {0.08f, 0.09f, 0.11f}, {0.72f, 0.74f, 0.78f});
+    scene.AddInstance(plane, floor, glm::mat4(1.0f));
+
+    Material dark;
+    dark.Albedo = {0.025f, 0.035f, 0.055f};
+    dark.Metallic = 0.65f;
+    dark.Roughness = 0.24f;
+    for (int i = -6; i <= 6; ++i)
+    {
+        glm::mat4 transform = glm::translate(glm::mat4(1.0f), {i * 0.72f, 1.65f, -1.5f});
+        transform = glm::rotate(transform, glm::radians(i * 4.0f), glm::vec3(0, 1, 0));
+        transform = glm::scale(transform, {0.075f, 3.3f, 0.55f});
+        scene.AddInstance(cube, dark, transform);
+    }
+
+    Material chrome;
+    chrome.Albedo = {0.82f, 0.20f, 0.06f};
+    chrome.Metallic = 0.82f;
+    chrome.Roughness = 0.16f;
+    scene.AddInstance(sphere, chrome, glm::translate(glm::mat4(1.0f), {-3.4f, 1.0f, 1.2f}));
+
+    // Kept as the last instance so SandboxControls can animate it. Its stable
+    // TemporalId verifies object-motion vectors independently of camera motion.
+    Material moving;
+    moving.Albedo = {0.08f, 0.35f, 0.95f};
+    moving.Metallic = 0.35f;
+    moving.Roughness = 0.22f;
+    moving.Emissive = {0.02f, 0.12f, 0.65f};
+    glm::mat4 movingTransform = glm::translate(glm::mat4(1.0f), {2.2f, 1.1f, 1.1f});
+    movingTransform = glm::scale(movingTransform, {0.7f, 1.1f, 0.7f});
+    scene.AddInstance(cube, moving, movingTransform);
+
+    PointLight warm;
+    warm.Position = {-4.5f, 5.5f, 4.0f};
+    warm.Color = {1.0f, 0.35f, 0.12f};
+    warm.Intensity = 460.0f;
+    warm.Radius = 14.0f;
+    scene.AddPointLight(warm);
+
+    PointLight cool;
+    cool.Position = {4.5f, 3.5f, 2.0f};
+    cool.Color = {0.12f, 0.35f, 1.0f};
+    cool.Intensity = 330.0f;
+    cool.Radius = 12.0f;
+    scene.AddPointLight(cool);
+
+    Camera& camera = app.GetCamera();
+    camera.Position = {0.0f, 3.2f, 10.5f};
+    camera.Yaw = -90.0f;
+    camera.Pitch = -10.0f;
+}
+
 void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config)
 {
     Scene& scene = app.GetScene();
@@ -242,6 +342,12 @@ void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config)
 
 void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config)
 {
+    ApplyPostConfig(app.GetScene(), config);
+    if (config.PostShowcase)
+    {
+        PopulatePostShowcase(app, config);
+        return;
+    }
     if (config.HdriStudio)
     {
         PopulateHdriStudio(app, config);

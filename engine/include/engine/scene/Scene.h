@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -15,6 +16,7 @@ namespace engine {
 
 struct MeshInstance
 {
+    uint64_t TemporalId = 0;
     std::shared_ptr<MeshData> Mesh;
     Material Mat;
     glm::mat4 Transform{1.0f};
@@ -51,6 +53,7 @@ public:
     void AddAreaLight(const AreaLight& light);
 
 private:
+    uint64_t m_nextTemporalId = 1;
     std::vector<MeshInstance> m_instances;
     std::vector<PointLight> m_pointLights;
     std::vector<SpotLight> m_spotLights;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,7 @@
 #include "engine/backend/gl/GLShader.h"
 #include "engine/backend/gl/GLTexture.h"
 #include "engine/render/CascadedShadows.h"
+#include "engine/scene/RenderSettings.h"
 
 namespace engine {
 
@@ -32,7 +34,11 @@ private:
     void InitShadowMap();
     void CreateSceneTargets(int width, int height);
     void DestroySceneTargets();
-    void RenderBloom(float threshold, float exposure);
+    void RenderBloom(unsigned int sourceTexture, float threshold, float exposure);
+    unsigned int ResolveTemporalAA(const Scene& scene, const Camera& camera,
+                                   const glm::mat4& view, const glm::mat4& projection,
+                                   const glm::mat4& jitteredViewProjection);
+    unsigned int GetOrCreateColorLut(const std::shared_ptr<ColorGradingLutData>& data);
     void SaveScreenshot();
     void InitLocalLightResources();
     void DestroyLocalLightResources();
@@ -54,6 +60,8 @@ private:
     std::unique_ptr<GLShader> m_skyShader;
     std::unique_ptr<GLShader> m_bloomDownShader;
     std::unique_ptr<GLShader> m_bloomUpShader;
+    std::unique_ptr<GLShader> m_taaShader;
+    std::unique_ptr<GLShader> m_fxaaShader;
     std::unique_ptr<GLShader> m_postShader;
 
     std::unique_ptr<GLEnvironment> m_environment;
@@ -113,6 +121,14 @@ private:
     float m_localShadowMaxMs = 0.0f;
     int m_localShadowSamples = 0;
 
+    unsigned int m_postTimeQueries[2]{};
+    int m_postQueryIndex = 0;
+    int m_postQueryFrames = 0;
+    float m_postGpuTotalMs = 0.0f;
+    float m_postGpuMinMs = 1.0e9f;
+    float m_postGpuMaxMs = 0.0f;
+    int m_postGpuSamples = 0;
+
     // Auto-exposure state
     float m_autoExposure = 1.0f;
     double m_lastFrameTime = 0.0;
@@ -123,9 +139,29 @@ private:
     // MSAA HDR scene target + resolve texture
     unsigned int m_msaaFbo = 0;
     unsigned int m_msaaColorRbo = 0;
+    unsigned int m_msaaVelocityRbo = 0;
     unsigned int m_msaaDepthRbo = 0;
     unsigned int m_resolveFbo = 0;
     unsigned int m_hdrColorTex = 0;
+    unsigned int m_velocityTex = 0;
+    unsigned int m_depthTex = 0;
+
+    std::array<unsigned int, 2> m_taaFbos{};
+    std::array<unsigned int, 2> m_taaHistoryColor{};
+    std::array<unsigned int, 2> m_taaHistoryDepth{};
+    int m_taaHistoryIndex = 0;
+    bool m_taaHistoryValid = false;
+    uint64_t m_taaFrameIndex = 0;
+    AntiAliasingMode m_previousAaMode = AntiAliasingMode::None;
+    glm::mat4 m_previousViewProjection{1.0f};
+    glm::vec3 m_previousCameraPosition{0.0f};
+    glm::vec3 m_previousCameraForward{0.0f, 0.0f, -1.0f};
+    float m_previousCameraFov = 60.0f;
+    const Scene* m_previousScene = nullptr;
+    std::unordered_map<uint64_t, glm::mat4> m_previousTransforms;
+
+    unsigned int m_postFbo = 0;
+    unsigned int m_postColorTex = 0;
 
     struct BloomLevel
     {
@@ -147,6 +183,7 @@ private:
     // after the original shared_ptr was released.
     std::unordered_map<std::shared_ptr<MeshData>, std::unique_ptr<GLMesh>> m_meshCache;
     std::unordered_map<std::shared_ptr<TextureData>, std::unique_ptr<GLTexture>> m_textureCache;
+    std::unordered_map<std::shared_ptr<ColorGradingLutData>, unsigned int> m_colorLutCache;
 };
 
 } // namespace engine

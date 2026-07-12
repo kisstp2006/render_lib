@@ -49,6 +49,8 @@ void GLRenderBackend::Init(Window& window)
     m_skyShader = std::make_unique<GLShader>(shaderDir + "/gl/sky.vert", shaderDir + "/gl/sky.frag");
     m_bloomDownShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/bloom_downsample.frag");
     m_bloomUpShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/bloom_upsample.frag");
+    m_taaShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/taa_resolve.frag");
+    m_fxaaShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/fxaa.frag");
     m_postShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/post.frag");
     m_environment = std::make_unique<GLEnvironment>(shaderDir);
 
@@ -70,11 +72,15 @@ void GLRenderBackend::Init(Window& window)
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glGenQueries(2, m_shadowTimeQueries);
     glGenQueries(2, m_localShadowTimeQueries);
+    glGenQueries(2, m_postTimeQueries);
     log::Info("GL renderer initialized (HDR + MSAA + IBL + bloom)");
 }
 
 void GLRenderBackend::Shutdown()
 {
+    for (const auto& [data, texture] : m_colorLutCache)
+        glDeleteTextures(1, &texture);
+    m_colorLutCache.clear();
     m_meshCache.clear();
     m_textureCache.clear();
     m_defaultWhite.reset();
@@ -86,6 +92,8 @@ void GLRenderBackend::Shutdown()
     m_skyShader.reset();
     m_bloomDownShader.reset();
     m_bloomUpShader.reset();
+    m_taaShader.reset();
+    m_fxaaShader.reset();
     m_postShader.reset();
     DestroySceneTargets();
     DestroyLocalLightResources();
@@ -96,6 +104,7 @@ void GLRenderBackend::Shutdown()
     glDeleteBuffers(2, m_exposurePbos);
     glDeleteQueries(2, m_shadowTimeQueries);
     glDeleteQueries(2, m_localShadowTimeQueries);
+    glDeleteQueries(2, m_postTimeQueries);
     m_exposurePbos[0] = m_exposurePbos[1] = 0;
 }
 

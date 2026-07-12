@@ -10,8 +10,11 @@ in vec3 vWorldPos;
 in vec3 vNormal;
 in vec4 vTangent;
 in vec2 vUV;
+in vec4 vCurrentClip;
+in vec4 vPreviousClip;
 
-out vec4 FragColor;
+layout(location = 0) out vec4 FragColor;
+layout(location = 1) out vec2 OutVelocity;
 
 uniform vec3 uCameraPos;
 uniform mat4 uView;
@@ -469,4 +472,7 @@ void main()
     ApplyGradientFog(color, vWorldPos);
 
     FragColor = vec4(color, 1.0);
+    vec2 currentUv = vCurrentClip.xy / max(vCurrentClip.w, 1e-6) * 0.5 + 0.5;
+    vec2 previousUv = vPreviousClip.xy / max(vPreviousClip.w, 1e-6) * 0.5 + 0.5;
+    OutVelocity = currentUv - previousUv;
 }

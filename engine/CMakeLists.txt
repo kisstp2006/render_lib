@@ -7,9 +7,11 @@ set(ENGINE_CORE_SOURCES
     src/scene/Mesh.cpp
     src/scene/Scene.cpp
     src/scene/Environment.cpp
+    src/scene/ColorGrading.cpp
     src/scene/Texture.cpp
     src/scene/GltfLoader.cpp
     src/render/CascadedShadows.cpp
+    src/render/TemporalAA.cpp
     src/third_party/StbImpl.cpp
     src/backend/gl/GLRenderBackend.Frame.cpp
     src/backend/gl/GLRenderBackend.Resources.cpp

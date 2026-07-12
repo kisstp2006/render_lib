@@ -1,6 +1,7 @@
 #include "engine/backend/gl/GLRenderBackend.h"
 #include "engine/core/Camera.h"
 #include "engine/core/Log.h"
+#include "engine/render/TemporalAA.h"
 #include "engine/scene/Scene.h"
 
 #include <glad/gl.h>
@@ -42,6 +43,29 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     m_environment->EnsureBaked(scene.Sun, scene.Sky, scene.Environment);
 
     const float aspect = m_height > 0 ? static_cast<float>(m_width) / static_cast<float>(m_height) : 1.0f;
+    const PostProcessSettings& pp = scene.PostProcess;
+    const bool taaActive = pp.Enabled && pp.AntiAliasing == AntiAliasingMode::Taa;
+    const bool temporalModeChanged = pp.AntiAliasing != m_previousAaMode;
+    const bool cameraCut = m_taaHistoryValid && IsTemporalCameraCut(
+        m_previousCameraPosition, camera.Position, m_previousCameraForward, camera.Forward(),
+        m_previousCameraFov, camera.FovDegrees);
+    if (temporalModeChanged || m_previousScene != &scene || cameraCut)
+    {
+        m_taaHistoryValid = false;
+        m_previousTransforms.clear();
+        m_taaFrameIndex = 0;
+    }
+    m_previousAaMode = pp.AntiAliasing;
+
+    const glm::mat4 view = camera.GetView();
+    const glm::mat4 baseProjection = camera.GetProjection(aspect);
+    const glm::vec2 jitter = taaActive ? TemporalJitterPixels(m_taaFrameIndex) : glm::vec2(0.0f);
+    const glm::mat4 proj = taaActive
+        ? ApplyProjectionJitter(baseProjection, jitter, m_width, m_height, pp.TaaJitterScale)
+        : baseProjection;
+    const glm::mat4 currentViewProjection = proj * view;
+    const glm::mat4 previousViewProjection = taaActive && m_taaHistoryValid
+        ? m_previousViewProjection : currentViewProjection;
     const glm::vec3 lightDir = glm::normalize(scene.Sun.Direction);
     const float sunElevation = glm::degrees(std::asin(glm::clamp(-lightDir.y, -1.0f, 1.0f)));
     const bool proceduralDayNight = scene.Environment.Source == EnvironmentSource::ProceduralSky
@@ -129,12 +153,11 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    const glm::mat4 view = camera.GetView();
-    const glm::mat4 proj = camera.GetProjection(aspect);
-
     m_pbrShader->Use();
     m_pbrShader->SetMat4("uView", view);
     m_pbrShader->SetMat4("uProj", proj);
+    m_pbrShader->SetMat4("uCurrentViewProjection", currentViewProjection);
+    m_pbrShader->SetMat4("uPreviousViewProjection", previousViewProjection);
     m_pbrShader->SetVec3("uCameraPos", camera.Position);
 
     m_pbrShader->SetVec3("uSunDirection", lightDir);
@@ -181,6 +204,10 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     for (const auto& instance : scene.Instances())
     {
         m_pbrShader->SetMat4("uModel", instance.Transform);
+        const auto previousTransform = instance.TemporalId != 0
+            ? m_previousTransforms.find(instance.TemporalId) : m_previousTransforms.end();
+        m_pbrShader->SetMat4("uPreviousModel", taaActive && m_taaHistoryValid
+            && previousTransform != m_previousTransforms.end() ? previousTransform->second : instance.Transform);
         m_pbrShader->SetMat4("uNormalMatrix", glm::transpose(glm::inverse(instance.Transform)));
 
         const Material& mat = instance.Mat;
@@ -215,6 +242,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     m_skyShader->Use();
     m_skyShader->SetMat4("uInvProj", glm::inverse(proj));
     m_skyShader->SetMat4("uInvView", glm::inverse(view));
+    m_skyShader->SetMat4("uPreviousViewProjection", previousViewProjection);
     m_environment->BindEnvironmentMap(0);
     m_skyShader->SetInt("uEnvMap", 0);
     m_skyShader->SetFloat("uBackgroundMultiplier", std::exp2(scene.Environment.BackgroundExposureEV));
@@ -257,7 +285,56 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     // --- Resolve MSAA -> HDR texture ---
     glBindFramebuffer(GL_READ_FRAMEBUFFER, m_msaaFbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_resolveFbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
     glBlitFramebuffer(0, 0, m_width, m_height, 0, 0, m_width, m_height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glReadBuffer(GL_COLOR_ATTACHMENT1);
+    glDrawBuffer(GL_COLOR_ATTACHMENT1);
+    glBlitFramebuffer(0, 0, m_width, m_height, 0, 0, m_width, m_height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBlitFramebuffer(0, 0, m_width, m_height, 0, 0, m_width, m_height, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+
+    bool postQueryActive = false;
+    if (pp.LogPerformance)
+    {
+        const int readQuery = (m_postQueryIndex + 1) % 2;
+        if (m_postQueryFrames > 0)
+        {
+            int available = 0;
+            glGetQueryObjectiv(m_postTimeQueries[readQuery], GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available)
+            {
+                unsigned long long nanoseconds = 0;
+                glGetQueryObjectui64v(m_postTimeQueries[readQuery], GL_QUERY_RESULT, &nanoseconds);
+                if (m_postQueryFrames > 10)
+                {
+                    const float milliseconds = static_cast<float>(nanoseconds) / 1'000'000.0f;
+                    m_postGpuTotalMs += milliseconds;
+                    m_postGpuMinMs = std::min(m_postGpuMinMs, milliseconds);
+                    m_postGpuMaxMs = std::max(m_postGpuMaxMs, milliseconds);
+                    ++m_postGpuSamples;
+                }
+            }
+        }
+        glBeginQuery(GL_TIME_ELAPSED, m_postTimeQueries[m_postQueryIndex]);
+        m_postQueryIndex = readQuery;
+        ++m_postQueryFrames;
+        postQueryActive = true;
+    }
+
+    unsigned int postSourceTexture = m_hdrColorTex;
+    if (taaActive)
+    {
+        postSourceTexture = ResolveTemporalAA(scene, camera, view, proj, currentViewProjection);
+        ++m_taaFrameIndex;
+    }
+    else
+    {
+        m_previousViewProjection = currentViewProjection;
+        m_previousCameraPosition = camera.Position;
+        m_previousCameraForward = camera.Forward();
+        m_previousCameraFov = camera.FovDegrees;
+        m_previousScene = &scene;
+    }
 
     // --- Auto-exposure (Source 2 tonemap controller style) ---
     // Average scene luminance from the top mip of the HDR resolve texture,
@@ -265,7 +342,6 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     // This is still a simple average rather than a percentile histogram, but
     // the double-buffered PBO readback keeps it off the current frame's CPU
     // critical path.
-    const PostProcessSettings& pp = scene.PostProcess;
     const double now = glfwGetTime();
     const float deltaTime = m_lastFrameTime > 0.0 ? static_cast<float>(now - m_lastFrameTime) : 0.016f;
     m_lastFrameTime = now;
@@ -313,16 +389,17 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
 
     // --- Bloom ---
     if (pp.Enabled && !m_bloomChain.empty())
-        RenderBloom(pp.BloomThreshold, effectiveExposure);
+        RenderBloom(postSourceTexture, pp.BloomThreshold, effectiveExposure);
 
-    // --- Post pass to backbuffer ---
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // --- Tonemap/color-grade pass; FXAA consumes an intermediate LDR image. ---
+    const bool fxaaActive = pp.Enabled && pp.AntiAliasing == AntiAliasingMode::Fxaa;
+    glBindFramebuffer(GL_FRAMEBUFFER, fxaaActive ? m_postFbo : 0);
     glViewport(0, 0, m_width, m_height);
     glDisable(GL_DEPTH_TEST);
 
     m_postShader->Use();
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_hdrColorTex);
+    glBindTexture(GL_TEXTURE_2D, postSourceTexture);
     m_postShader->SetInt("uSceneColor", 0);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, (pp.Enabled && !m_bloomChain.empty()) ? m_bloomChain[0].Texture : m_defaultWhite->Id());
@@ -333,6 +410,15 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     m_postShader->SetFloat("uSaturation", pp.Saturation);
     m_postShader->SetFloat("uContrast", pp.Contrast);
     m_postShader->SetVec3("uColorTint", pp.ColorTint);
+    const bool colorLutActive = pp.Enabled && pp.ColorLut && pp.ColorLutWeight > 0.0f;
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_3D, colorLutActive ? GetOrCreateColorLut(pp.ColorLut) : 0);
+    m_postShader->SetInt("uColorLut", 2);
+    m_postShader->SetFloat("uColorLutWeight", colorLutActive ? pp.ColorLutWeight : 0.0f);
+    m_postShader->SetVec3("uColorLutDomainMin", colorLutActive ? pp.ColorLut->DomainMin : glm::vec3(0.0f));
+    m_postShader->SetVec3("uColorLutDomainMax", colorLutActive ? pp.ColorLut->DomainMax : glm::vec3(1.0f));
+    m_postShader->SetFloat("uColorLutSize", colorLutActive ? static_cast<float>(pp.ColorLut->Size) : 2.0f);
+    m_postShader->SetBool("uDitherEnabled", !fxaaActive);
     m_postShader->SetFloat("uBloomStrength", (pp.Enabled && !m_bloomChain.empty()) ? pp.BloomStrength : 0.0f);
     m_postShader->SetFloat("uShoulderStrength", pp.ShoulderStrength);
     m_postShader->SetFloat("uLinearStrength", pp.LinearStrength);
@@ -344,6 +430,38 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
 
     glBindVertexArray(m_emptyVao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    if (fxaaActive)
+    {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, m_width, m_height);
+        m_fxaaShader->Use();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_postColorTex);
+        m_fxaaShader->SetInt("uColor", 0);
+        m_fxaaShader->SetFloat("uSubpixel", pp.FxaaSubpixel);
+        m_fxaaShader->SetFloat("uEdgeThreshold", pp.FxaaEdgeThreshold);
+        m_fxaaShader->SetFloat("uEdgeThresholdMin", pp.FxaaEdgeThresholdMin);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    if (postQueryActive)
+    {
+        glEndQuery(GL_TIME_ELAPSED);
+        if (m_postQueryFrames % 120 == 0 && m_postGpuSamples > 0)
+        {
+            const float average = m_postGpuTotalMs / static_cast<float>(m_postGpuSamples);
+            const char* mode = pp.AntiAliasing == AntiAliasingMode::Taa ? "TAA"
+                             : pp.AntiAliasing == AntiAliasingMode::Fxaa ? "FXAA" : "NONE";
+            log::Info(std::string("Post GPU (") + mode + "): avg " + std::to_string(average)
+                      + " ms, min " + std::to_string(m_postGpuMinMs)
+                      + " ms, max " + std::to_string(m_postGpuMaxMs)
+                      + " ms (" + std::to_string(m_postGpuSamples) + " samples)");
+            m_postGpuTotalMs = 0.0f;
+            m_postGpuMinMs = 1.0e9f;
+            m_postGpuMaxMs = 0.0f;
+            m_postGpuSamples = 0;
+        }
+    }
     glEnable(GL_DEPTH_TEST);
 
     if (!m_screenshotPath.empty())

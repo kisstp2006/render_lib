@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+
+#include <glm/glm.hpp>
 
 namespace engine {
 class Application;
@@ -10,7 +13,7 @@ class SandboxControls
 {
 public:
     SandboxControls(engine::Application& app, bool flashlightOn, bool manageFlashlight, bool localLightShowcase,
-                    bool dayNightShowcase, float dayNightCycleSeconds,
+                    bool dayNightShowcase, bool postShowcase, float dayNightCycleSeconds,
                     float sunAzimuthDegrees, float sunElevationDegrees,
                     std::string screenshotPath, int screenshotFrame);
     void Update(float deltaTime);
@@ -21,6 +24,7 @@ private:
     bool ManageFlashlight = true;
     bool LocalLightShowcase = false;
     bool DayNightShowcase = false;
+    bool PostShowcase = false;
     bool DayNightPaused = false;
     bool ShowcaseRightShadows = false;
     std::string ScreenshotPath;
@@ -47,6 +51,14 @@ private:
     bool DownWasDown = false;
     bool LeftWasDown = false;
     bool RightWasDown = false;
+    bool VWasDown = false;
+    bool GWasDown = false;
+    bool SemicolonWasDown = false;
+    bool ApostropheWasDown = false;
+    uint64_t AnimatedInstanceId = 0;
+    glm::mat4 AnimatedBaseTransform{1.0f};
+    float PostAnimationTime = 0.0f;
+    float SavedLutWeight = 1.0f;
     int NightColorPreset = 0;
     int LastDayNightStage = -1;
     float SunAzimuth;

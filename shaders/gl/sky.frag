@@ -1,7 +1,8 @@
 #version 460 core
 
 in vec2 vNdc;
-out vec4 FragColor;
+layout(location = 0) out vec4 FragColor;
+layout(location = 1) out vec2 OutVelocity;
 
 uniform samplerCube uEnvMap;
 uniform mat4 uInvProj;
@@ -37,6 +38,7 @@ uniform bool uStarsEnabled;
 uniform bool uMilkyWayEnabled;
 uniform bool uAnimateNightSky;
 uniform float uTime;
+uniform mat4 uPreviousViewProjection;
 
 const float PI = 3.14159265358979323846;
 
@@ -173,4 +175,7 @@ void main()
     }
 
     FragColor = vec4(color * uBackgroundMultiplier, 1.0);
+    vec4 previousClip = uPreviousViewProjection * vec4(dirWorld, 0.0);
+    vec2 previousUv = previousClip.xy / max(previousClip.w, 1e-6) * 0.5 + 0.5;
+    OutVelocity = vNdc * 0.5 + 0.5 - previousUv;
 }

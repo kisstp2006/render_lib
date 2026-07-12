@@ -1,8 +1,19 @@
 #pragma once
 
+#include <memory>
+
 #include <glm/glm.hpp>
 
+#include "engine/scene/ColorGrading.h"
+
 namespace engine {
+
+enum class AntiAliasingMode
+{
+    None,
+    Fxaa,
+    Taa
+};
 
 struct SkySettings
 {
@@ -56,6 +67,19 @@ struct PostProcessSettings
     float Saturation = 1.0f;
     float Contrast = 1.0f;
     glm::vec3 ColorTint{1.0f, 1.0f, 1.0f};
+
+    std::shared_ptr<ColorGradingLutData> ColorLut;
+    float ColorLutWeight = 0.0f;
+
+    AntiAliasingMode AntiAliasing = AntiAliasingMode::Taa;
+    float FxaaSubpixel = 0.75f;
+    float FxaaEdgeThreshold = 0.125f;
+    float FxaaEdgeThresholdMin = 0.0312f;
+    float TaaHistoryWeight = 0.92f;
+    float TaaSharpen = 0.12f;
+    float TaaJitterScale = 1.0f;
+    float TaaDepthThreshold = 0.0025f;
+    bool LogPerformance = false;
 };
 
 struct FogSettings

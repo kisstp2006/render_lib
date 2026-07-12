@@ -10,19 +10,28 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 using namespace engine;
 
 SandboxControls::SandboxControls(Application& app, bool flashlightOn, bool manageFlashlight, bool localLightShowcase,
-                                 bool dayNightShowcase, float dayNightCycleSeconds,
+                                 bool dayNightShowcase, bool postShowcase, float dayNightCycleSeconds,
                                  float sunAzimuthDegrees, float sunElevationDegrees,
                                  std::string screenshotPath, int screenshotFrame)
     : App(app), FlashlightOn(flashlightOn), ManageFlashlight(manageFlashlight), LocalLightShowcase(localLightShowcase),
       DayNightShowcase(dayNightShowcase),
+      PostShowcase(postShowcase),
       ScreenshotPath(std::move(screenshotPath)), ScreenshotFrame(screenshotFrame),
       SunAzimuth(glm::radians(sunAzimuthDegrees)), SunElevation(glm::radians(sunElevationDegrees)),
       DayNightBaseAzimuth(glm::radians(sunAzimuthDegrees)), DayNightCycleSeconds(glm::max(dayNightCycleSeconds, 4.0f))
 {
+    Scene& scene = App.GetScene();
+    SavedLutWeight = scene.PostProcess.ColorLutWeight > 0.0f ? scene.PostProcess.ColorLutWeight : 1.0f;
+    if (PostShowcase && !scene.Instances().empty())
+    {
+        AnimatedInstanceId = scene.Instances().back().TemporalId;
+        AnimatedBaseTransform = scene.Instances().back().Transform;
+    }
 }
 
 void SandboxControls::Update(float deltaTime)
@@ -30,6 +39,71 @@ void SandboxControls::Update(float deltaTime)
     const Input& input = App.GetInput();
     Scene& scene = App.GetScene();
     Camera& camera = App.GetCamera();
+
+    const bool vDown = input.IsKeyDown(GLFW_KEY_V);
+    if (vDown && !VWasDown)
+    {
+        AntiAliasingMode& mode = scene.PostProcess.AntiAliasing;
+        mode = mode == AntiAliasingMode::None ? AntiAliasingMode::Fxaa
+             : mode == AntiAliasingMode::Fxaa ? AntiAliasingMode::Taa
+             : AntiAliasingMode::None;
+        const char* name = mode == AntiAliasingMode::None ? "NONE"
+                         : mode == AntiAliasingMode::Fxaa ? "FXAA" : "TAA";
+        log::Info(std::string("Anti-aliasing: ") + name);
+    }
+    VWasDown = vDown;
+
+    const bool gDown = input.IsKeyDown(GLFW_KEY_G);
+    if (gDown && !GWasDown)
+    {
+        if (scene.PostProcess.ColorLut)
+        {
+            if (scene.PostProcess.ColorLutWeight > 0.0f)
+            {
+                SavedLutWeight = scene.PostProcess.ColorLutWeight;
+                scene.PostProcess.ColorLutWeight = 0.0f;
+            }
+            else
+                scene.PostProcess.ColorLutWeight = SavedLutWeight;
+            log::Info(std::string("Color grading LUT: ")
+                      + (scene.PostProcess.ColorLutWeight > 0.0f ? "ON" : "OFF"));
+        }
+        else
+            log::Warn("Color grading LUT: no LUT is loaded");
+    }
+    GWasDown = gDown;
+
+    const bool semicolonDown = input.IsKeyDown(GLFW_KEY_SEMICOLON);
+    const bool apostropheDown = input.IsKeyDown(GLFW_KEY_APOSTROPHE);
+    if (scene.PostProcess.ColorLut)
+    {
+        if (semicolonDown && !SemicolonWasDown)
+            scene.PostProcess.ColorLutWeight = glm::max(scene.PostProcess.ColorLutWeight - 0.1f, 0.0f);
+        if (apostropheDown && !ApostropheWasDown)
+            scene.PostProcess.ColorLutWeight = glm::min(scene.PostProcess.ColorLutWeight + 0.1f, 1.0f);
+        if ((semicolonDown && !SemicolonWasDown) || (apostropheDown && !ApostropheWasDown))
+        {
+            SavedLutWeight = scene.PostProcess.ColorLutWeight;
+            log::Info("Color LUT weight: " + std::to_string(scene.PostProcess.ColorLutWeight));
+        }
+    }
+    SemicolonWasDown = semicolonDown;
+    ApostropheWasDown = apostropheDown;
+
+    if (PostShowcase && AnimatedInstanceId != 0)
+    {
+        PostAnimationTime += deltaTime;
+        for (MeshInstance& instance : scene.Instances())
+        {
+            if (instance.TemporalId != AnimatedInstanceId)
+                continue;
+            const glm::vec3 offset{std::sin(PostAnimationTime * 1.35f) * 2.2f,
+                                   std::sin(PostAnimationTime * 2.1f) * 0.22f, 0.0f};
+            instance.Transform = glm::translate(glm::mat4(1.0f), offset)
+                               * glm::rotate(AnimatedBaseTransform, PostAnimationTime * 1.8f, glm::vec3(0, 1, 0));
+            break;
+        }
+    }
 
     if (ManageFlashlight && !scene.SpotLights().empty())
     {

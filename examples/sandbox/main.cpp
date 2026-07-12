@@ -33,6 +33,19 @@ int main(int argc, char** argv)
         else if (argument == "--shadow-stress") sceneConfig.ShadowStress = true;
         else if (argument == "--shadow-benchmark") sceneConfig.ShadowBenchmark = true;
         else if (argument == "--light-showcase") sceneConfig.LocalLightShowcase = true;
+        else if (argument == "--post-showcase") { sceneConfig.PostShowcase = true; sceneConfig.CinematicLut = true; }
+        else if (argument == "--post-benchmark") sceneConfig.PostBenchmark = true;
+        else if (argument == "--aa" && i + 1 < argc) sceneConfig.AntiAliasing = argv[++i];
+        else if (argument == "--color-lut" && i + 1 < argc) sceneConfig.ColorLutPath = argv[++i];
+        else if (argument == "--cinematic-lut") sceneConfig.CinematicLut = true;
+        else if (argument == "--lut-weight" && i + 1 < argc) sceneConfig.ColorLutWeight = std::strtof(argv[++i], nullptr);
+        else if (argument == "--fxaa-subpixel" && i + 1 < argc) sceneConfig.FxaaSubpixel = std::strtof(argv[++i], nullptr);
+        else if (argument == "--fxaa-edge-threshold" && i + 1 < argc) sceneConfig.FxaaEdgeThreshold = std::strtof(argv[++i], nullptr);
+        else if (argument == "--fxaa-edge-threshold-min" && i + 1 < argc) sceneConfig.FxaaEdgeThresholdMin = std::strtof(argv[++i], nullptr);
+        else if (argument == "--taa-history" && i + 1 < argc) sceneConfig.TaaHistoryWeight = std::strtof(argv[++i], nullptr);
+        else if (argument == "--taa-sharpen" && i + 1 < argc) sceneConfig.TaaSharpen = std::strtof(argv[++i], nullptr);
+        else if (argument == "--taa-jitter" && i + 1 < argc) sceneConfig.TaaJitterScale = std::strtof(argv[++i], nullptr);
+        else if (argument == "--taa-depth-threshold" && i + 1 < argc) sceneConfig.TaaDepthThreshold = std::strtof(argv[++i], nullptr);
         else if (argument == "--hdri" && i + 1 < argc) sceneConfig.HdriPath = argv[++i];
         else if (argument == "--sun-azimuth" && i + 1 < argc) sceneConfig.SunAzimuthDegrees = std::strtof(argv[++i], nullptr);
         else if (argument == "--sun-elevation" && i + 1 < argc) sceneConfig.SunElevationDegrees = std::strtof(argv[++i], nullptr);
@@ -82,7 +95,7 @@ int main(int argc, char** argv)
 
     SandboxControls controls(app, sceneConfig.FlashlightOn,
                              !sceneConfig.LocalLightShowcase && !sceneConfig.HdriStudio,
-                             sceneConfig.LocalLightShowcase, sceneConfig.DayNightShowcase,
+                             sceneConfig.LocalLightShowcase, sceneConfig.DayNightShowcase, sceneConfig.PostShowcase,
                              sceneConfig.DayNightCycleSeconds, sceneConfig.SunAzimuthDegrees,
                              sceneConfig.SunElevationDegrees, screenshotPath, screenshotFrame);
     app.SetUpdateCallback([&controls](float deltaTime) { controls.Update(deltaTime); });

@@ -34,8 +34,13 @@ Current feature set (OpenGL backend):
   `ApplyGradientFog` (fog.slang)
 - **Auto-exposure**: Source 2 tonemap-controller style adaptation
   (Key/avgLuminance clamped to min/max, smoothed over time)
-- **Color grading**: post-tonemap saturation/contrast/tint (LUT loading is
-  on the roadmap; this covers the same stage in the pipeline)
+- **Color grading**: backend-independent `.cube` 3D LUT loading with domain
+  metadata, cached RGB16F 3D textures, Source 2/VRF half-texel addressing,
+  runtime blending, plus saturation/contrast/tint and a built-in cinematic LUT
+- **Anti-aliasing**: selectable none/FXAA/TAA modes. TAA uses an 8-sample
+  Halton jitter, per-object and camera motion vectors, ping-pong HDR/depth
+  history, YCoCg variance clipping, disocclusion rejection, camera-cut/resize
+  resets and configurable sharpening; FXAA runs after tonemap/color grading
 - **Bloom**: Jimenez 13-tap downsample with Karis average + threshold
   (mirroring VRF's `downsample_bloomthreshold`), tent-filter upsample chain
 - **Post**: exposure, ADD-bloom composite, Uncharted tonemapper with VRF's
@@ -122,6 +127,15 @@ the bundled CC0 Poly Haven product-lighting showcase.
 Use `--day-night-showcase` for an automatically rotating directional light
 and a complete day/sunset/twilight/starry-night/sunrise loop. Its default
 cycle is 24 seconds; override it with `--day-night-seconds N`.
+Use `--post-showcase` for the animated LUT/FXAA/TAA validation scene. Select
+the initial mode with `--aa none|fxaa|taa`, load an industry-standard LUT with
+`--color-lut path/to/look.cube`, or use `--cinematic-lut`; `--lut-weight N`
+sets its initial blend. `--post-benchmark` reports asynchronous GPU timings
+for the complete TAA/FXAA + bloom + tonemap + grading stack.
+Advanced overrides are `--fxaa-subpixel`, `--fxaa-edge-threshold`,
+`--fxaa-edge-threshold-min`, `--taa-history`, `--taa-sharpen`, `--taa-jitter`
+and `--taa-depth-threshold`; the same fields are available through
+`Scene::PostProcess` without backend-specific data.
 
 **Controls:** right-click + mouse to look around, WASD to move, Q/E for
 down/up, hold Shift to move faster. I/K/J/L move the sun (sky + IBL re-bake
@@ -142,6 +156,8 @@ frame, while direction-only IBL rebuilds are throttled to 350 ms.
 Night-sky controls in the same showcase are B for stars, N for the Milky Way,
 M to freeze/resume sky rotation and R to cycle natural/cool/warm/fantasy color
 presets. Up/down change star density, while left/right change star intensity.
+Post controls work in every scene: V cycles none/FXAA/TAA, G toggles the loaded
+color LUT, and semicolon/apostrophe decrease/increase LUT weight by 0.1.
 
 Night-sky command-line overrides are `--star-density`, `--star-intensity`,
 `--star-size`, `--star-twinkle`, `--milky-way`, `--night-brightness` and
@@ -165,9 +181,11 @@ Rough order, each step buildable/testable on its own:
    loading, cubemap conversion, irradiance/GGX bake, yaw and separate IBL/
    background exposure, source switching, caching, diagnostics and a CC0
    studio product-render test scene.
-4. **Color grading LUT + FXAA/TAA** to finish the Source 2 post stack — see
-   `ValveResourceFormat/Renderer/Shaders/post_processing.frag.slang`
-   (`g_tColorCorrectionLUT`) for the reference behavior.
+4. **Color grading LUT + FXAA/TAA** — complete: `.cube` CPU loading and RGB16F
+   3D texture cache, Source 2-compatible LUT addressing/blending, post-tonemap
+   FXAA, jittered HDR TAA with camera/object motion vectors, depth history,
+   variance clipping, disocclusion/camera-cut/resize handling, runtime controls,
+   animated visual test scene and asynchronous GPU benchmark mode.
 5. **Vulkan PBR parity** — shader modules (compile the GLSL to SPIR-V at
    build time via `glslang`/`glslc`), pipeline + descriptor layout, depth
    buffer, shadow pass — matching what `GLRenderBackend` already does.

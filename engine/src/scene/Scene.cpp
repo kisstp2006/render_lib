@@ -4,7 +4,12 @@ namespace engine {
 
 void Scene::AddInstance(std::shared_ptr<MeshData> mesh, const Material& mat, const glm::mat4& transform)
 {
-    m_instances.push_back(MeshInstance{std::move(mesh), mat, transform});
+    MeshInstance instance;
+    instance.TemporalId = m_nextTemporalId++;
+    instance.Mesh = std::move(mesh);
+    instance.Mat = mat;
+    instance.Transform = transform;
+    m_instances.push_back(std::move(instance));
 }
 
 void Scene::AddPointLight(const PointLight& light)
