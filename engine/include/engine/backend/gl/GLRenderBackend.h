@@ -33,8 +33,8 @@ private:
     void RenderBloom(float threshold, float exposure);
     void SaveScreenshot();
 
-    GLMesh& GetOrCreateMesh(const MeshData& data);
-    GLTexture& GetOrCreateTexture(const TextureData& data);
+    GLMesh& GetOrCreateMesh(const std::shared_ptr<MeshData>& data);
+    GLTexture& GetOrCreateTexture(const std::shared_ptr<TextureData>& data);
     void BindMaterialTexture(const std::shared_ptr<TextureData>& map, int unit, GLTexture& fallback);
 
     Window* m_window = nullptr;
@@ -63,6 +63,9 @@ private:
     // Auto-exposure state
     float m_autoExposure = 1.0f;
     double m_lastFrameTime = 0.0;
+    unsigned int m_exposurePbos[2]{};
+    int m_exposurePboIndex = 0;
+    int m_exposurePboFrames = 0;
 
     // MSAA HDR scene target + resolve texture
     unsigned int m_msaaFbo = 0;
@@ -86,8 +89,11 @@ private:
 
     std::string m_screenshotPath;
 
-    std::unordered_map<const MeshData*, std::unique_ptr<GLMesh>> m_meshCache;
-    std::unordered_map<const TextureData*, std::unique_ptr<GLTexture>> m_textureCache;
+    // Keep the CPU assets alive for as long as their GPU counterparts are
+    // cached. Raw-pointer keys could otherwise alias a newly allocated asset
+    // after the original shared_ptr was released.
+    std::unordered_map<std::shared_ptr<MeshData>, std::unique_ptr<GLMesh>> m_meshCache;
+    std::unordered_map<std::shared_ptr<TextureData>, std::unique_ptr<GLTexture>> m_textureCache;
 };
 
 } // namespace engine

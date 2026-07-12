@@ -33,8 +33,10 @@ Current feature set (OpenGL backend):
 - **Render to PNG**: `--screenshot out.png` headless-ish capture or F12 in
   the sandbox — usable as a library for offline rendering
 
-Cross-platform by construction (GLFW + OpenGL/Vulkan, no Win32-only code
-paths); developed on Windows but should build on Linux/macOS as-is.
+The platform layer is cross-platform by construction (GLFW, no Win32-only
+code paths) and the current OpenGL 4.6/Vulkan targets support Windows and
+Linux. macOS needs a future OpenGL 4.1 compatibility path or Vulkan through
+MoltenVK; the current renderer does not build there as-is.
 
 ## Why this shape
 

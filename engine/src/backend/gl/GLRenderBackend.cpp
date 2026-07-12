@@ -92,6 +92,16 @@ void GLRenderBackend::Init(Window& window)
     InitShadowMap();
     CreateSceneTargets(m_width, m_height);
 
+    // Double-buffer the tiny luminance readback. Mapping the previous PBO
+    // avoids forcing the CPU to wait for the current frame's mip generation.
+    glGenBuffers(2, m_exposurePbos);
+    for (unsigned int pbo : m_exposurePbos)
+    {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, sizeof(float) * 4, nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
     log::Info("GL renderer initialized (HDR + MSAA + IBL + bloom)");
 }
 
@@ -236,6 +246,8 @@ void GLRenderBackend::Shutdown()
     if (m_shadowFbo) glDeleteFramebuffers(1, &m_shadowFbo);
     if (m_spotShadowMap) glDeleteTextures(1, &m_spotShadowMap);
     if (m_spotShadowFbo) glDeleteFramebuffers(1, &m_spotShadowFbo);
+    glDeleteBuffers(2, m_exposurePbos);
+    m_exposurePbos[0] = m_exposurePbos[1] = 0;
 }
 
 void GLRenderBackend::Resize(int width, int height)
@@ -245,34 +257,34 @@ void GLRenderBackend::Resize(int width, int height)
     CreateSceneTargets(width, height);
 }
 
-GLMesh& GLRenderBackend::GetOrCreateMesh(const MeshData& data)
+GLMesh& GLRenderBackend::GetOrCreateMesh(const std::shared_ptr<MeshData>& data)
 {
-    auto it = m_meshCache.find(&data);
+    auto it = m_meshCache.find(data);
     if (it != m_meshCache.end())
         return *it->second;
 
-    auto mesh = std::make_unique<GLMesh>(data);
+    auto mesh = std::make_unique<GLMesh>(*data);
     GLMesh& ref = *mesh;
-    m_meshCache.emplace(&data, std::move(mesh));
+    m_meshCache.emplace(data, std::move(mesh));
     return ref;
 }
 
-GLTexture& GLRenderBackend::GetOrCreateTexture(const TextureData& data)
+GLTexture& GLRenderBackend::GetOrCreateTexture(const std::shared_ptr<TextureData>& data)
 {
-    auto it = m_textureCache.find(&data);
+    auto it = m_textureCache.find(data);
     if (it != m_textureCache.end())
         return *it->second;
 
-    auto tex = std::make_unique<GLTexture>(data);
+    auto tex = std::make_unique<GLTexture>(*data);
     GLTexture& ref = *tex;
-    m_textureCache.emplace(&data, std::move(tex));
+    m_textureCache.emplace(data, std::move(tex));
     return ref;
 }
 
 void GLRenderBackend::BindMaterialTexture(const std::shared_ptr<TextureData>& map, int unit, GLTexture& fallback)
 {
     if (map)
-        GetOrCreateTexture(*map).Bind(unit);
+        GetOrCreateTexture(map).Bind(unit);
     else
         fallback.Bind(unit);
 }
@@ -292,21 +304,24 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     const glm::mat4 lightSpaceMatrix = lightProj * lightView;
 
     // --- Shadow pass ---
-    glViewport(0, 0, m_shadowSize, m_shadowSize);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
-    glClear(GL_DEPTH_BUFFER_BIT);
-    glCullFace(GL_FRONT); // reduce peter-panning / shadow acne on thin geometry
-
-    m_shadowShader->Use();
-    m_shadowShader->SetMat4("uLightSpaceMatrix", lightSpaceMatrix);
-
-    for (const auto& instance : scene.Instances())
+    if (scene.Sun.CastsShadows)
     {
-        m_shadowShader->SetMat4("uModel", instance.Transform);
-        GetOrCreateMesh(*instance.Mesh).Draw();
-    }
+        glViewport(0, 0, m_shadowSize, m_shadowSize);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glCullFace(GL_FRONT); // reduce shadow acne on thin geometry
 
-    glCullFace(GL_BACK);
+        m_shadowShader->Use();
+        m_shadowShader->SetMat4("uLightSpaceMatrix", lightSpaceMatrix);
+
+        for (const auto& instance : scene.Instances())
+        {
+            m_shadowShader->SetMat4("uModel", instance.Transform);
+            GetOrCreateMesh(instance.Mesh).Draw();
+        }
+
+        glCullFace(GL_BACK);
+    }
 
     // --- Spot (flashlight) shadow pass ---
     // The first enabled, shadow-casting spot among the first 4 gets the map.
@@ -348,7 +363,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         for (const auto& instance : scene.Instances())
         {
             m_shadowShader->SetMat4("uModel", instance.Transform);
-            GetOrCreateMesh(*instance.Mesh).Draw();
+            GetOrCreateMesh(instance.Mesh).Draw();
         }
 
         glCullFace(GL_BACK);
@@ -372,6 +387,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
 
     m_pbrShader->SetVec3("uSunDirection", lightDir);
     m_pbrShader->SetVec3("uSunColor", scene.Sun.Color * scene.Sun.Intensity);
+    m_pbrShader->SetBool("uSunCastsShadows", scene.Sun.CastsShadows);
 
     const auto& lights = scene.PointLights();
     const int lightCount = static_cast<int>(std::min<size_t>(lights.size(), 8));
@@ -448,7 +464,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         BindMaterialTexture(mat.NormalMap, kUnitNormal, *m_defaultNormal);
         BindMaterialTexture(mat.MraoMap, kUnitMrao, *m_defaultWhite);
 
-        GetOrCreateMesh(*instance.Mesh).Draw();
+        GetOrCreateMesh(instance.Mesh).Draw();
     }
 
     // --- Skybox (only fills pixels the geometry left at depth 1.0) ---
@@ -472,8 +488,9 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     // --- Auto-exposure (Source 2 tonemap controller style) ---
     // Average scene luminance from the top mip of the HDR resolve texture,
     // adapted over time toward Key/avgLum within [Min, Max] multipliers.
-    // The 1x1 readback is a sync point; acceptable until a GPU histogram
-    // replaces it.
+    // This is still a simple average rather than a percentile histogram, but
+    // the double-buffered PBO readback keeps it off the current frame's CPU
+    // critical path.
     const PostProcessSettings& pp = scene.PostProcess;
     const double now = glfwGetTime();
     const float deltaTime = m_lastFrameTime > 0.0 ? static_cast<float>(now - m_lastFrameTime) : 0.016f;
@@ -487,17 +504,35 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         const int maxDim = std::max(m_width, m_height);
         const int topMip = static_cast<int>(std::floor(std::log2(static_cast<float>(maxDim))));
 
-        float avg[4] = {0, 0, 0, 0};
-        glGetTexImage(GL_TEXTURE_2D, topMip, GL_RGBA, GL_FLOAT, avg);
-        const float avgLum = std::max(0.2126f * avg[0] + 0.7152f * avg[1] + 0.0722f * avg[2], 1e-4f);
+        const int writeIndex = m_exposurePboIndex;
+        const int readIndex = (writeIndex + 1) % 2;
 
-        const float target = std::clamp(pp.AutoExposureKey / avgLum, pp.AutoExposureMin, pp.AutoExposureMax);
-        const float blend = 1.0f - std::exp(-deltaTime * pp.AutoExposureSpeed);
-        m_autoExposure += (target - m_autoExposure) * blend;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_exposurePbos[writeIndex]);
+        glGetTexImage(GL_TEXTURE_2D, topMip, GL_RGBA, GL_FLOAT, nullptr);
+
+        if (m_exposurePboFrames > 0)
+        {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, m_exposurePbos[readIndex]);
+            const auto* avg = static_cast<const float*>(glMapBufferRange(
+                GL_PIXEL_PACK_BUFFER, 0, sizeof(float) * 4, GL_MAP_READ_BIT));
+            if (avg)
+            {
+                const float avgLum = std::max(0.2126f * avg[0] + 0.7152f * avg[1] + 0.0722f * avg[2], 1e-4f);
+                const float target = std::clamp(pp.AutoExposureKey / avgLum, pp.AutoExposureMin, pp.AutoExposureMax);
+                const float blend = 1.0f - std::exp(-deltaTime * pp.AutoExposureSpeed);
+                m_autoExposure += (target - m_autoExposure) * blend;
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            }
+        }
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        m_exposurePboIndex = readIndex;
+        ++m_exposurePboFrames;
     }
     else
     {
         m_autoExposure = 1.0f;
+        m_exposurePboFrames = 0;
     }
 
     const float effectiveExposure = pp.Exposure * m_autoExposure;

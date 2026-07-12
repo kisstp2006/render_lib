@@ -17,6 +17,7 @@ out vec4 FragColor;
 uniform vec3 uCameraPos;
 uniform vec3 uSunDirection; // points FROM the sun TOWARD the scene
 uniform vec3 uSunColor;
+uniform bool uSunCastsShadows;
 
 struct PointLight
 {
@@ -228,7 +229,7 @@ void main()
     {
         vec3 L = normalize(-uSunDirection);
         float NoL = max(dot(N, L), 0.0);
-        float shadow = NoL > 0.0 ? SampleShadow(vLightSpacePos, NoL) : 1.0;
+        float shadow = uSunCastsShadows && NoL > 0.0 ? SampleShadow(vLightSpacePos, NoL) : 1.0;
         L0 += EvaluateLight(N, V, L, uSunColor, albedo, F0, roughness, metallic) * shadow;
     }
 
