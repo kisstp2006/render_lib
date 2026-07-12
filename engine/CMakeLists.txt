@@ -7,6 +7,7 @@ set(ENGINE_CORE_SOURCES
     src/scene/Mesh.cpp
     src/scene/Scene.cpp
     src/scene/Texture.cpp
+    src/scene/GltfLoader.cpp
     src/scene/StbImpl.cpp
     src/backend/gl/GLRenderBackend.cpp
     src/backend/gl/GLShader.cpp
@@ -30,6 +31,8 @@ target_link_libraries(engine
         glad_gl_core46
         stb_image
 )
+
+target_include_directories(engine PRIVATE ${cgltf_SOURCE_DIR})
 
 target_compile_definitions(engine PUBLIC
     ENGINE_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"

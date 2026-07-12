@@ -30,6 +30,9 @@ Current feature set (OpenGL backend):
 - **Post**: exposure, ADD-bloom composite, Uncharted tonemapper with VRF's
   exact parameterization (shoulder/linear/toe + precomputed white point
   scale), exact linear->sRGB, banding dither
+- **glTF 2.0 scenes**: `.gltf` and `.glb`, hierarchical transforms,
+  multi-primitive meshes, metallic-roughness materials, embedded/external
+  textures, alpha masking, and generated normals/tangents when absent
 - **Render to PNG**: `--screenshot out.png` headless-ish capture or F12 in
   the sandbox — usable as a library for offline rendering
 
@@ -101,6 +104,8 @@ cmake --build build
 
 Run with `--vulkan` to use the Vulkan backend once it's further along
 (currently it only proves out the swapchain round-trip with a clear color).
+Run with `--sample-gltf` for the bundled Khronos Water Bottle, or with
+`--gltf path/to/scene.glb` to load another static glTF 2.0 scene.
 
 **Controls:** right-click + mouse to look around, WASD to move, Q/E for
 down/up, hold Shift to move faster. I/K/J/L move the sun (sky + IBL re-bake
@@ -110,7 +115,7 @@ live), F toggles the flashlight, F12 saves a PNG render into `renders/`.
 
 Rough order, each step buildable/testable on its own:
 
-1. **glTF scene loading** so real test scenes/assets can be brought in instead
+1. **glTF scene loading** (initial static metallic-roughness support complete) so real test scenes/assets can be brought in instead
    of only procedural primitives — the biggest step toward "make pretty
    renders of real content".
 2. **Cascaded shadow maps** for the directional light instead of the current
@@ -131,4 +136,5 @@ Rough order, each step buildable/testable on its own:
 
 Done so far: HDR+MSAA pipeline, IBL (irradiance/prefilter/BRDF LUT),
 sun shadow mapping with PCF, Jimenez bloom, VRF-parameterized Uncharted
-tonemap, textured materials with normal mapping, PNG capture.
+tonemap, textured materials with normal mapping, PNG capture, static glTF/GLB
+scene loading with the CC0 Khronos Water Bottle sample.

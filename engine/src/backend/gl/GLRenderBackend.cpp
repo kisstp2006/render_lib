@@ -29,6 +29,8 @@ constexpr int kUnitIrradiance = 4;
 constexpr int kUnitPrefilter = 5;
 constexpr int kUnitBrdfLut = 6;
 constexpr int kUnitSpotShadow = 7;
+constexpr int kUnitEmissive = 8;
+constexpr int kUnitOcclusion = 9;
 
 void APIENTRY GLDebugCallback(GLenum /*source*/, GLenum type, unsigned int /*id*/, GLenum severity,
                               GLsizei /*length*/, const char* message, const void* /*userParam*/)
@@ -317,6 +319,13 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         for (const auto& instance : scene.Instances())
         {
             m_shadowShader->SetMat4("uModel", instance.Transform);
+            const Material& mat = instance.Mat;
+            m_shadowShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
+            m_shadowShader->SetBool("uHasAlbedoMap", mat.AlbedoMap != nullptr);
+            m_shadowShader->SetFloat("uBaseColorAlpha", mat.BaseColorAlpha);
+            m_shadowShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
+            m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
+            BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
             GetOrCreateMesh(instance.Mesh).Draw();
         }
 
@@ -363,6 +372,13 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         for (const auto& instance : scene.Instances())
         {
             m_shadowShader->SetMat4("uModel", instance.Transform);
+            const Material& mat = instance.Mat;
+            m_shadowShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
+            m_shadowShader->SetBool("uHasAlbedoMap", mat.AlbedoMap != nullptr);
+            m_shadowShader->SetFloat("uBaseColorAlpha", mat.BaseColorAlpha);
+            m_shadowShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
+            m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
+            BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
             GetOrCreateMesh(instance.Mesh).Draw();
         }
 
@@ -443,6 +459,9 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     m_pbrShader->SetInt("uAlbedoMap", kUnitAlbedo);
     m_pbrShader->SetInt("uNormalMap", kUnitNormal);
     m_pbrShader->SetInt("uMraoMap", kUnitMrao);
+    m_pbrShader->SetInt("uMetallicRoughnessMap", kUnitMrao);
+    m_pbrShader->SetInt("uEmissiveMap", kUnitEmissive);
+    m_pbrShader->SetInt("uOcclusionMap", kUnitOcclusion);
 
     for (const auto& instance : scene.Instances())
     {
@@ -451,6 +470,7 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
 
         const Material& mat = instance.Mat;
         m_pbrShader->SetVec3("uAlbedo", mat.Albedo);
+        m_pbrShader->SetFloat("uBaseColorAlpha", mat.BaseColorAlpha);
         m_pbrShader->SetFloat("uMetallic", mat.Metallic);
         m_pbrShader->SetFloat("uRoughness", mat.Roughness);
         m_pbrShader->SetVec3("uEmissive", mat.Emissive);
@@ -460,9 +480,16 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         m_pbrShader->SetBool("uHasAlbedoMap", mat.AlbedoMap != nullptr);
         m_pbrShader->SetBool("uHasNormalMap", mat.NormalMap != nullptr);
         m_pbrShader->SetBool("uHasMraoMap", mat.MraoMap != nullptr);
+        m_pbrShader->SetBool("uHasMetallicRoughnessMap", mat.MetallicRoughnessMap != nullptr);
+        m_pbrShader->SetBool("uHasOcclusionMap", mat.OcclusionMap != nullptr);
+        m_pbrShader->SetBool("uHasEmissiveMap", mat.EmissiveMap != nullptr);
+        m_pbrShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
+        m_pbrShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
         BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
         BindMaterialTexture(mat.NormalMap, kUnitNormal, *m_defaultNormal);
-        BindMaterialTexture(mat.MraoMap, kUnitMrao, *m_defaultWhite);
+        BindMaterialTexture(mat.MetallicRoughnessMap ? mat.MetallicRoughnessMap : mat.MraoMap, kUnitMrao, *m_defaultWhite);
+        BindMaterialTexture(mat.EmissiveMap, kUnitEmissive, *m_defaultWhite);
+        BindMaterialTexture(mat.OcclusionMap, kUnitOcclusion, *m_defaultWhite);
 
         GetOrCreateMesh(instance.Mesh).Draw();
     }

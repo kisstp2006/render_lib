@@ -57,6 +57,7 @@ uniform float uFogHeightExponent;
 
 // Scalar material factors
 uniform vec3 uAlbedo;
+uniform float uBaseColorAlpha;
 uniform float uMetallic;
 uniform float uRoughness;
 uniform vec3 uEmissive;
@@ -67,9 +68,17 @@ uniform float uSpecularF0;
 uniform bool uHasAlbedoMap;
 uniform bool uHasNormalMap;
 uniform bool uHasMraoMap;
+uniform bool uHasMetallicRoughnessMap;
+uniform bool uHasOcclusionMap;
+uniform bool uHasEmissiveMap;
+uniform bool uAlphaMasked;
+uniform float uAlphaCutoff;
 uniform sampler2D uAlbedoMap; // unit 1
 uniform sampler2D uNormalMap; // unit 2
 uniform sampler2D uMraoMap;   // unit 3
+uniform sampler2D uMetallicRoughnessMap; // unit 3, glTF: G=roughness, B=metalness
+uniform sampler2D uEmissiveMap; // unit 8
+uniform sampler2D uOcclusionMap; // unit 9, R=occlusion
 
 uniform sampler2D uShadowMap;        // unit 0
 uniform samplerCube uIrradianceMap;  // unit 4
@@ -205,9 +214,12 @@ void main()
 
     vec3 V = normalize(uCameraPos - vWorldPos);
 
-    vec3 albedo = uAlbedo;
+    vec4 baseColor = vec4(uAlbedo, uBaseColorAlpha);
     if (uHasAlbedoMap)
-        albedo *= texture(uAlbedoMap, vUV).rgb;
+        baseColor *= texture(uAlbedoMap, vUV);
+    if (uAlphaMasked && baseColor.a < uAlphaCutoff)
+        discard;
+    vec3 albedo = baseColor.rgb;
 
     float metallic = uMetallic;
     float roughness = uRoughness;
@@ -219,6 +231,14 @@ void main()
         roughness *= mrao.g;
         ao *= mrao.b;
     }
+    if (uHasMetallicRoughnessMap)
+    {
+        vec3 mr = texture(uMetallicRoughnessMap, vUV).rgb;
+        roughness *= mr.g;
+        metallic *= mr.b;
+    }
+    if (uHasOcclusionMap)
+        ao *= texture(uOcclusionMap, vUV).r;
 
     vec3 F0 = mix(vec3(uSpecularF0), albedo, metallic);
     roughness = clamp(roughness, 0.045, 1.0);
@@ -289,7 +309,10 @@ void main()
 
     vec3 ambient = (diffuseIBL + specularIBL) * ao;
 
-    vec3 color = L0 + ambient + uEmissive;
+    vec3 emissive = uEmissive;
+    if (uHasEmissiveMap)
+        emissive *= texture(uEmissiveMap, vUV).rgb;
+    vec3 color = L0 + ambient + emissive;
     ApplyGradientFog(color, vWorldPos);
 
     FragColor = vec4(color, 1.0);

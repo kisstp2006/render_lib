@@ -54,7 +54,14 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
-FetchContent_MakeAvailable(glfw glm glad stb)
+FetchContent_Declare(
+    cgltf
+    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+    GIT_TAG        v1.15
+    GIT_SHALLOW    TRUE
+)
+
+FetchContent_MakeAvailable(glfw glm glad stb cgltf)
 
 # glad2 generates loader sources at configure time via its cmake helper
 glad_add_library(glad_gl_core46 STATIC API gl:core=4.6)

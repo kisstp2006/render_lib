@@ -3,7 +3,8 @@
 // the standard PBR material-response demo scene with the Source 2-style
 // HDR/bloom/tonemap pipeline on top.
 //
-// Usage: sandbox [--vulkan] [--flashlight] [--screenshot <path.png> [--frames N]]
+// Usage: sandbox [--vulkan] [--sample-gltf | --gltf <file>] [--flashlight]
+//                [--screenshot <path.png> [--frames N]]
 //
 // Controls:
 //   RMB + mouse   look around          WASD/Q/E  move (Shift = faster)
@@ -19,6 +20,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "engine/core/Application.h"
+#include "engine/scene/GltfLoader.h"
 #include "engine/scene/Mesh.h"
 #include "engine/scene/Scene.h"
 #include "engine/scene/Texture.h"
@@ -36,6 +38,8 @@ int main(int argc, char** argv)
     std::string screenshotPath;
     int screenshotFrame = 10;
     bool flashlightOn = false;
+    bool sampleGltf = false;
+    std::string gltfPath;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -48,6 +52,13 @@ int main(int argc, char** argv)
             screenshotFrame = std::atoi(argv[++i]);
         else if (arg == "--flashlight")
             flashlightOn = true;
+        else if (arg == "--sample-gltf")
+        {
+            sampleGltf = true;
+            gltfPath = std::string(ENGINE_ASSET_DIR) + "/WaterBottle.glb";
+        }
+        else if (arg == "--gltf" && i + 1 < argc)
+            gltfPath = argv[++i];
     }
 
     Application app(desc);
@@ -71,33 +82,48 @@ int main(int argc, char** argv)
     groundMat.AlbedoMap = textures::MakeChecker(256, 2, {0.30f, 0.30f, 0.32f}, {0.38f, 0.38f, 0.40f});
     scene.AddInstance(planeMesh, groundMat, glm::translate(glm::mat4(1.0f), {0.0f, -1.0f, 0.0f}));
 
-    constexpr int kRows = 5;    // metallic 0 -> 1
-    constexpr int kCols = 7;    // roughness 0.05 -> 1
-    constexpr float kSpacing = 2.4f; // sphere diameter is 1.8 - keep clear gaps both ways
-
-    for (int row = 0; row < kRows; ++row)
+    if (gltfPath.empty())
     {
-        for (int col = 0; col < kCols; ++col)
+        constexpr int kRows = 5;
+        constexpr int kCols = 7;
+        constexpr float kSpacing = 2.4f;
+
+        for (int row = 0; row < kRows; ++row)
         {
-            Material mat;
-            mat.Albedo = {0.92f, 0.2f, 0.15f}; // consistent base color so metal/rough response is easy to read
-            mat.Metallic = static_cast<float>(row) / static_cast<float>(kRows - 1);
-            mat.Roughness = glm::mix(0.05f, 1.0f, static_cast<float>(col) / static_cast<float>(kCols - 1));
+            for (int col = 0; col < kCols; ++col)
+            {
+                Material mat;
+                mat.Albedo = {0.92f, 0.2f, 0.15f};
+                mat.Metallic = static_cast<float>(row) / static_cast<float>(kRows - 1);
+                mat.Roughness = glm::mix(0.05f, 1.0f, static_cast<float>(col) / static_cast<float>(kCols - 1));
 
-            const float x = (col - (kCols - 1) * 0.5f) * kSpacing;
-            const float y = (kRows - 1 - row) * kSpacing + 0.4f;
-            const glm::mat4 transform = glm::translate(glm::mat4(1.0f), {x, y, 0.0f});
+                const float x = (col - (kCols - 1) * 0.5f) * kSpacing;
+                const float y = (kRows - 1 - row) * kSpacing + 0.4f;
+                scene.AddInstance(sphereMesh, mat, glm::translate(glm::mat4(1.0f), {x, y, 0.0f}));
+            }
+        }
 
-            scene.AddInstance(sphereMesh, mat, transform);
+        Material glowMat;
+        glowMat.Albedo = {0.1f, 0.1f, 0.1f};
+        glowMat.Roughness = 0.6f;
+        glowMat.Emissive = {4.0f, 1.6f, 0.4f};
+        scene.AddInstance(sphereMesh, glowMat, glm::translate(glm::mat4(1.0f), {-9.5f, 0.2f, 2.5f}));
+    }
+    else
+    {
+        try
+        {
+            glm::mat4 importTransform = glm::translate(glm::mat4(1.0f), {0.0f, 0.15f, 0.0f});
+            if (sampleGltf)
+                importTransform = glm::scale(importTransform, glm::vec3(6.0f));
+            LoadGltfScene(gltfPath, scene, importTransform);
+        }
+        catch (const GltfLoadError& error)
+        {
+            std::fprintf(stderr, "%s\n", error.what());
+            return 1;
         }
     }
-
-    // One emissive sphere so bloom has an in-scene source besides the sun.
-    Material glowMat;
-    glowMat.Albedo = {0.1f, 0.1f, 0.1f};
-    glowMat.Roughness = 0.6f;
-    glowMat.Emissive = {4.0f, 1.6f, 0.4f};
-    scene.AddInstance(sphereMesh, glowMat, glm::translate(glm::mat4(1.0f), {-9.5f, 0.2f, 2.5f}));
 
     PointLight fill;
     fill.Position = {-6.0f, 5.0f, 6.0f};
@@ -136,9 +162,10 @@ int main(int argc, char** argv)
     scene.AddSpotLight(flashlight);
 
     Camera& camera = app.GetCamera();
-    camera.Position = {0.0f, 5.0f, 16.0f};
+    camera.Position = gltfPath.empty() ? glm::vec3(0.0f, 5.0f, 16.0f)
+        : (sampleGltf ? glm::vec3(0.0f, 0.5f, 2.2f) : glm::vec3(0.0f, 0.5f, 4.0f));
     camera.Yaw = -90.0f;
-    camera.Pitch = -8.0f;
+    camera.Pitch = gltfPath.empty() ? -8.0f : -5.0f;
 
     // Sun driven in spherical coordinates by I/K/J/L
     float sunAzimuth = glm::radians(215.0f);

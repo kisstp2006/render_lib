@@ -5,6 +5,22 @@
 
 namespace engine::textures {
 
+namespace {
+
+std::shared_ptr<TextureData> CopyDecoded(unsigned char* pixels, int width, int height, bool srgb)
+{
+    auto data = std::make_shared<TextureData>();
+    data->Width = width;
+    data->Height = height;
+    data->Channels = 4;
+    data->SRGB = srgb;
+    data->Pixels.assign(pixels, pixels + static_cast<size_t>(width) * height * 4);
+    stbi_image_free(pixels);
+    return data;
+}
+
+} // namespace
+
 std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb)
 {
     int width = 0, height = 0, channels = 0;
@@ -16,15 +32,27 @@ std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb)
         return nullptr;
     }
 
-    auto data = std::make_shared<TextureData>();
-    data->Width = width;
-    data->Height = height;
-    data->Channels = 4;
-    data->SRGB = srgb;
-    data->Pixels.assign(pixels, pixels + static_cast<size_t>(width) * height * 4);
+    return CopyDecoded(pixels, width, height, srgb);
+}
 
-    stbi_image_free(pixels);
-    return data;
+std::shared_ptr<TextureData> LoadFromMemory(const uint8_t* bytes, size_t size, bool srgb, const std::string& debugName)
+{
+    if (!bytes || size == 0)
+    {
+        log::Error("Empty texture data: " + debugName);
+        return nullptr;
+    }
+
+    int width = 0, height = 0, channels = 0;
+    stbi_set_flip_vertically_on_load(1);
+    unsigned char* pixels = stbi_load_from_memory(bytes, static_cast<int>(size), &width, &height, &channels, 4);
+    if (!pixels)
+    {
+        log::Error("Failed to decode texture: " + debugName + " (" + stbi_failure_reason() + ")");
+        return nullptr;
+    }
+
+    return CopyDecoded(pixels, width, height, srgb);
 }
 
 std::shared_ptr<TextureData> MakeSolidColor(glm::vec4 color, bool srgb)
