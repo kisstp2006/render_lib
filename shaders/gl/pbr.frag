@@ -28,6 +28,32 @@ struct PointLight
 uniform int uPointLightCount;
 uniform PointLight uPointLights[8];
 
+struct SpotLight
+{
+    vec3 Position;
+    vec3 Direction; // normalized, points away from the light
+    vec3 Color;     // premultiplied by intensity
+    float Range;
+    float CosInner;
+    float CosOuter;
+};
+
+uniform int uSpotLightCount;
+uniform SpotLight uSpotLights[4];
+uniform int uSpotShadowIndex; // which spot samples the spot shadow map, -1 = none
+uniform mat4 uSpotShadowMatrix;
+uniform sampler2D uSpotShadowMap; // unit 7
+
+// Gradient fog, same shape as VRF fog.slang ApplyGradientFog:
+// distance ramp ^ exp  *  height ramp ^ exp  *  opacity -> mix to color.
+uniform bool uFogEnabled;
+uniform vec3 uFogColor;
+uniform float uFogOpacity;
+uniform vec2 uFogStartEnd;
+uniform float uFogDistanceExponent;
+uniform vec2 uFogHeightTopBottom;
+uniform float uFogHeightExponent;
+
 // Scalar material factors
 uniform vec3 uAlbedo;
 uniform float uMetallic;
@@ -122,6 +148,47 @@ float SampleShadow(vec4 lightSpacePos, float NoL)
     return shadow / 9.0;
 }
 
+float SampleSpotShadow(vec3 worldPos, float NoL)
+{
+    vec4 lightSpacePos = uSpotShadowMatrix * vec4(worldPos, 1.0);
+    if (lightSpacePos.w <= 0.0)
+        return 1.0;
+
+    vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
+    proj = proj * 0.5 + 0.5;
+
+    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
+        return 1.0;
+
+    float bias = max(0.002 * (1.0 - NoL), 0.0004);
+    float shadow = 0.0;
+    vec2 texel = 1.0 / vec2(textureSize(uSpotShadowMap, 0));
+
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            float closestDepth = texture(uSpotShadowMap, proj.xy + vec2(x, y) * texel).r;
+            shadow += (proj.z - bias) > closestDepth ? 0.0 : 1.0;
+        }
+    }
+
+    return shadow / 9.0;
+}
+
+void ApplyGradientFog(inout vec3 color, vec3 worldPos)
+{
+    if (!uFogEnabled)
+        return;
+
+    float dist = length(worldPos - uCameraPos);
+    float distFactor = pow(clamp((dist - uFogStartEnd.x) / max(uFogStartEnd.y - uFogStartEnd.x, 1e-4), 0.0, 1.0), uFogDistanceExponent);
+    float heightFactor = pow(clamp((uFogHeightTopBottom.x - worldPos.y) / max(uFogHeightTopBottom.x - uFogHeightTopBottom.y, 1e-4), 0.0, 1.0), uFogHeightExponent);
+
+    float blend = distFactor * heightFactor * uFogOpacity;
+    color = mix(color, uFogColor, blend);
+}
+
 void main()
 {
     vec3 geoNormal = normalize(vNormal);
@@ -180,6 +247,32 @@ void main()
         L0 += EvaluateLight(N, V, L, uPointLights[i].Color, albedo, F0, roughness, metallic) * attenuation;
     }
 
+    // Spot lights (Source 2 spot: smooth inner->outer cone falloff)
+    for (int i = 0; i < uSpotLightCount; ++i)
+    {
+        vec3 toLight = uSpotLights[i].Position - vWorldPos;
+        float dist = length(toLight);
+        vec3 L = toLight / max(dist, 1e-4);
+
+        float cosAngle = dot(-L, uSpotLights[i].Direction);
+        float cone = smoothstep(uSpotLights[i].CosOuter, uSpotLights[i].CosInner, cosAngle);
+        if (cone <= 0.0)
+            continue;
+
+        float distRatio = clamp(dist / uSpotLights[i].Range, 0.0, 1.0);
+        float window = 1.0 - distRatio * distRatio * distRatio * distRatio;
+        float attenuation = (window * window) / (dist * dist + 1.0);
+
+        float shadow = 1.0;
+        if (i == uSpotShadowIndex)
+        {
+            float NoL = max(dot(N, L), 0.0);
+            shadow = NoL > 0.0 ? SampleSpotShadow(vWorldPos, NoL) : 1.0;
+        }
+
+        L0 += EvaluateLight(N, V, L, uSpotLights[i].Color, albedo, F0, roughness, metallic) * attenuation * cone * shadow;
+    }
+
     // Image-based ambient (split-sum, same shape as VRF EnvBRDF)
     float NoV = max(dot(N, V), 1e-4);
     vec3 F_ambient = F_SchlickRoughness(NoV, F0, roughness);
@@ -195,6 +288,8 @@ void main()
 
     vec3 ambient = (diffuseIBL + specularIBL) * ao;
 
+    vec3 color = L0 + ambient + uEmissive;
+    ApplyGradientFog(color, vWorldPos);
 
-    FragColor = vec4(L0 + ambient + uEmissive, 1.0);
+    FragColor = vec4(color, 1.0);
 }

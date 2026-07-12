@@ -62,6 +62,21 @@ struct PostProcessSettings
     float ToeNumerator = 0.02f;
     float ToeDenominator = 0.30f;
     float WhitePoint = 8.0f;
+
+    // Source 2-style tonemap controller: adapts exposure toward
+    // Key / averageLuminance, clamped to [AutoExposureMin, AutoExposureMax]
+    // as multipliers on Exposure.
+    bool AutoExposure = false;
+    float AutoExposureKey = 0.18f;
+    float AutoExposureMin = 0.4f;
+    float AutoExposureMax = 3.0f;
+    float AutoExposureSpeed = 1.8f; // 1/seconds, higher adapts faster
+
+    // LDR grade applied after tonemap (stand-in for Source's color
+    // correction LUTs until LUT loading lands).
+    float Saturation = 1.0f;
+    float Contrast = 1.0f;
+    glm::vec3 ColorTint{1.0f, 1.0f, 1.0f};
 };
 
 struct DirectionalLight
@@ -78,6 +93,38 @@ struct PointLight
     glm::vec3 Color{1.0f};
     float Intensity = 20.0f;
     float Radius = 15.0f;
+};
+
+// Source 2-style spot (see VRF SceneLight: EntityType.Spot with
+// inner/outer angles). The first enabled spot with CastsShadows gets a
+// perspective shadow map.
+struct SpotLight
+{
+    glm::vec3 Position{0.0f};
+    glm::vec3 Direction{0.0f, -1.0f, 0.0f};
+    glm::vec3 Color{1.0f};
+    float Intensity = 30.0f;
+    float Range = 25.0f;
+    float InnerConeDeg = 20.0f;
+    float OuterConeDeg = 35.0f;
+    bool CastsShadows = false;
+    bool Enabled = true;
+};
+
+// Distance x height gradient fog, the same shape as VRF's ApplyGradientFog
+// (fog.slang): both components are saturated ramps raised to an exponent,
+// multiplied together and against Opacity, then mixed toward Color.
+struct FogSettings
+{
+    bool Enabled = false;
+    glm::vec3 Color{0.35f, 0.40f, 0.50f}; // linear HDR, pre-tonemap
+    float Opacity = 0.85f;
+    float Start = 20.0f;           // view distance where fog begins
+    float End = 120.0f;            // fully fogged distance
+    float DistanceExponent = 1.6f;
+    float HeightFadeTop = 25.0f;   // no fog contribution above this height
+    float HeightFadeBottom = 0.0f; // full height factor below this height
+    float HeightExponent = 1.0f;
 };
 
 struct MeshInstance
@@ -98,16 +145,22 @@ public:
     std::vector<PointLight>& PointLights() { return m_pointLights; }
     const std::vector<PointLight>& PointLights() const { return m_pointLights; }
 
+    std::vector<SpotLight>& SpotLights() { return m_spotLights; }
+    const std::vector<SpotLight>& SpotLights() const { return m_spotLights; }
+
     DirectionalLight Sun;
     SkySettings Sky;
     PostProcessSettings PostProcess;
+    FogSettings Fog;
 
     void AddInstance(std::shared_ptr<MeshData> mesh, const Material& mat, const glm::mat4& transform);
     void AddPointLight(const PointLight& light);
+    void AddSpotLight(const SpotLight& light);
 
 private:
     std::vector<MeshInstance> m_instances;
     std::vector<PointLight> m_pointLights;
+    std::vector<SpotLight> m_spotLights;
 };
 
 } // namespace engine

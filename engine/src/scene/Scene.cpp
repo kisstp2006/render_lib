@@ -12,4 +12,9 @@ void Scene::AddPointLight(const PointLight& light)
     m_pointLights.push_back(light);
 }
 
+void Scene::AddSpotLight(const SpotLight& light)
+{
+    m_spotLights.push_back(light);
+}
+
 } // namespace engine

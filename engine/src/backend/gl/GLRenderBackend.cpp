@@ -11,6 +11,7 @@
 #include <stb_image_write.h>
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,6 +28,7 @@ constexpr int kUnitMrao = 3;
 constexpr int kUnitIrradiance = 4;
 constexpr int kUnitPrefilter = 5;
 constexpr int kUnitBrdfLut = 6;
+constexpr int kUnitSpotShadow = 7;
 
 void APIENTRY GLDebugCallback(GLenum /*source*/, GLenum type, unsigned int /*id*/, GLenum severity,
                               GLsizei /*length*/, const char* message, const void* /*userParam*/)
@@ -93,24 +95,27 @@ void GLRenderBackend::Init(Window& window)
     log::Info("GL renderer initialized (HDR + MSAA + IBL + bloom)");
 }
 
-void GLRenderBackend::InitShadowMap()
+namespace {
+
+// Depth-only FBO for shadow rendering. Manual PCF is done in pbr.frag
+// against a plain sampler2D, so these stay regular (non-shadow) samplers -
+// GL_TEXTURE_COMPARE_MODE would force sampler2DShadow semantics and produce
+// undefined results.
+void CreateDepthTarget(unsigned int& fbo, unsigned int& texture, int size)
 {
-    glGenFramebuffers(1, &m_shadowFbo);
-    glGenTextures(1, &m_shadowMap);
-    glBindTexture(GL_TEXTURE_2D, m_shadowMap);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, m_shadowSize, m_shadowSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glGenFramebuffers(1, &fbo);
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, size, size, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-    // Manual PCF is done in pbr.frag against a plain sampler2D, so this must
-    // stay a regular (non-shadow) sampler - GL_TEXTURE_COMPARE_MODE would
-    // otherwise force sampler2DShadow semantics and produce undefined results.
     const float border[] = {1.0f, 1.0f, 1.0f, 1.0f};
     glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_shadowMap, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, texture, 0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
 
@@ -118,6 +123,14 @@ void GLRenderBackend::InitShadowMap()
         throw std::runtime_error("Shadow map framebuffer incomplete");
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+} // namespace
+
+void GLRenderBackend::InitShadowMap()
+{
+    CreateDepthTarget(m_shadowFbo, m_shadowMap, m_shadowSize);
+    CreateDepthTarget(m_spotShadowFbo, m_spotShadowMap, m_spotShadowSize);
 }
 
 void GLRenderBackend::CreateSceneTargets(int width, int height)
@@ -221,6 +234,8 @@ void GLRenderBackend::Shutdown()
     if (m_emptyVao) glDeleteVertexArrays(1, &m_emptyVao);
     if (m_shadowMap) glDeleteTextures(1, &m_shadowMap);
     if (m_shadowFbo) glDeleteFramebuffers(1, &m_shadowFbo);
+    if (m_spotShadowMap) glDeleteTextures(1, &m_spotShadowMap);
+    if (m_spotShadowFbo) glDeleteFramebuffers(1, &m_spotShadowFbo);
 }
 
 void GLRenderBackend::Resize(int width, int height)
@@ -293,6 +308,52 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
 
     glCullFace(GL_BACK);
 
+    // --- Spot (flashlight) shadow pass ---
+    // The first enabled, shadow-casting spot among the first 4 gets the map.
+    const auto& spots = scene.SpotLights();
+    std::vector<const SpotLight*> activeSpots;
+    for (const auto& spot : spots)
+    {
+        if (spot.Enabled && activeSpots.size() < 4)
+            activeSpots.push_back(&spot);
+    }
+
+    int spotShadowIndex = -1;
+    glm::mat4 spotShadowMatrix{1.0f};
+    for (size_t i = 0; i < activeSpots.size(); ++i)
+    {
+        if (activeSpots[i]->CastsShadows)
+        {
+            spotShadowIndex = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (spotShadowIndex >= 0)
+    {
+        const SpotLight& spot = *activeSpots[spotShadowIndex];
+        const glm::vec3 dir = glm::normalize(spot.Direction);
+        const glm::vec3 up = std::abs(dir.y) > 0.99f ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::mat4 spotView = glm::lookAt(spot.Position, spot.Position + dir, up);
+        const glm::mat4 spotProj = glm::perspective(glm::radians(spot.OuterConeDeg * 2.0f), 1.0f, 0.1f, spot.Range);
+        spotShadowMatrix = spotProj * spotView;
+
+        glViewport(0, 0, m_spotShadowSize, m_spotShadowSize);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_spotShadowFbo);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glCullFace(GL_FRONT);
+
+        m_shadowShader->Use();
+        m_shadowShader->SetMat4("uLightSpaceMatrix", spotShadowMatrix);
+        for (const auto& instance : scene.Instances())
+        {
+            m_shadowShader->SetMat4("uModel", instance.Transform);
+            GetOrCreateMesh(*instance.Mesh).Draw();
+        }
+
+        glCullFace(GL_BACK);
+    }
+
     // --- Main HDR pass (MSAA) ---
     glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFbo);
     glViewport(0, 0, m_width, m_height);
@@ -322,6 +383,34 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
         m_pbrShader->SetVec3(base + "Color", lights[i].Color * lights[i].Intensity);
         m_pbrShader->SetFloat(base + "Radius", lights[i].Radius);
     }
+
+    m_pbrShader->SetInt("uSpotLightCount", static_cast<int>(activeSpots.size()));
+    for (size_t i = 0; i < activeSpots.size(); ++i)
+    {
+        const SpotLight& spot = *activeSpots[i];
+        const std::string base = "uSpotLights[" + std::to_string(i) + "].";
+        m_pbrShader->SetVec3(base + "Position", spot.Position);
+        m_pbrShader->SetVec3(base + "Direction", glm::normalize(spot.Direction));
+        m_pbrShader->SetVec3(base + "Color", spot.Color * spot.Intensity);
+        m_pbrShader->SetFloat(base + "Range", spot.Range);
+        m_pbrShader->SetFloat(base + "CosInner", std::cos(glm::radians(spot.InnerConeDeg)));
+        m_pbrShader->SetFloat(base + "CosOuter", std::cos(glm::radians(spot.OuterConeDeg)));
+    }
+
+    m_pbrShader->SetInt("uSpotShadowIndex", spotShadowIndex);
+    m_pbrShader->SetMat4("uSpotShadowMatrix", spotShadowMatrix);
+    glActiveTexture(GL_TEXTURE0 + kUnitSpotShadow);
+    glBindTexture(GL_TEXTURE_2D, m_spotShadowMap);
+    m_pbrShader->SetInt("uSpotShadowMap", kUnitSpotShadow);
+
+    const FogSettings& fog = scene.Fog;
+    m_pbrShader->SetBool("uFogEnabled", fog.Enabled);
+    m_pbrShader->SetVec3("uFogColor", fog.Color);
+    m_pbrShader->SetFloat("uFogOpacity", fog.Opacity);
+    m_pbrShader->SetVec2("uFogStartEnd", {fog.Start, fog.End});
+    m_pbrShader->SetFloat("uFogDistanceExponent", fog.DistanceExponent);
+    m_pbrShader->SetVec2("uFogHeightTopBottom", {fog.HeightFadeTop, fog.HeightFadeBottom});
+    m_pbrShader->SetFloat("uFogHeightExponent", fog.HeightExponent);
 
     glActiveTexture(GL_TEXTURE0 + kUnitShadow);
     glBindTexture(GL_TEXTURE_2D, m_shadowMap);
@@ -380,10 +469,42 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_resolveFbo);
     glBlitFramebuffer(0, 0, m_width, m_height, 0, 0, m_width, m_height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-    // --- Bloom ---
+    // --- Auto-exposure (Source 2 tonemap controller style) ---
+    // Average scene luminance from the top mip of the HDR resolve texture,
+    // adapted over time toward Key/avgLum within [Min, Max] multipliers.
+    // The 1x1 readback is a sync point; acceptable until a GPU histogram
+    // replaces it.
     const PostProcessSettings& pp = scene.PostProcess;
+    const double now = glfwGetTime();
+    const float deltaTime = m_lastFrameTime > 0.0 ? static_cast<float>(now - m_lastFrameTime) : 0.016f;
+    m_lastFrameTime = now;
+
+    if (pp.Enabled && pp.AutoExposure)
+    {
+        glBindTexture(GL_TEXTURE_2D, m_hdrColorTex);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        const int maxDim = std::max(m_width, m_height);
+        const int topMip = static_cast<int>(std::floor(std::log2(static_cast<float>(maxDim))));
+
+        float avg[4] = {0, 0, 0, 0};
+        glGetTexImage(GL_TEXTURE_2D, topMip, GL_RGBA, GL_FLOAT, avg);
+        const float avgLum = std::max(0.2126f * avg[0] + 0.7152f * avg[1] + 0.0722f * avg[2], 1e-4f);
+
+        const float target = std::clamp(pp.AutoExposureKey / avgLum, pp.AutoExposureMin, pp.AutoExposureMax);
+        const float blend = 1.0f - std::exp(-deltaTime * pp.AutoExposureSpeed);
+        m_autoExposure += (target - m_autoExposure) * blend;
+    }
+    else
+    {
+        m_autoExposure = 1.0f;
+    }
+
+    const float effectiveExposure = pp.Exposure * m_autoExposure;
+
+    // --- Bloom ---
     if (pp.Enabled && !m_bloomChain.empty())
-        RenderBloom(pp.BloomThreshold, pp.Exposure);
+        RenderBloom(pp.BloomThreshold, effectiveExposure);
 
     // --- Post pass to backbuffer ---
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -399,7 +520,10 @@ void GLRenderBackend::RenderFrame(const Scene& scene, const Camera& camera)
     m_postShader->SetInt("uBloom", 1);
 
     m_postShader->SetBool("uPostEnabled", pp.Enabled);
-    m_postShader->SetFloat("uExposure", pp.Exposure);
+    m_postShader->SetFloat("uExposure", effectiveExposure);
+    m_postShader->SetFloat("uSaturation", pp.Saturation);
+    m_postShader->SetFloat("uContrast", pp.Contrast);
+    m_postShader->SetVec3("uColorTint", pp.ColorTint);
     m_postShader->SetFloat("uBloomStrength", (pp.Enabled && !m_bloomChain.empty()) ? pp.BloomStrength : 0.0f);
     m_postShader->SetFloat("uShoulderStrength", pp.ShoulderStrength);
     m_postShader->SetFloat("uLinearStrength", pp.LinearStrength);

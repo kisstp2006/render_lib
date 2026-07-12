@@ -50,10 +50,19 @@ private:
 
     std::unique_ptr<GLEnvironment> m_environment;
 
-    // Shadow map
+    // Sun shadow map
     unsigned int m_shadowFbo = 0;
     unsigned int m_shadowMap = 0;
     int m_shadowSize = 4096;
+
+    // Spot (flashlight) shadow map
+    unsigned int m_spotShadowFbo = 0;
+    unsigned int m_spotShadowMap = 0;
+    int m_spotShadowSize = 2048;
+
+    // Auto-exposure state
+    float m_autoExposure = 1.0f;
+    double m_lastFrameTime = 0.0;
 
     // MSAA HDR scene target + resolve texture
     unsigned int m_msaaFbo = 0;

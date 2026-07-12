@@ -24,6 +24,11 @@ uniform float uToeNumerator;
 uniform float uToeDenominator;
 uniform float uWhitePointScale; // 1 / Tonemap(WhitePoint), computed on CPU like VRF
 
+// LDR grade after tonemap (stand-in for Source's color correction LUT)
+uniform float uSaturation;
+uniform float uContrast;
+uniform vec3 uColorTint;
+
 vec3 TonemapColor(vec3 c)
 {
     vec3 num = c * (uShoulderStrength * c + uLinearStrength * uLinearAngle) + uToeNumerator * uToeStrength;
@@ -57,6 +62,12 @@ void main()
 
         color = TonemapColor(color);
         color = SrgbLinearToGamma(clamp(color, 0.0, 1.0));
+
+        // Grade in display space, where Source's color correction LUT lives
+        float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        color = mix(vec3(luma), color, uSaturation);
+        color = (color - 0.5) * uContrast + 0.5;
+        color = clamp(color * uColorTint, 0.0, 1.0);
 
         color += (Hash12(gl_FragCoord.xy) - 0.5) / 255.0;
     }

@@ -14,7 +14,17 @@ Current feature set (OpenGL backend):
 - **IBL**: procedural HDR sky baked to a cubemap, irradiance convolution,
   GGX-prefiltered specular mips, split-sum BRDF LUT (VRF `EnvBRDF` shape);
   re-baked automatically whenever the sun/sky settings change
-- **Shadows**: 4096 px sun shadow map with PCF
+- **Lights**: directional sun, point lights, Source 2-style spots with
+  inner/outer cone (see VRF `SceneLight`); the first shadow-casting spot gets
+  a 2048 px perspective shadow map — the sandbox binds it to `F` as a
+  camera-attached flashlight
+- **Shadows**: 4096 px sun shadow map with PCF + spot shadow map
+- **Gradient fog**: distance x height ramps with exponents, mirroring VRF's
+  `ApplyGradientFog` (fog.slang)
+- **Auto-exposure**: Source 2 tonemap-controller style adaptation
+  (Key/avgLuminance clamped to min/max, smoothed over time)
+- **Color grading**: post-tonemap saturation/contrast/tint (LUT loading is
+  on the roadmap; this covers the same stage in the pipeline)
 - **Bloom**: Jimenez 13-tap downsample with Karis average + threshold
   (mirroring VRF's `downsample_bloomthreshold`), tent-filter upsample chain
 - **Post**: exposure, ADD-bloom composite, Uncharted tonemapper with VRF's
@@ -91,7 +101,8 @@ Run with `--vulkan` to use the Vulkan backend once it's further along
 (currently it only proves out the swapchain round-trip with a clear color).
 
 **Controls:** right-click + mouse to look around, WASD to move, Q/E for
-down/up, hold Shift to move faster.
+down/up, hold Shift to move faster. I/K/J/L move the sun (sky + IBL re-bake
+live), F toggles the flashlight, F12 saves a PNG render into `renders/`.
 
 ## Roadmap
 
@@ -111,8 +122,8 @@ Rough order, each step buildable/testable on its own:
 5. **Vulkan PBR parity** — shader modules (compile the GLSL to SPIR-V at
    build time via `glslang`/`glslc`), pipeline + descriptor layout, depth
    buffer, shadow pass — matching what `GLRenderBackend` already does.
-6. **Local light shadows + more light types** (spot with cookie, capsule)
-   for Source-style interior lighting setups.
+6. **More local-light features**: shadow maps for all spots (atlas), light
+   cookies/projected textures, barn-door area lights (VRF `lighting.barn`).
 7. Only *then* revisit whether a shared RHI abstraction actually pays for
    itself between the two backends.
 

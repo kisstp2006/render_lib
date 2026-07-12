@@ -3,12 +3,12 @@
 // the standard PBR material-response demo scene with the Source 2-style
 // HDR/bloom/tonemap pipeline on top.
 //
-// Usage: sandbox [--vulkan] [--screenshot <path.png> [--frames N]]
+// Usage: sandbox [--vulkan] [--flashlight] [--screenshot <path.png> [--frames N]]
 //
 // Controls:
 //   RMB + mouse   look around          WASD/Q/E  move (Shift = faster)
 //   I/K           sun elevation        J/L       sun azimuth
-//   F12           save render to renders/render_<n>.png
+//   F             toggle flashlight    F12       save render to renders/
 
 #include <cstdio>
 #include <filesystem>
@@ -35,6 +35,7 @@ int main(int argc, char** argv)
 
     std::string screenshotPath;
     int screenshotFrame = 10;
+    bool flashlightOn = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -45,6 +46,8 @@ int main(int argc, char** argv)
             screenshotPath = argv[++i];
         else if (arg == "--frames" && i + 1 < argc)
             screenshotFrame = std::atoi(argv[++i]);
+        else if (arg == "--flashlight")
+            flashlightOn = true;
     }
 
     Application app(desc);
@@ -70,7 +73,7 @@ int main(int argc, char** argv)
 
     constexpr int kRows = 5;    // metallic 0 -> 1
     constexpr int kCols = 7;    // roughness 0.05 -> 1
-    constexpr float kSpacing = 2.2f;
+    constexpr float kSpacing = 2.4f; // sphere diameter is 1.8 - keep clear gaps both ways
 
     for (int row = 0; row < kRows; ++row)
     {
@@ -82,7 +85,7 @@ int main(int argc, char** argv)
             mat.Roughness = glm::mix(0.05f, 1.0f, static_cast<float>(col) / static_cast<float>(kCols - 1));
 
             const float x = (col - (kCols - 1) * 0.5f) * kSpacing;
-            const float y = (kRows - 1 - row) * kSpacing * 0.5f + 0.4f;
+            const float y = (kRows - 1 - row) * kSpacing + 0.4f;
             const glm::mat4 transform = glm::translate(glm::mat4(1.0f), {x, y, 0.0f});
 
             scene.AddInstance(sphereMesh, mat, transform);
@@ -110,10 +113,32 @@ int main(int argc, char** argv)
     rim.Radius = 18.0f;
     scene.AddPointLight(rim);
 
+    // Depth haze so the scene reads Source-map-like at distance
+    scene.Fog.Enabled = true;
+    scene.Fog.Color = {0.22f, 0.25f, 0.32f};
+    scene.Fog.Opacity = 0.8f;
+    scene.Fog.Start = 30.0f;
+    scene.Fog.End = 140.0f;
+    scene.Fog.HeightFadeTop = 30.0f;
+    scene.Fog.HeightFadeBottom = -1.0f;
+
+    scene.PostProcess.AutoExposure = true;
+
+    // Camera flashlight (Source-style), toggled with F
+    SpotLight flashlight;
+    flashlight.Color = {1.0f, 0.97f, 0.9f};
+    flashlight.Intensity = 350.0f; // candela-ish: inverse-square falloff needs big numbers
+    flashlight.Range = 45.0f;
+    flashlight.InnerConeDeg = 13.0f;
+    flashlight.OuterConeDeg = 22.0f;
+    flashlight.CastsShadows = true;
+    flashlight.Enabled = flashlightOn;
+    scene.AddSpotLight(flashlight);
+
     Camera& camera = app.GetCamera();
-    camera.Position = {0.0f, 3.5f, 12.0f};
+    camera.Position = {0.0f, 5.0f, 16.0f};
     camera.Yaw = -90.0f;
-    camera.Pitch = -12.0f;
+    camera.Pitch = -8.0f;
 
     // Sun driven in spherical coordinates by I/K/J/L
     float sunAzimuth = glm::radians(215.0f);
@@ -122,9 +147,21 @@ int main(int argc, char** argv)
     int frameCounter = 0;
     int manualShotCounter = 0;
     bool f12WasDown = false;
+    bool fWasDown = false;
 
     app.SetUpdateCallback([&](float dt) {
         const Input& input = app.GetInput();
+
+        // Flashlight follows the camera; F toggles it
+        const bool fDown = input.IsKeyDown(GLFW_KEY_F);
+        if (fDown && !fWasDown)
+            flashlightOn = !flashlightOn;
+        fWasDown = fDown;
+
+        SpotLight& fl = scene.SpotLights()[0];
+        fl.Enabled = flashlightOn;
+        fl.Position = camera.Position;
+        fl.Direction = camera.Forward();
 
         const float rotSpeed = 0.8f * dt;
         if (input.IsKeyDown(GLFW_KEY_J)) sunAzimuth -= rotSpeed;
