@@ -7,12 +7,15 @@
 #include <glm/glm.hpp>
 
 #include "engine/scene/Mesh.h"
+#include "engine/scene/Texture.h"
 
 namespace engine {
 
-// Scalar PBR parameters in the metallic/roughness convention, matching the
+// PBR parameters in the metallic/roughness convention, matching the
 // Source 2 vr_standard/complex material model closely enough for this engine's
 // purposes (see pbr.slang: SpecularColor/AlbedoColor/Roughness terms).
+// Scalars act as factors; texture slots are optional and multiply into them.
+// MRAO packing follows the Source 2 convention: R=metalness, G=roughness, B=AO.
 struct Material
 {
     glm::vec3 Albedo{0.8f, 0.8f, 0.8f};
@@ -23,6 +26,42 @@ struct Material
     // Source materials default specular to a flat 0.04 (4%) dielectric F0,
     // exposed here in case a material wants a non-standard value (e.g. skin, wax).
     float SpecularF0 = 0.04f;
+
+    std::shared_ptr<TextureData> AlbedoMap;
+    std::shared_ptr<TextureData> NormalMap;
+    std::shared_ptr<TextureData> MraoMap;
+};
+
+// Procedural sky feeding both the visible skybox and the IBL bake. HDR:
+// SunIntensity is deliberately way above 1.0 so the sun disk drives bloom
+// and specular highlights like a Source 2 sun does.
+struct SkySettings
+{
+    glm::vec3 ZenithColor{0.18f, 0.32f, 0.66f};
+    glm::vec3 HorizonColor{0.72f, 0.80f, 0.94f};
+    glm::vec3 GroundColor{0.23f, 0.21f, 0.19f};
+    float SunAngularRadiusDeg = 1.2f;
+    float SunIntensity = 80.0f;
+    float SkyIntensity = 1.0f;
+};
+
+// Mirrors the tonemapper parameterization in VRF's post_processing.frag.slang
+// (Uncharted curve with Source's shoulder/linear/toe split + white point).
+struct PostProcessSettings
+{
+    bool Enabled = true;
+    // The classic Uncharted curve wants a healthy exposure bias to hit a
+    // pleasing mid-gray (VRF multiplies ToneMapScalar * ExposureBias too).
+    float Exposure = 2.2f;
+    float BloomStrength = 0.12f;        // ADD-bloom path weight
+    float BloomThreshold = 1.0f;        // luminance where bloom starts to pick up
+    float ShoulderStrength = 0.15f;
+    float LinearStrength = 0.50f;
+    float LinearAngle = 0.10f;
+    float ToeStrength = 0.20f;
+    float ToeNumerator = 0.02f;
+    float ToeDenominator = 0.30f;
+    float WhitePoint = 8.0f;
 };
 
 struct DirectionalLight
@@ -60,7 +99,8 @@ public:
     const std::vector<PointLight>& PointLights() const { return m_pointLights; }
 
     DirectionalLight Sun;
-    glm::vec3 AmbientColor{0.35f, 0.38f, 0.45f}; // cool sky-ish ambient, Source-map-like
+    SkySettings Sky;
+    PostProcessSettings PostProcess;
 
     void AddInstance(std::shared_ptr<MeshData> mesh, const Material& mat, const glm::mat4& transform);
     void AddPointLight(const PointLight& light);

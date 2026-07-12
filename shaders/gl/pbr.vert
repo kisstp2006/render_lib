@@ -13,6 +13,7 @@ uniform mat4 uLightSpaceMatrix;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
+out vec4 vTangent; // xyz world-space tangent, w bitangent sign
 out vec2 vUV;
 out vec4 vLightSpacePos;
 
@@ -21,6 +22,7 @@ void main()
     vec4 worldPos = uModel * vec4(aPosition, 1.0);
     vWorldPos = worldPos.xyz;
     vNormal = normalize(mat3(uNormalMatrix) * aNormal);
+    vTangent = vec4(normalize(mat3(uModel) * aTangent.xyz), aTangent.w);
     vUV = aUV;
     vLightSpacePos = uLightSpaceMatrix * worldPos;
 

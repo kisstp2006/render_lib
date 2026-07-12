@@ -66,6 +66,9 @@ void Application::Run()
 
         m_camera.Update(m_input, deltaTime, lookEnabled);
 
+        if (m_updateCallback)
+            m_updateCallback(deltaTime);
+
         m_backend->RenderFrame(m_scene, m_camera);
 
         if (m_desc.api == GraphicsApi::OpenGL)

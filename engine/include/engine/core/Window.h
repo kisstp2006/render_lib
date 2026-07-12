@@ -29,6 +29,7 @@ public:
     Window& operator=(const Window&) = delete;
 
     bool ShouldClose() const;
+    void RequestClose() const;
     void PollEvents() const;
     void SwapBuffers() const;
 

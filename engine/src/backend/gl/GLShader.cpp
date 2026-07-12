@@ -93,9 +93,29 @@ int GLShader::GetUniformLocation(const std::string& name)
     return loc;
 }
 
+void GLShader::SetBool(const std::string& name, bool value)
+{
+    glUniform1i(GetUniformLocation(name), value ? 1 : 0);
+}
+
 void GLShader::SetInt(const std::string& name, int value)
 {
     glUniform1i(GetUniformLocation(name), value);
+}
+
+void GLShader::SetVec2(const std::string& name, const glm::vec2& value)
+{
+    glUniform2fv(GetUniformLocation(name), 1, &value[0]);
+}
+
+void GLShader::SetVec4(const std::string& name, const glm::vec4& value)
+{
+    glUniform4fv(GetUniformLocation(name), 1, &value[0]);
+}
+
+void GLShader::SetMat3(const std::string& name, const glm::mat3& value)
+{
+    glUniformMatrix3fv(GetUniformLocation(name), 1, GL_FALSE, &value[0][0]);
 }
 
 void GLShader::SetFloat(const std::string& name, float value)

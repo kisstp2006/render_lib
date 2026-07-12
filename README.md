@@ -2,9 +2,26 @@
 
 A from-scratch C++20 / CMake renderer aiming at the *look* of Valve's Source 2
 renderer: physically based metallic/roughness materials, Cook-Torrance GGX
-specular, soft shadows, a filmic tonemap — built up incrementally with an
-OpenGL 4.6 backend first and a Vulkan backend growing alongside it behind a
-shared, small interface (`IRenderBackend`).
+specular, image-based lighting, HDR bloom and Source's tonemapper — built up
+incrementally with an OpenGL 4.6 backend first and a Vulkan backend growing
+alongside it behind a shared, small interface (`IRenderBackend`).
+
+Current feature set (OpenGL backend):
+
+- **HDR pipeline**: MSAA RGBA16F scene target, resolve, post pass to backbuffer
+- **PBR**: Cook-Torrance GGX with the same D/G/F terms as VRF's `pbr.slang`;
+  albedo/normal/MRAO texture maps (Source 2 channel convention) + scalars
+- **IBL**: procedural HDR sky baked to a cubemap, irradiance convolution,
+  GGX-prefiltered specular mips, split-sum BRDF LUT (VRF `EnvBRDF` shape);
+  re-baked automatically whenever the sun/sky settings change
+- **Shadows**: 4096 px sun shadow map with PCF
+- **Bloom**: Jimenez 13-tap downsample with Karis average + threshold
+  (mirroring VRF's `downsample_bloomthreshold`), tent-filter upsample chain
+- **Post**: exposure, ADD-bloom composite, Uncharted tonemapper with VRF's
+  exact parameterization (shoulder/linear/toe + precomputed white point
+  scale), exact linear->sRGB, banding dither
+- **Render to PNG**: `--screenshot out.png` headless-ish capture or F12 in
+  the sandbox — usable as a library for offline rendering
 
 Cross-platform by construction (GLFW + OpenGL/Vulkan, no Win32-only code
 paths); developed on Windows but should build on Linux/macOS as-is.
@@ -80,22 +97,25 @@ down/up, hold Shift to move faster.
 
 Rough order, each step buildable/testable on its own:
 
-1. **Vulkan PBR parity** — shader modules (compile the GLSL to SPIR-V at
-   build time via `glslang`/`glslc`), pipeline + descriptor layout, depth
-   buffer, shadow pass — matching what `GLRenderBackend` already does.
-2. **Texture-mapped materials** — albedo/normal/metallic-roughness/AO maps
-   (stb_image is already wired in via the `stb_image` target), replacing the
-   sandbox's flat scalar materials.
-3. **Real image-based lighting** — prefiltered specular environment map +
-   irradiance convolution, replacing the current flat two-tone ambient term
-   in `pbr.frag`.
-4. **Cascaded shadow maps** for the directional light instead of the current
+1. **glTF scene loading** so real test scenes/assets can be brought in instead
+   of only procedural primitives — the biggest step toward "make pretty
+   renders of real content".
+2. **Cascaded shadow maps** for the directional light instead of the current
    single fixed-size ortho box (fine for a bounded demo scene, not for an
    open level).
-5. **glTF scene loading** so real test scenes/assets can be brought in instead
-   of only procedural primitives.
-6. **Source-2-flavored post stack**: bloom, color grading LUT, FXAA/TAA — see
-   `ValveResourceFormat/Renderer/Shaders/post_processing.frag.slang` and
-   `bloom`-related shaders for reference on the intended look.
+3. **HDR equirect environment loading** (stb_image supports .hdr) as an
+   alternative to the procedural sky for studio-style product renders.
+4. **Color grading LUT + FXAA/TAA** to finish the Source 2 post stack — see
+   `ValveResourceFormat/Renderer/Shaders/post_processing.frag.slang`
+   (`g_tColorCorrectionLUT`) for the reference behavior.
+5. **Vulkan PBR parity** — shader modules (compile the GLSL to SPIR-V at
+   build time via `glslang`/`glslc`), pipeline + descriptor layout, depth
+   buffer, shadow pass — matching what `GLRenderBackend` already does.
+6. **Local light shadows + more light types** (spot with cookie, capsule)
+   for Source-style interior lighting setups.
 7. Only *then* revisit whether a shared RHI abstraction actually pays for
    itself between the two backends.
+
+Done so far: HDR+MSAA pipeline, IBL (irradiance/prefilter/BRDF LUT),
+sun shadow mapping with PCF, Jimenez bloom, VRF-parameterized Uncharted
+tonemap, textured materials with normal mapping, PNG capture.

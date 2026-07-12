@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <glm/glm.hpp>
 
 namespace engine {
@@ -27,6 +29,9 @@ public:
     virtual void Resize(int width, int height) = 0;
 
     virtual void RenderFrame(const Scene& scene, const Camera& camera) = 0;
+
+    // Saves the next presented frame as a PNG. Default: unsupported no-op.
+    virtual void RequestScreenshot(const std::string& /*path*/) {}
 
     virtual const char* Name() const = 0;
 };

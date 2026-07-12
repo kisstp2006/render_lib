@@ -6,9 +6,13 @@ set(ENGINE_CORE_SOURCES
     src/core/Camera.cpp
     src/scene/Mesh.cpp
     src/scene/Scene.cpp
+    src/scene/Texture.cpp
+    src/scene/StbImpl.cpp
     src/backend/gl/GLRenderBackend.cpp
     src/backend/gl/GLShader.cpp
     src/backend/gl/GLMesh.cpp
+    src/backend/gl/GLTexture.cpp
+    src/backend/gl/GLEnvironment.cpp
 )
 
 add_library(engine STATIC ${ENGINE_CORE_SOURCES})

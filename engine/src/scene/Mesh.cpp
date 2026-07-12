@@ -49,7 +49,8 @@ MeshData MakeSphere(float radius, int stacks, int slices)
             const uint32_t c = static_cast<uint32_t>((i + 1) * ringVerts + j + 1);
             const uint32_t d = static_cast<uint32_t>(i * ringVerts + j + 1);
 
-            mesh.Indices.insert(mesh.Indices.end(), {a, b, c, a, c, d});
+            // CCW seen from outside the sphere (matches back-face culling).
+            mesh.Indices.insert(mesh.Indices.end(), {a, c, b, a, d, c});
         }
     }
 
@@ -111,7 +112,9 @@ MeshData MakePlane(float size, int subdivisions)
             const uint32_t b = static_cast<uint32_t>(z * rowVerts + x + 1);
             const uint32_t c = static_cast<uint32_t>((z + 1) * rowVerts + x + 1);
             const uint32_t d = static_cast<uint32_t>((z + 1) * rowVerts + x);
-            mesh.Indices.insert(mesh.Indices.end(), {a, b, c, a, c, d});
+            // CCW when viewed from +Y (the normal direction), so the top
+            // face survives back-face culling.
+            mesh.Indices.insert(mesh.Indices.end(), {a, c, b, a, d, c});
         }
     }
 
