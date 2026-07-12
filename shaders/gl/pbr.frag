@@ -10,14 +10,19 @@ in vec3 vWorldPos;
 in vec3 vNormal;
 in vec4 vTangent;
 in vec2 vUV;
-in vec4 vLightSpacePos;
 
 out vec4 FragColor;
 
 uniform vec3 uCameraPos;
+uniform mat4 uView;
 uniform vec3 uSunDirection; // points FROM the sun TOWARD the scene
 uniform vec3 uSunColor;
 uniform bool uSunCastsShadows;
+uniform mat4 uCascadeMatrices[4];
+uniform float uCascadeSplits[4];
+uniform sampler2D uShadowMaps[4];
+uniform float uCascadeBlendFraction;
+uniform bool uDebugCascades;
 
 struct PointLight
 {
@@ -80,7 +85,6 @@ uniform sampler2D uMetallicRoughnessMap; // unit 3, glTF: G=roughness, B=metalne
 uniform sampler2D uEmissiveMap; // unit 8
 uniform sampler2D uOcclusionMap; // unit 9, R=occlusion
 
-uniform sampler2D uShadowMap;        // unit 0
 uniform samplerCube uIrradianceMap;  // unit 4
 uniform samplerCube uPrefilterMap;   // unit 5
 uniform sampler2D uBrdfLut;          // unit 6
@@ -134,8 +138,9 @@ vec3 EvaluateLight(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 albedo, vec3 F0, 
     return (diffuse + specular) * radiance * NoL;
 }
 
-float SampleShadow(vec4 lightSpacePos, float NoL)
+float SampleCascadeShadow(int cascade, vec3 worldPos, float NoL)
 {
+    vec4 lightSpacePos = uCascadeMatrices[cascade] * vec4(worldPos, 1.0);
     vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
     proj = proj * 0.5 + 0.5;
 
@@ -144,18 +149,49 @@ float SampleShadow(vec4 lightSpacePos, float NoL)
 
     float bias = max(0.0025 * (1.0 - NoL), 0.0005);
     float shadow = 0.0;
-    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMaps[cascade], 0));
 
     for (int x = -1; x <= 1; ++x)
     {
         for (int y = -1; y <= 1; ++y)
         {
-            float closestDepth = texture(uShadowMap, proj.xy + vec2(x, y) * texel).r;
+            float closestDepth = texture(uShadowMaps[cascade], proj.xy + vec2(x, y) * texel).r;
             shadow += (proj.z - bias) > closestDepth ? 0.0 : 1.0;
         }
     }
 
     return shadow / 9.0;
+}
+
+float SampleCascadedShadow(vec3 worldPos, float NoL, out int cascadeIndex)
+{
+    float viewDepth = -(uView * vec4(worldPos, 1.0)).z;
+    cascadeIndex = 3;
+    for (int i = 0; i < 4; ++i)
+    {
+        if (viewDepth <= uCascadeSplits[i])
+        {
+            cascadeIndex = i;
+            break;
+        }
+    }
+    if (viewDepth > uCascadeSplits[3])
+        return 1.0;
+
+    float visibility = SampleCascadeShadow(cascadeIndex, worldPos, NoL);
+    if (cascadeIndex < 3)
+    {
+        float cascadeNear = cascadeIndex == 0 ? 0.0 : uCascadeSplits[cascadeIndex - 1];
+        float blendWidth = (uCascadeSplits[cascadeIndex] - cascadeNear) * uCascadeBlendFraction;
+        float blendStart = uCascadeSplits[cascadeIndex] - blendWidth;
+        if (viewDepth > blendStart)
+        {
+            float nextVisibility = SampleCascadeShadow(cascadeIndex + 1, worldPos, NoL);
+            visibility = mix(visibility, nextVisibility,
+                             smoothstep(blendStart, uCascadeSplits[cascadeIndex], viewDepth));
+        }
+    }
+    return visibility;
 }
 
 float SampleSpotShadow(vec3 worldPos, float NoL)
@@ -244,12 +280,13 @@ void main()
     roughness = clamp(roughness, 0.045, 1.0);
 
     vec3 L0 = vec3(0.0);
+    int activeCascade = 0;
 
     // Sun (directional)
     {
         vec3 L = normalize(-uSunDirection);
         float NoL = max(dot(N, L), 0.0);
-        float shadow = uSunCastsShadows && NoL > 0.0 ? SampleShadow(vLightSpacePos, NoL) : 1.0;
+        float shadow = uSunCastsShadows && NoL > 0.0 ? SampleCascadedShadow(vWorldPos, NoL, activeCascade) : 1.0;
         L0 += EvaluateLight(N, V, L, uSunColor, albedo, F0, roughness, metallic) * shadow;
     }
 
@@ -313,6 +350,13 @@ void main()
     if (uHasEmissiveMap)
         emissive *= texture(uEmissiveMap, vUV).rgb;
     vec3 color = L0 + ambient + emissive;
+    if (uDebugCascades)
+    {
+        const vec3 cascadeColors[4] = vec3[4](
+            vec3(1.0, 0.25, 0.25), vec3(0.25, 1.0, 0.25),
+            vec3(0.25, 0.45, 1.0), vec3(1.0, 0.85, 0.2));
+        color = mix(color, color * cascadeColors[activeCascade], 0.55);
+    }
     ApplyGradientFog(color, vWorldPos);
 
     FragColor = vec4(color, 1.0);

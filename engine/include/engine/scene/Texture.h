@@ -24,8 +24,9 @@ namespace textures {
 
 // Loads via stb_image (PNG/JPG/TGA/BMP/HDR-as-LDR...). Returns nullptr and
 // logs on failure.
-std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb);
-std::shared_ptr<TextureData> LoadFromMemory(const uint8_t* bytes, size_t size, bool srgb, const std::string& debugName = "memory image");
+std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb, bool flipVertically = true);
+std::shared_ptr<TextureData> LoadFromMemory(const uint8_t* bytes, size_t size, bool srgb,
+                                            const std::string& debugName = "memory image", bool flipVertically = true);
 
 std::shared_ptr<TextureData> MakeSolidColor(glm::vec4 color, bool srgb = true);
 std::shared_ptr<TextureData> MakeChecker(int size, int cells, glm::vec3 colorA, glm::vec3 colorB);

@@ -9,13 +9,11 @@ uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProj;
 uniform mat4 uNormalMatrix;
-uniform mat4 uLightSpaceMatrix;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
 out vec4 vTangent; // xyz world-space tangent, w bitangent sign
 out vec2 vUV;
-out vec4 vLightSpacePos;
 
 void main()
 {
@@ -24,7 +22,5 @@ void main()
     vNormal = normalize(mat3(uNormalMatrix) * aNormal);
     vTangent = vec4(normalize(mat3(uModel) * aTangent.xyz), aTangent.w);
     vUV = aUV;
-    vLightSpacePos = uLightSpaceMatrix * worldPos;
-
     gl_Position = uProj * uView * worldPos;
 }

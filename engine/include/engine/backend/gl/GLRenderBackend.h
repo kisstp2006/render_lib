@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -10,6 +11,7 @@
 #include "engine/backend/gl/GLMesh.h"
 #include "engine/backend/gl/GLShader.h"
 #include "engine/backend/gl/GLTexture.h"
+#include "engine/render/CascadedShadows.h"
 
 namespace engine {
 
@@ -50,10 +52,18 @@ private:
 
     std::unique_ptr<GLEnvironment> m_environment;
 
-    // Sun shadow map
+    // Four independently sized directional-light cascades.
     unsigned int m_shadowFbo = 0;
-    unsigned int m_shadowMap = 0;
-    int m_shadowSize = 4096;
+    std::array<unsigned int, kShadowCascadeCount> m_shadowMaps{};
+    std::array<int, kShadowCascadeCount> m_shadowSizes{2048, 2048, 1024, 1024};
+    unsigned int m_shadowTimeQueries[2]{};
+    int m_shadowQueryIndex = 0;
+    int m_shadowQueryFrames = 0;
+    float m_lastShadowGpuMs = 0.0f;
+    float m_shadowGpuTotalMs = 0.0f;
+    float m_shadowGpuMinMs = 1.0e9f;
+    float m_shadowGpuMaxMs = 0.0f;
+    int m_shadowGpuSamples = 0;
 
     // Spot (flashlight) shadow map
     unsigned int m_spotShadowFbo = 0;

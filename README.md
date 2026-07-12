@@ -18,7 +18,9 @@ Current feature set (OpenGL backend):
   inner/outer cone (see VRF `SceneLight`); the first shadow-casting spot gets
   a 2048 px perspective shadow map — the sandbox binds it to `F` as a
   camera-attached flashlight
-- **Shadows**: 4096 px sun shadow map with PCF + spot shadow map
+- **Local shadows**: 2048 px perspective shadow map for the first shadow-casting spot
+- **Cascaded sun shadows**: four camera-fitted, texel-stabilized cascades with
+  logarithmic/linear split blending, PCF, transition blending and a debug view
 - **Gradient fog**: distance x height ramps with exponents, mirroring VRF's
   `ApplyGradientFog` (fog.slang)
 - **Auto-exposure**: Source 2 tonemap-controller style adaptation
@@ -109,7 +111,9 @@ Run with `--sample-gltf` for the bundled Khronos Water Bottle, or with
 
 **Controls:** right-click + mouse to look around, WASD to move, Q/E for
 down/up, hold Shift to move faster. I/K/J/L move the sun (sky + IBL re-bake
-live), F toggles the flashlight, F12 saves a PNG render into `renders/`.
+live), F toggles the flashlight, C toggles cascade debug colors, F12 saves a
+PNG render into `renders/`. `--shadow-stress --shadow-benchmark` runs the CSM
+stress scene with asynchronous GPU timing.
 
 ## Roadmap
 
@@ -118,9 +122,8 @@ Rough order, each step buildable/testable on its own:
 1. **glTF scene loading** (initial static metallic-roughness support complete) so real test scenes/assets can be brought in instead
    of only procedural primitives — the biggest step toward "make pretty
    renders of real content".
-2. **Cascaded shadow maps** for the directional light instead of the current
-   single fixed-size ortho box (fine for a bounded demo scene, not for an
-   open level).
+2. **Cascaded shadow maps** — complete: four stabilized cascades, blended
+   transitions, PCF, debug visualization and GPU benchmark mode.
 3. **HDR equirect environment loading** (stb_image supports .hdr) as an
    alternative to the procedural sky for studio-style product renders.
 4. **Color grading LUT + FXAA/TAA** to finish the Source 2 post stack — see

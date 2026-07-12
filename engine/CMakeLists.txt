@@ -8,8 +8,12 @@ set(ENGINE_CORE_SOURCES
     src/scene/Scene.cpp
     src/scene/Texture.cpp
     src/scene/GltfLoader.cpp
-    src/scene/StbImpl.cpp
-    src/backend/gl/GLRenderBackend.cpp
+    src/render/CascadedShadows.cpp
+    src/third_party/StbImpl.cpp
+    src/backend/gl/GLRenderBackend.Frame.cpp
+    src/backend/gl/GLRenderBackend.Resources.cpp
+    src/backend/gl/GLRenderBackend.Targets.cpp
+    src/backend/gl/GLRenderBackend.Post.cpp
     src/backend/gl/GLShader.cpp
     src/backend/gl/GLMesh.cpp
     src/backend/gl/GLTexture.cpp

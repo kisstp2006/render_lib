@@ -1,4 +1,8 @@
-add_executable(sandbox main.cpp)
+add_executable(sandbox
+    main.cpp
+    SandboxScene.cpp
+    SandboxControls.cpp
+)
 target_link_libraries(sandbox PRIVATE engine)
 target_compile_definitions(sandbox PRIVATE ENGINE_ASSET_DIR="${CMAKE_SOURCE_DIR}/examples/assets")
 

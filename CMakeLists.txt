@@ -11,6 +11,7 @@ endif()
 
 option(ENGINE_BUILD_VULKAN "Build the Vulkan backend" ON)
 option(ENGINE_BUILD_SANDBOX "Build the sandbox example app" ON)
+option(ENGINE_BUILD_TESTS "Build engine unit tests" ON)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
@@ -81,4 +82,9 @@ add_subdirectory(engine)
 
 if(ENGINE_BUILD_SANDBOX)
     add_subdirectory(examples/sandbox)
+endif()
+
+if(ENGINE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()

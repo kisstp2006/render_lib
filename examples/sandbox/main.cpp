@@ -1,227 +1,58 @@
-// Sandbox: a grid of spheres sweeping metallic (rows) x roughness (columns),
-// a textured ground plane, procedural sky with IBL, sun + two point lights -
-// the standard PBR material-response demo scene with the Source 2-style
-// HDR/bloom/tonemap pipeline on top.
-//
-// Usage: sandbox [--vulkan] [--sample-gltf | --gltf <file>] [--flashlight]
-//                [--screenshot <path.png> [--frames N]]
-//
-// Controls:
-//   RMB + mouse   look around          WASD/Q/E  move (Shift = faster)
-//   I/K           sun elevation        J/L       sun azimuth
-//   F             toggle flashlight    F12       save render to renders/
+// Source-like PBR renderer sandbox and glTF test application.
 
-#include <cstdio>
-#include <filesystem>
-#include <memory>
-#include <string>
-
-#include <GLFW/glfw3.h>
-#include <glm/gtc/matrix_transform.hpp>
+#include "SandboxControls.h"
+#include "SandboxScene.h"
 
 #include "engine/core/Application.h"
 #include "engine/scene/GltfLoader.h"
-#include "engine/scene/Mesh.h"
-#include "engine/scene/Scene.h"
-#include "engine/scene/Texture.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 using namespace engine;
 
 int main(int argc, char** argv)
 {
-    WindowDesc desc;
-    desc.title = "Source-Like PBR Sandbox";
-    desc.width = 1600;
-    desc.height = 900;
-    desc.api = GraphicsApi::OpenGL;
+    WindowDesc window;
+    window.title = "Source-Like PBR Sandbox";
+    window.width = 1600;
+    window.height = 900;
 
+    SandboxSceneConfig sceneConfig;
     std::string screenshotPath;
     int screenshotFrame = 10;
-    bool flashlightOn = false;
-    bool sampleGltf = false;
-    std::string gltfPath;
-
     for (int i = 1; i < argc; ++i)
     {
-        const std::string arg = argv[i];
-        if (arg == "--vulkan")
-            desc.api = GraphicsApi::Vulkan;
-        else if (arg == "--screenshot" && i + 1 < argc)
-            screenshotPath = argv[++i];
-        else if (arg == "--frames" && i + 1 < argc)
-            screenshotFrame = std::atoi(argv[++i]);
-        else if (arg == "--flashlight")
-            flashlightOn = true;
-        else if (arg == "--sample-gltf")
+        const std::string argument = argv[i];
+        if (argument == "--vulkan") window.api = GraphicsApi::Vulkan;
+        else if (argument == "--screenshot" && i + 1 < argc) screenshotPath = argv[++i];
+        else if (argument == "--frames" && i + 1 < argc) screenshotFrame = std::atoi(argv[++i]);
+        else if (argument == "--flashlight") sceneConfig.FlashlightOn = true;
+        else if (argument == "--shadow-debug") sceneConfig.ShadowDebug = true;
+        else if (argument == "--shadow-stress") sceneConfig.ShadowStress = true;
+        else if (argument == "--shadow-benchmark") sceneConfig.ShadowBenchmark = true;
+        else if (argument == "--sample-gltf")
         {
-            sampleGltf = true;
-            gltfPath = std::string(ENGINE_ASSET_DIR) + "/WaterBottle.glb";
+            sceneConfig.SampleGltf = true;
+            sceneConfig.GltfPath = std::string(ENGINE_ASSET_DIR) + "/WaterBottle.glb";
         }
-        else if (arg == "--gltf" && i + 1 < argc)
-            gltfPath = argv[++i];
+        else if (argument == "--gltf" && i + 1 < argc) sceneConfig.GltfPath = argv[++i];
     }
 
-    Application app(desc);
-    Scene& scene = app.GetScene();
-
-    scene.Sun.Direction = glm::normalize(glm::vec3(-0.35f, -0.65f, -0.25f));
-    scene.Sun.Color = {1.0f, 0.95f, 0.85f};
-    scene.Sun.Intensity = 7.0f;
-    scene.Sky.SkyIntensity = 0.45f;   // keep IBL ambient well below the sun
-    scene.PostProcess.Exposure = 1.7f;
-
-    auto sphereMesh = std::make_shared<MeshData>(primitives::MakeSphere(0.9f, 48, 48));
-    auto planeMesh = std::make_shared<MeshData>(primitives::MakePlane(40.0f, 1));
-
-    // Ground: subtle checker so the texture path and shadows both read well.
-    Material groundMat;
-    groundMat.Albedo = {1.0f, 1.0f, 1.0f};
-    groundMat.Metallic = 0.0f;
-    groundMat.Roughness = 0.8f;
-    // Plane UVs span 0..40 (1 repeat per meter); 2 cells/repeat = 0.5 m checker
-    groundMat.AlbedoMap = textures::MakeChecker(256, 2, {0.30f, 0.30f, 0.32f}, {0.38f, 0.38f, 0.40f});
-    scene.AddInstance(planeMesh, groundMat, glm::translate(glm::mat4(1.0f), {0.0f, -1.0f, 0.0f}));
-
-    if (gltfPath.empty())
+    Application app(window);
+    try
     {
-        constexpr int kRows = 5;
-        constexpr int kCols = 7;
-        constexpr float kSpacing = 2.4f;
-
-        for (int row = 0; row < kRows; ++row)
-        {
-            for (int col = 0; col < kCols; ++col)
-            {
-                Material mat;
-                mat.Albedo = {0.92f, 0.2f, 0.15f};
-                mat.Metallic = static_cast<float>(row) / static_cast<float>(kRows - 1);
-                mat.Roughness = glm::mix(0.05f, 1.0f, static_cast<float>(col) / static_cast<float>(kCols - 1));
-
-                const float x = (col - (kCols - 1) * 0.5f) * kSpacing;
-                const float y = (kRows - 1 - row) * kSpacing + 0.4f;
-                scene.AddInstance(sphereMesh, mat, glm::translate(glm::mat4(1.0f), {x, y, 0.0f}));
-            }
-        }
-
-        Material glowMat;
-        glowMat.Albedo = {0.1f, 0.1f, 0.1f};
-        glowMat.Roughness = 0.6f;
-        glowMat.Emissive = {4.0f, 1.6f, 0.4f};
-        scene.AddInstance(sphereMesh, glowMat, glm::translate(glm::mat4(1.0f), {-9.5f, 0.2f, 2.5f}));
+        PopulateSandboxScene(app, sceneConfig);
     }
-    else
+    catch (const GltfLoadError& error)
     {
-        try
-        {
-            glm::mat4 importTransform = glm::translate(glm::mat4(1.0f), {0.0f, 0.15f, 0.0f});
-            if (sampleGltf)
-                importTransform = glm::scale(importTransform, glm::vec3(6.0f));
-            LoadGltfScene(gltfPath, scene, importTransform);
-        }
-        catch (const GltfLoadError& error)
-        {
-            std::fprintf(stderr, "%s\n", error.what());
-            return 1;
-        }
+        std::fprintf(stderr, "%s\n", error.what());
+        return EXIT_FAILURE;
     }
 
-    PointLight fill;
-    fill.Position = {-6.0f, 5.0f, 6.0f};
-    fill.Color = {0.4f, 0.55f, 1.0f};
-    fill.Intensity = 40.0f;
-    fill.Radius = 20.0f;
-    scene.AddPointLight(fill);
-
-    PointLight rim;
-    rim.Position = {8.0f, 3.0f, -4.0f};
-    rim.Color = {1.0f, 0.6f, 0.3f};
-    rim.Intensity = 30.0f;
-    rim.Radius = 18.0f;
-    scene.AddPointLight(rim);
-
-    // Depth haze so the scene reads Source-map-like at distance
-    scene.Fog.Enabled = true;
-    scene.Fog.Color = {0.22f, 0.25f, 0.32f};
-    scene.Fog.Opacity = 0.8f;
-    scene.Fog.Start = 30.0f;
-    scene.Fog.End = 140.0f;
-    scene.Fog.HeightFadeTop = 30.0f;
-    scene.Fog.HeightFadeBottom = -1.0f;
-
-    scene.PostProcess.AutoExposure = true;
-
-    // Camera flashlight (Source-style), toggled with F
-    SpotLight flashlight;
-    flashlight.Color = {1.0f, 0.97f, 0.9f};
-    flashlight.Intensity = 350.0f; // candela-ish: inverse-square falloff needs big numbers
-    flashlight.Range = 45.0f;
-    flashlight.InnerConeDeg = 13.0f;
-    flashlight.OuterConeDeg = 22.0f;
-    flashlight.CastsShadows = true;
-    flashlight.Enabled = flashlightOn;
-    scene.AddSpotLight(flashlight);
-
-    Camera& camera = app.GetCamera();
-    camera.Position = gltfPath.empty() ? glm::vec3(0.0f, 5.0f, 16.0f)
-        : (sampleGltf ? glm::vec3(0.0f, 0.5f, 2.2f) : glm::vec3(0.0f, 0.5f, 4.0f));
-    camera.Yaw = -90.0f;
-    camera.Pitch = gltfPath.empty() ? -8.0f : -5.0f;
-
-    // Sun driven in spherical coordinates by I/K/J/L
-    float sunAzimuth = glm::radians(215.0f);
-    float sunElevation = glm::radians(40.0f);
-
-    int frameCounter = 0;
-    int manualShotCounter = 0;
-    bool f12WasDown = false;
-    bool fWasDown = false;
-
-    app.SetUpdateCallback([&](float dt) {
-        const Input& input = app.GetInput();
-
-        // Flashlight follows the camera; F toggles it
-        const bool fDown = input.IsKeyDown(GLFW_KEY_F);
-        if (fDown && !fWasDown)
-            flashlightOn = !flashlightOn;
-        fWasDown = fDown;
-
-        SpotLight& fl = scene.SpotLights()[0];
-        fl.Enabled = flashlightOn;
-        fl.Position = camera.Position;
-        fl.Direction = camera.Forward();
-
-        const float rotSpeed = 0.8f * dt;
-        if (input.IsKeyDown(GLFW_KEY_J)) sunAzimuth -= rotSpeed;
-        if (input.IsKeyDown(GLFW_KEY_L)) sunAzimuth += rotSpeed;
-        if (input.IsKeyDown(GLFW_KEY_I)) sunElevation = glm::min(sunElevation + rotSpeed, glm::radians(89.0f));
-        if (input.IsKeyDown(GLFW_KEY_K)) sunElevation = glm::max(sunElevation - rotSpeed, glm::radians(-5.0f));
-
-        const glm::vec3 toSun{
-            std::cos(sunElevation) * std::cos(sunAzimuth),
-            std::sin(sunElevation),
-            std::cos(sunElevation) * std::sin(sunAzimuth)};
-        scene.Sun.Direction = -toSun;
-
-        // F12: save a render (edge-triggered)
-        const bool f12Down = input.IsKeyDown(GLFW_KEY_F12);
-        if (f12Down && !f12WasDown)
-        {
-            std::filesystem::create_directories("renders");
-            app.GetBackend().RequestScreenshot("renders/render_" + std::to_string(manualShotCounter++) + ".png");
-        }
-        f12WasDown = f12Down;
-
-        // Headless-ish capture mode: render N frames, save, quit.
-        if (!screenshotPath.empty())
-        {
-            ++frameCounter;
-            if (frameCounter == screenshotFrame)
-                app.GetBackend().RequestScreenshot(screenshotPath);
-            else if (frameCounter > screenshotFrame + 1)
-                app.GetWindow().RequestClose();
-        }
-    });
-
+    SandboxControls controls(app, sceneConfig.FlashlightOn, screenshotPath, screenshotFrame);
+    app.SetUpdateCallback([&controls](float deltaTime) { controls.Update(deltaTime); });
     app.Run();
-    return 0;
+    return EXIT_SUCCESS;
 }

@@ -247,7 +247,7 @@ private:
             if (!bufferView.buffer || !bufferView.buffer->data)
                 Fail(Path, "image buffer is not loaded: " + name);
             const auto* bytes = static_cast<const uint8_t*>(bufferView.buffer->data) + bufferView.offset;
-            texture = textures::LoadFromMemory(bytes, bufferView.size, srgb, name);
+            texture = textures::LoadFromMemory(bytes, bufferView.size, srgb, name, false);
         }
         else if (image->uri && std::string(image->uri).starts_with("data:"))
         {
@@ -256,11 +256,11 @@ private:
             if (comma == std::string::npos || uri.find(";base64", 0) == std::string::npos)
                 Fail(Path, "unsupported image data URI: " + name);
             const std::vector<uint8_t> bytes = DecodeBase64(uri.substr(comma + 1));
-            texture = textures::LoadFromMemory(bytes.data(), bytes.size(), srgb, name);
+            texture = textures::LoadFromMemory(bytes.data(), bytes.size(), srgb, name, false);
         }
         else if (image->uri)
         {
-            texture = textures::LoadFromFile((BaseDirectory / DecodeUri(image->uri)).string(), srgb);
+            texture = textures::LoadFromFile((BaseDirectory / DecodeUri(image->uri)).string(), srgb, false);
         }
 
         if (!texture)

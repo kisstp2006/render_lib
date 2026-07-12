@@ -21,10 +21,10 @@ std::shared_ptr<TextureData> CopyDecoded(unsigned char* pixels, int width, int h
 
 } // namespace
 
-std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb)
+std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb, bool flipVertically)
 {
     int width = 0, height = 0, channels = 0;
-    stbi_set_flip_vertically_on_load(1);
+    stbi_set_flip_vertically_on_load(flipVertically ? 1 : 0);
     unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
     if (!pixels)
     {
@@ -35,7 +35,8 @@ std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb)
     return CopyDecoded(pixels, width, height, srgb);
 }
 
-std::shared_ptr<TextureData> LoadFromMemory(const uint8_t* bytes, size_t size, bool srgb, const std::string& debugName)
+std::shared_ptr<TextureData> LoadFromMemory(const uint8_t* bytes, size_t size, bool srgb,
+                                            const std::string& debugName, bool flipVertically)
 {
     if (!bytes || size == 0)
     {
@@ -44,7 +45,7 @@ std::shared_ptr<TextureData> LoadFromMemory(const uint8_t* bytes, size_t size, b
     }
 
     int width = 0, height = 0, channels = 0;
-    stbi_set_flip_vertically_on_load(1);
+    stbi_set_flip_vertically_on_load(flipVertically ? 1 : 0);
     unsigned char* pixels = stbi_load_from_memory(bytes, static_cast<int>(size), &width, &height, &channels, 4);
     if (!pixels)
     {
