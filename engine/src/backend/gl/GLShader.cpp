@@ -1,25 +1,14 @@
 #include "engine/backend/gl/GLShader.h"
 #include "engine/core/Log.h"
+#include "engine/render/ShaderSource.h"
 
 #include <glad/gl.h>
 
-#include <fstream>
-#include <sstream>
+#include <filesystem>
 #include <stdexcept>
 #include <vector>
 
 namespace engine {
-
-static std::string ReadFile(const std::string& path)
-{
-    std::ifstream file(path);
-    if (!file.is_open())
-        throw std::runtime_error("Failed to open shader file: " + path);
-
-    std::stringstream ss;
-    ss << file.rdbuf();
-    return ss.str();
-}
 
 unsigned int GLShader::CompileStage(unsigned int stage, const std::string& source, const std::string& debugName)
 {
@@ -44,8 +33,14 @@ unsigned int GLShader::CompileStage(unsigned int stage, const std::string& sourc
 
 GLShader::GLShader(const std::string& vertPath, const std::string& fragPath)
 {
-    const unsigned int vert = CompileStage(GL_VERTEX_SHADER, ReadFile(vertPath), vertPath);
-    const unsigned int frag = CompileStage(GL_FRAGMENT_SHADER, ReadFile(fragPath), fragPath);
+    const std::vector<std::filesystem::path> includeRoots = {
+        std::filesystem::path(ENGINE_SHADER_DIR),
+        std::filesystem::path(ENGINE_SHADER_DIR) / "gl"
+    };
+    const unsigned int vert = CompileStage(
+        GL_VERTEX_SHADER, LoadShaderSource(vertPath, includeRoots).Source, vertPath);
+    const unsigned int frag = CompileStage(
+        GL_FRAGMENT_SHADER, LoadShaderSource(fragPath, includeRoots).Source, fragPath);
 
     m_program = glCreateProgram();
     glAttachShader(m_program, vert);

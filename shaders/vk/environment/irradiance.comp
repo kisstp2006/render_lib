@@ -1,0 +1,32 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2DArray outputCube;
+layout(set = 0, binding = 1) uniform samplerCube environmentMap;
+
+#include "environment/environment_common.glsl"
+
+void main()
+{
+    ivec3 coordinate = ivec3(gl_GlobalInvocationID);
+    ivec3 size = imageSize(outputCube);
+    if (coordinate.x >= size.x || coordinate.y >= size.y || coordinate.z >= 6)
+        return;
+    vec2 uv = (vec2(coordinate.xy) + 0.5) / vec2(size.xy) * 2.0 - 1.0;
+    vec3 normal = CubeDirection(uint(coordinate.z), uv);
+    vec3 up = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 right = normalize(cross(up, normal));
+    up = normalize(cross(normal, right));
+    vec3 irradiance = vec3(0.0);
+    int sampleCount = 0;
+    const float delta = 0.05;
+    for (float phi = 0.0; phi < 2.0 * ENV_PI; phi += delta)
+    for (float theta = 0.0; theta < 0.5 * ENV_PI; theta += delta)
+    {
+        vec3 tangentSample = vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+        vec3 sampleDirection = tangentSample.x * right + tangentSample.y * up + tangentSample.z * normal;
+        irradiance += textureLod(environmentMap, sampleDirection, 3.0).rgb * cos(theta) * sin(theta);
+        ++sampleCount;
+    }
+    imageStore(outputCube, coordinate, vec4(ENV_PI * irradiance / float(sampleCount), 1.0));
+}

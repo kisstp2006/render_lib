@@ -2,15 +2,16 @@
 
 #include "engine/scene/Texture.h"
 
-namespace engine {
+namespace engine
+{
 
 // GPU-side 2D texture uploaded from a TextureData, mipmapped, with sRGB
 // internal format when the source data is color. Cached by the backend
 // keyed by TextureData pointer.
 class GLTexture
 {
-public:
-    explicit GLTexture(const TextureData& data);
+  public:
+    explicit GLTexture(const TextureData& data, float maxAnisotropy = 8.0f);
     ~GLTexture();
 
     GLTexture(const GLTexture&) = delete;
@@ -19,7 +20,7 @@ public:
     void Bind(int unit) const;
     unsigned int Id() const { return m_texture; }
 
-private:
+  private:
     unsigned int m_texture = 0;
 };
 

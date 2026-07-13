@@ -1,14 +1,61 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
-#include <glm/glm.hpp>
-
-namespace engine {
+namespace engine
+{
 
 class Window;
-class Scene;
-class Camera;
+struct RenderFrameData;
+
+// Presentation is a shared application-level choice. Backends translate it
+// to the closest native mode (swap interval for OpenGL, present mode for
+// Vulkan) and report the modes actually supported by the selected device.
+enum class PresentMode
+{
+    Immediate,
+    VSync,
+    Adaptive
+};
+
+struct RenderBackendConfig
+{
+    PresentMode Presentation = PresentMode::VSync;
+    uint32_t MsaaSamples = 4;
+    float MaxAnisotropy = 8.0f;
+    bool PreferDiscreteGpu = true;
+    std::string PreferredAdapter;
+#ifdef NDEBUG
+    bool EnableValidation = false;
+#else
+    bool EnableValidation = true;
+#endif
+    bool EnableGpuTiming = true;
+};
+
+struct BackendCapabilities
+{
+    std::string AdapterName = "Unknown";
+    uint64_t DedicatedVideoMemoryBytes = 0;
+    uint32_t MaxMsaaSamples = 1;
+    uint32_t ActiveMsaaSamples = 1;
+    float MaxAnisotropy = 1.0f;
+    float ActiveAnisotropy = 1.0f;
+    bool HardwareAccelerated = true;
+    bool GpuTiming = false;
+    bool ImmediatePresent = false;
+    bool AdaptivePresent = false;
+};
+
+struct BackendFrameStats
+{
+    bool GpuTimingAvailable = false;
+    float GpuFrameMilliseconds = 0.0f;
+    float GpuShadowMilliseconds = 0.0f;
+    float GpuMainMilliseconds = 0.0f;
+    float GpuPostMilliseconds = 0.0f;
+};
 
 // Shared contract between the OpenGL and Vulkan backends. Kept intentionally
 // small (immediate-mode-ish per-frame calls) rather than a full generic RHI
@@ -20,18 +67,25 @@ class Camera;
 // both backends) instead of guessing at one up front.
 class IRenderBackend
 {
-public:
+  public:
     virtual ~IRenderBackend() = default;
 
-    virtual void Init(Window& window) = 0;
+    virtual void Init(Window& window, const RenderBackendConfig& config) = 0;
     virtual void Shutdown() = 0;
 
     virtual void Resize(int width, int height) = 0;
 
-    virtual void RenderFrame(const Scene& scene, const Camera& camera) = 0;
+    virtual void RenderFrame(const RenderFrameData& frame) = 0;
 
     // Saves the next presented frame as a PNG. Default: unsupported no-op.
     virtual void RequestScreenshot(const std::string& /*path*/) {}
+
+    virtual BackendFrameStats GetFrameStats() const { return {}; }
+    virtual BackendCapabilities GetCapabilities() const { return {}; }
+
+    // Returns false when the requested mode is unavailable and a safe fallback
+    // was selected. Changing this may recreate a native swapchain.
+    virtual bool SetPresentMode(PresentMode /*mode*/) { return false; }
 
     virtual const char* Name() const = 0;
 };

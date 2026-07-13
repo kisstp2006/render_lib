@@ -2,6 +2,8 @@
 
 #include "engine/scene/Scene.h"
 #include "engine/core/Log.h"
+#include "engine/render/SceneRenderer.h"
+#include "engine/profiling/CpuProfiler.h"
 
 #include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -22,23 +24,6 @@ constexpr int kUnitAlbedo = 1;
 constexpr int kUnitLocalShadowAtlas = 13;
 constexpr int kUnitPointShadowArray = 14;
 constexpr int kUnitCookieAtlas = 15;
-
-glm::vec3 SafeUp(const glm::vec3& direction, const glm::vec3& requested)
-{
-    const glm::vec3 dir = glm::normalize(direction);
-    glm::vec3 up = requested;
-    if (glm::length(up) < 0.001f || std::abs(glm::dot(glm::normalize(up), dir)) > 0.98f)
-        up = std::abs(dir.y) > 0.98f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
-    return glm::normalize(up - dir * glm::dot(up, dir));
-}
-
-glm::mat4 SpotMatrix(const glm::vec3& position, const glm::vec3& direction, float outerAngle, float range, float aspect = 1.0f)
-{
-    const glm::vec3 dir = glm::normalize(direction);
-    const glm::vec3 up = SafeUp(dir, {0, 1, 0});
-    return glm::perspective(glm::radians(glm::clamp(outerAngle * 2.0f, 1.0f, 175.0f)), aspect, 0.1f, range)
-        * glm::lookAt(position, position + dir, up);
-}
 
 glm::vec4 AtlasRect(int slot, int tileSize, int atlasSize)
 {
@@ -142,24 +127,41 @@ void GLRenderBackend::UpdateLightCookieAtlas()
     }
 }
 
-void GLRenderBackend::RenderLocalLightShadows(const Scene& scene)
+void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
 {
+    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("LocalLightShadows", "Renderer/OpenGL");
+    const Scene& scene = *frame.SceneData;
     m_localLights = {};
     m_localLights.PointShadowSlots.fill(-1);
     m_localLights.PointCookieSlots.fill(0);
     m_localLights.SpotCookieSlots.fill(0);
     m_localLights.AreaCookieSlots.fill(0);
 
-    for (const PointLight& light : scene.PointLights())
-        if (light.Enabled && m_localLights.PointCount < kMaxPointLights) m_localLights.Points[m_localLights.PointCount++] = &light;
-    for (const SpotLight& light : scene.SpotLights())
-        if (light.Enabled && m_localLights.SpotCount < kMaxSpotLights) m_localLights.Spots[m_localLights.SpotCount++] = &light;
-    for (const AreaLight& light : scene.AreaLights())
-        if (light.Enabled && m_localLights.AreaCount < kMaxAreaLights) m_localLights.Areas[m_localLights.AreaCount++] = &light;
+    m_localLights.PointCount = static_cast<int>(frame.LocalLights.PointCount);
+    for (int i = 0; i < m_localLights.PointCount; ++i)
+        m_localLights.Points[i] = frame.LocalLights.Points[i].Source;
+    m_localLights.SpotCount = static_cast<int>(frame.LocalLights.SpotCount);
+    for (int i = 0; i < m_localLights.SpotCount; ++i)
+    {
+        m_localLights.Spots[i] = frame.LocalLights.Spots[i].Source;
+        m_localLights.SpotDirections[i] = frame.LocalLights.Spots[i].Direction;
+        m_localLights.SpotMatrices[i] = frame.LocalLights.Spots[i].Projection;
+    }
+    m_localLights.AreaCount = static_cast<int>(frame.LocalLights.AreaCount);
+    for (int i = 0; i < m_localLights.AreaCount; ++i)
+    {
+        m_localLights.Areas[i] = frame.LocalLights.Areas[i].Source;
+        m_localLights.AreaDirections[i] = frame.LocalLights.Areas[i].Direction;
+        m_localLights.AreaRights[i] = frame.LocalLights.Areas[i].Right;
+        m_localLights.AreaUps[i] = frame.LocalLights.Areas[i].Up;
+        m_localLights.AreaMatrices[i] = frame.LocalLights.Areas[i].Projection;
+    }
     UpdateLightCookieAtlas();
 
     const int readQuery = (m_localShadowQueryIndex + 1) % 2;
-    if (m_localShadowQueryFrames > 0)
+    const bool localShadowQueryActive = m_gpuTimingEnabled
+        && (scene.Shadows.LogPerformance || frame.DebugOverlay != nullptr);
+    if (localShadowQueryActive && m_localShadowQueryIssued)
     {
         int available = 0;
         glGetQueryObjectiv(m_localShadowTimeQueries[readQuery], GL_QUERY_RESULT_AVAILABLE, &available);
@@ -168,16 +170,16 @@ void GLRenderBackend::RenderLocalLightShadows(const Scene& scene)
             unsigned long long nanoseconds = 0;
             glGetQueryObjectui64v(m_localShadowTimeQueries[readQuery], GL_QUERY_RESULT, &nanoseconds);
             const float milliseconds = static_cast<float>(nanoseconds) / 1'000'000.0f;
-            if (m_localShadowQueryFrames > 10)
-            {
-                m_localShadowTotalMs += milliseconds;
-                m_localShadowMinMs = std::min(m_localShadowMinMs, milliseconds);
-                m_localShadowMaxMs = std::max(m_localShadowMaxMs, milliseconds);
-                ++m_localShadowSamples;
-            }
+            m_localShadowMilliseconds = milliseconds;
+            m_frameStats.GpuTimingAvailable = true;
+            RefreshGpuFrameTotal();
+            if (scene.Shadows.LogPerformance)
+                if (const auto summary = m_localShadowTiming.Submit(milliseconds))
+                    log::Info(FormatGpuTiming("OpenGL local shadows GPU", *summary));
         }
     }
-    glBeginQuery(GL_TIME_ELAPSED, m_localShadowTimeQueries[m_localShadowQueryIndex]);
+    if (localShadowQueryActive)
+        glBeginQuery(GL_TIME_ELAPSED, m_localShadowTimeQueries[m_localShadowQueryIndex]);
 
     for (int i = 0; i < m_localLights.PointCount; ++i)
         if (const auto found = m_cookieSlots.find(m_localLights.Points[i]->Cookie.get()); found != m_cookieSlots.end()) m_localLights.PointCookieSlots[i] = found->second;
@@ -254,32 +256,22 @@ void GLRenderBackend::RenderLocalLightShadows(const Scene& scene)
     for (int i = 0; i < m_localLights.SpotCount; ++i)
     {
         const SpotLight& light = *m_localLights.Spots[i];
-        m_localLights.SpotMatrices[i] = SpotMatrix(light.Position, light.Direction, light.OuterConeDeg, light.Range);
         if (light.CastsShadows)
             renderProjectedShadow(m_localLights.SpotMatrices[i], m_localLights.SpotShadowRects[i]);
     }
     for (int i = 0; i < m_localLights.AreaCount; ++i)
     {
         const AreaLight& light = *m_localLights.Areas[i];
-        const float aspect = std::max(light.Size.x / std::max(light.Size.y, 0.01f), 0.01f);
-        m_localLights.AreaMatrices[i] = SpotMatrix(light.Position, light.Direction, light.BarnAngleDeg, light.Range, aspect);
         if (light.CastsShadows)
             renderProjectedShadow(m_localLights.AreaMatrices[i], m_localLights.AreaShadowRects[i]);
     }
     glCullFace(GL_BACK);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glEndQuery(GL_TIME_ELAPSED);
-    m_localShadowQueryIndex = readQuery;
-    ++m_localShadowQueryFrames;
-    if (scene.Shadows.LogPerformance && m_localShadowQueryFrames % 120 == 0 && m_localShadowSamples > 0)
+    if (localShadowQueryActive)
     {
-        const float average = m_localShadowTotalMs / static_cast<float>(m_localShadowSamples);
-        log::Info("Local shadow GPU: avg " + std::to_string(average) + " ms, min " + std::to_string(m_localShadowMinMs)
-                  + " ms, max " + std::to_string(m_localShadowMaxMs) + " ms (" + std::to_string(m_localShadowSamples) + " samples)");
-        m_localShadowTotalMs = 0.0f;
-        m_localShadowMinMs = 1.0e9f;
-        m_localShadowMaxMs = 0.0f;
-        m_localShadowSamples = 0;
+        glEndQuery(GL_TIME_ELAPSED);
+        m_localShadowQueryIndex = readQuery;
+        m_localShadowQueryIssued = true;
     }
 }
 
@@ -313,7 +305,7 @@ void GLRenderBackend::BindLocalLights()
         const SpotLight& light = *m_localLights.Spots[i];
         const std::string base = "uSpotLights[" + std::to_string(i) + "].";
         m_pbrShader->SetVec3(base + "Position", light.Position);
-        m_pbrShader->SetVec3(base + "Direction", glm::normalize(light.Direction));
+        m_pbrShader->SetVec3(base + "Direction", m_localLights.SpotDirections[i]);
         m_pbrShader->SetVec3(base + "Color", light.Color * light.Intensity);
         m_pbrShader->SetFloat(base + "Range", light.Range);
         m_pbrShader->SetFloat(base + "CosInner", std::cos(glm::radians(light.InnerConeDeg)));
@@ -327,9 +319,9 @@ void GLRenderBackend::BindLocalLights()
     for (int i = 0; i < m_localLights.AreaCount; ++i)
     {
         const AreaLight& light = *m_localLights.Areas[i];
-        const glm::vec3 direction = glm::normalize(light.Direction);
-        const glm::vec3 up = SafeUp(direction, light.Up);
-        const glm::vec3 right = glm::normalize(glm::cross(direction, up));
+        const glm::vec3& direction = m_localLights.AreaDirections[i];
+        const glm::vec3& right = m_localLights.AreaRights[i];
+        const glm::vec3& up = m_localLights.AreaUps[i];
         const std::string base = "uAreaLights[" + std::to_string(i) + "].";
         m_pbrShader->SetVec3(base + "Position", light.Position);
         m_pbrShader->SetVec3(base + "Direction", direction);

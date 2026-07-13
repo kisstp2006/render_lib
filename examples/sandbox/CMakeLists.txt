@@ -1,13 +1,33 @@
-add_executable(sandbox
-    main.cpp
-    SandboxScene.cpp
-    SandboxControls.cpp
+add_library(sandbox_support STATIC
+    src/SandboxApp.cpp
+    src/SandboxScene.cpp
+    src/SandboxControls.cpp
 )
-target_link_libraries(sandbox PRIVATE engine)
-target_compile_definitions(sandbox PRIVATE ENGINE_ASSET_DIR="${CMAKE_SOURCE_DIR}/examples/assets")
+target_link_libraries(sandbox_support PUBLIC engine)
+target_include_directories(sandbox_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(sandbox_support PRIVATE ENGINE_ASSET_DIR="${CMAKE_SOURCE_DIR}/examples/assets")
 
 if(MSVC)
-    target_compile_options(sandbox PRIVATE /W4 /permissive-)
+    target_compile_options(sandbox_support PRIVATE /W4 /permissive-)
 else()
-    target_compile_options(sandbox PRIVATE -Wall -Wextra)
+    target_compile_options(sandbox_support PRIVATE -Wall -Wextra)
 endif()
+
+function(add_renderer_sample target source)
+    add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE sandbox_support)
+
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra)
+    endif()
+endfunction()
+
+add_renderer_sample(sandbox src/main.cpp)
+add_renderer_sample(sample_materials ../samples/materials/main.cpp)
+add_renderer_sample(sample_gltf ../samples/gltf/main.cpp)
+add_renderer_sample(sample_lights ../samples/lights/main.cpp)
+add_renderer_sample(sample_hdri ../samples/hdri/main.cpp)
+add_renderer_sample(sample_day_night ../samples/day_night/main.cpp)
+add_renderer_sample(sample_post ../samples/post_processing/main.cpp)

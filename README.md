@@ -52,6 +52,27 @@ Current feature set (OpenGL backend):
 - **Render to PNG**: `--screenshot out.png` headless-ish capture or F12 in
   the sandbox — usable as a library for offline rendering
 
+Current Vulkan renderer (core OpenGL image parity complete):
+
+- Vulkan 1.3 device with dynamic rendering and synchronization2 enabled
+- swapchain, resize handling, two frames in flight and validation in Debug
+- runtime shaderc compilation of source GLSL into dependency-aware cached SPIR-V;
+  editing a Vulkan shader or any of its includes takes effect on the next launch
+- indexed mesh rendering, glTF metallic-roughness textures, normal mapping,
+  alpha-mask materials, procedural sky, directional/point/spot/area PBR lights
+- four camera-fitted directional shadow cascades with PCF and boundary blending;
+  point cubemap shadows, projected spot/area shadows and light cookies
+- procedural day/night sky and cached HDRI cubemap, irradiance, GGX-prefilter and
+  BRDF-LUT compute baking
+- RGBA16F HDR main pass, 4x MSAA resolve, asynchronous auto-exposure, Jimenez
+  bloom, Uncharted tonemap, 3D color LUT, FXAA and velocity/depth-history TAA
+- validated shader modules, per-frame-safe material/shadow descriptor sets and
+  per-object push constants
+- backend-owned buffer/image allocator, mipmapped anisotropic material textures,
+  per-frame uniforms and resize-safe swapchain-dependent render targets
+- Vulkan timestamp-query profiling for shadow, main HDR and post passes, with
+  the same warm-up and min/average/max logging used by OpenGL
+
 The platform layer is cross-platform by construction (GLFW, no Win32-only
 code paths) and the current OpenGL 4.6/Vulkan targets support Windows and
 Linux. macOS needs a future OpenGL 4.1 compatibility path or Vulkan through
@@ -59,17 +80,24 @@ MoltenVK; the current renderer does not build there as-is.
 
 ## Why this shape
 
-- **No premature RHI abstraction.** OpenGL and Vulkan have very different
-  resource/sync models. Rather than guess at a generic buffer/pipeline/command
-  abstraction before either backend has real requirements, the two backends
-  are separate concrete classes sharing only `engine/scene` (mesh/material/
-  light data) and the thin per-frame `IRenderBackend` contract. Once the
-  Vulkan backend actually needs to share pipeline/resource code with GL,
-  that's the informed time to extract a real RHI layer.
+- **One renderer front end, native back ends.** `SceneRenderer` prepares one
+  immutable `RenderFrameData` packet per application frame: camera matrices,
+  day/night sun state, CSM data, selected local lights and tonemap constants.
+  OpenGL and Vulkan consume that exact packet. Native allocation, descriptors,
+  synchronization and command recording remain backend-specific because their
+  APIs have materially different lifetime models.
 - **CPU-side scene is backend-agnostic.** `MeshData`, `Material`, `Scene`,
   `Camera` don't know about GL or Vulkan; both backends consume the same data.
+- **Shared shading math.** Both backends include common Cook-Torrance/GGX,
+  tonemap/color-space, TAA and bloom math from `shaders/common`, preventing
+  visually important equations from drifting. API-specific shader files only
+  adapt bindings, clip-space conventions and native render-target contracts.
+- **Shared renderer utilities.** Shader source/include loading, auto-exposure
+  adaptation, temporal sampling, cascade preparation and GPU timing aggregation
+  are backend-neutral; only native queries, resource ownership and command
+  recording remain inside the OpenGL/Vulkan implementations.
 - **Reference for the PBR math and Source "feel":** the lighting model
-  (`shaders/gl/pbr.frag`) mirrors the D/G/F terms in Valve's own
+  (`shaders/gl/lighting/pbr.frag`) mirrors the D/G/F terms in Valve's own
   `ValveResourceFormat/Renderer/Shaders/common/pbr.slang` (GGX distribution,
   Schlick-Smith visibility, Schlick Fresnel) so material response reads the
   same way Source 2 materials do, without depending on that project's code.
@@ -79,20 +107,31 @@ MoltenVK; the current renderer does not build there as-is.
 ```
 engine/                  Static library: everything backend-agnostic + both backends
   include/engine/
+    asset/                glTF import and color-grading LUT assets/loaders
     core/                 Window, Input, Camera, Application, Log
-    scene/                Mesh (+ procedural primitives), Scene, Material, Lights
+    debug/                Dependency-free engine statistics overlay
+    profiling/            Hierarchical CPU zones, timelines and trace export
+    render/               Shared frame preparation, CSM and temporal-AA algorithms
+    scene/                Mesh, materials, lights, environment and render settings
     backend/
       IRenderBackend.h     Shared Init/Resize/RenderFrame/Shutdown contract
-      gl/                  OpenGL 4.6 backend (functional: PBR + shadow map)
-      vk/                  Vulkan backend (swapchain scaffold; PBR pipeline WIP)
+      gl/                  OpenGL 4.6 backend (full renderer)
+      vk/                  Vulkan resources, shader contract and backend scaffold
   src/                     .cpp implementations mirroring the include tree
 
 shaders/
-  gl/                      GLSL 460 core: pbr.vert/frag, shadow.vert/frag
+  common/                  PBR/BRDF math shared by OpenGL and Vulkan
+  gl/common/               Shared fullscreen vertex stage
+  gl/lighting/             PBR and directional/local shadow stages
+  gl/environment/          Visible sky and IBL baking stages
+  gl/post/                 Bloom, tonemap/LUT, FXAA and TAA
+  vk/                      Runtime-compiled and cached Vulkan shader stages
 
-examples/sandbox/          Metallic x roughness sphere-grid demo app
+examples/sandbox/src/      Shared sample application, scenes and runtime controls
+examples/samples/          One small entry point per standalone renderer sample
+examples/assets/           Bundled CC0 test assets
 
-cmake/                     Reserved for custom find modules if needed
+tests/src/                 Renderer CPU/regression test entry point
 ```
 
 ## Building
@@ -100,9 +139,11 @@ cmake/                     Reserved for custom find modules if needed
 Requires CMake >= 3.21 and a C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+).
 Dependencies (GLFW, GLAD2, GLM, stb) are fetched at configure time via
 `FetchContent` — nothing to install beyond a compiler and CMake. The Vulkan
-backend additionally requires the LunarG Vulkan SDK; if it isn't found,
-`ENGINE_BUILD_VULKAN` is automatically disabled and only the OpenGL backend
-is built.
+backend additionally requires the LunarG Vulkan SDK (including shaderc); if it
+isn't found, `ENGINE_BUILD_VULKAN` is automatically disabled and only the
+OpenGL backend is built. Vulkan GLSL is compiled when the application starts.
+SPIR-V is cached under `build/runtime_shaders/vk/<config>` and automatically
+rebuilt when its source or a transitive include changes.
 
 ```powershell
 cmake -B build -S . -G "Visual Studio 18 2026"
@@ -118,8 +159,27 @@ cmake --build build
 ./build/examples/sandbox/sandbox
 ```
 
-Run with `--vulkan` to use the Vulkan backend once it's further along
-(currently it only proves out the swapchain round-trip with a clear color).
+The build creates a generic command-line sandbox and six focused sample
+executables. They share the same scene/control implementation, so the samples
+stay small while each can be launched directly:
+
+| Executable | Demonstration |
+| --- | --- |
+| `sandbox` | Generic sandbox; all command-line scene switches remain available |
+| `sample_materials` | Metallic-roughness PBR material grid |
+| `sample_gltf` | Bundled glTF Water Bottle asset |
+| `sample_lights` | Point, spot and area lights with shadowed/unshadowed pairs |
+| `sample_hdri` | HDRI studio/product-lighting scene |
+| `sample_day_night` | Animated procedural day/sunset/night sky cycle |
+| `sample_post` | Color-grading LUT, FXAA and TAA validation scene |
+
+For example, on Windows run
+`.\build\examples\sandbox\RelWithDebInfo\sample_lights.exe`. Every focused
+sample still accepts the common options below, including `--screenshot` and
+`--frames`, for automated visual tests.
+
+Every sample is one executable backed by one scene implementation. Use
+`--vulkan` or `--opengl` to select the backend (default is OpenGL).
 Run with `--sample-gltf` for the bundled Khronos Water Bottle, or with
 `--gltf path/to/scene.glb` to load another static glTF 2.0 scene.
 Use `--hdri path/to/environment.hdr` with any scene, or `--hdri-studio` for
@@ -140,7 +200,8 @@ and `--taa-depth-threshold`; the same fields are available through
 **Controls:** right-click + mouse to look around, WASD to move, Q/E for
 down/up, hold Shift to move faster. I/K/J/L move the sun (sky + IBL re-bake
 live), F toggles the flashlight, C toggles cascade debug colors, F12 saves a
-PNG render into `renders/`. `--shadow-stress --shadow-benchmark` runs the CSM
+PNG render into `renders/`. F3 toggles the built-in debug UI; `--debug-ui`
+starts with it visible. `--shadow-stress --shadow-benchmark` runs the CSM
 stress scene with asynchronous GPU timing. `--light-showcase` displays point,
 spot and barn/area lights side by side, with shadowed examples on the left and
 unshadowed examples on the right. In this showcase, T toggles shadows for all
@@ -158,6 +219,91 @@ M to freeze/resume sky rotation and R to cycle natural/cool/warm/fantasy color
 presets. Up/down change star density, while left/right change star intensity.
 Post controls work in every scene: V cycles none/FXAA/TAA, G toggles the loaded
 color LUT, and semicolon/apostrophe decrease/increase LUT weight by 0.1.
+
+CPU profiling is opt-in, so disabled zones only perform a cheap runtime flag
+check. `--cpu-profile <path.json>` records bounded hierarchical events and
+per-thread timelines in Chrome Trace/Perfetto-compatible JSON;
+`--cpu-profile-retain N` controls the retained frame window, while
+`--cpu-profile-log` prints rolling top-zone statistics every 120 frames. For
+example:
+
+```powershell
+.\build\examples\sandbox\Release\sample_day_night.exe --vulkan `
+  --cpu-profile traces/daynight_vk.json --cpu-profile-log `
+  --cpu-profile-retain 600
+```
+
+Engine and application code can add RAII instrumentation with
+`ENGINE_CPU_PROFILE_SCOPE`, `ENGINE_CPU_PROFILE_SCOPE_CATEGORY` and
+`ENGINE_CPU_PROFILE_FUNCTION` from `engine/profiling/CpuProfiler.h`. The main
+application loop and the important OpenGL/Vulkan render passes are already
+instrumented.
+
+The small debug UI is engine-owned and has no ImGui dependency. It displays
+the active API, resolution, FPS/frame time history, asynchronous GPU pass
+timings, scene/triangle/light counts, post settings and the hottest CPU
+profiler zones. Applications can add persistent grouped values without
+backend-specific code:
+
+```cpp
+app.GetDebugOverlay().SetValue("STREAMING", "VISIBLE CHUNKS", "24");
+```
+
+The architecture follows the useful parts of
+[ezEngine's debug renderer](https://ezengine.net/pages/docs/debugging/debug-rendering.html):
+backend-neutral collection, context-local frame data and a separate unlit
+screen-space pass after image-quality processing. The implementation here is
+purpose-built for this renderer and rasterizes its own tiny bitmap font.
+
+Application/window/device settings now follow the same useful separation. Use
+`ApplicationDesc` for process and window behavior, and keep image/art settings
+on `Scene`. The common device configuration works on both OpenGL and Vulkan:
+
+```cpp
+engine::ApplicationDesc config;
+config.Window.title = "Product Viewer";
+config.Window.mode = engine::WindowMode::WindowedResizable;
+config.Renderer.Presentation = engine::PresentMode::VSync;
+config.Renderer.MsaaSamples = 4;
+config.Renderer.MaxAnisotropy = 16.0f;
+config.Unfocused = engine::UnfocusedBehavior::RenderOnly;
+config.FrameRateLimit = 144.0;
+
+engine::Application app(config);
+app.Run();
+```
+
+Every sample accepts `--windowed`, `--fixed-window`, `--borderless`,
+`--fullscreen`, `--title NAME`, `--resolution W H`, `--monitor N`,
+`--position X Y`, `--cursor MODE`, `--vsync`,
+`--no-vsync`, `--adaptive-vsync`, `--msaa N`, `--anisotropy N`, `--adapter NAME`,
+`--no-prefer-discrete`, `--validation`, `--no-validation`, `--no-gpu-timing`,
+`--max-fps N`, `--max-delta N` and `--unfocused continue|render|pause`.
+`--save-config path.cfg` stores the resolved settings; `--config path.cfg`
+loads them, and later command-line switches override loaded values. See the
+[ezEngine configuration study](docs/ezengine-application-renderer-settings.md)
+for the source comparison and intentionally deferred renderer-pass features.
+
+Runtime C++ plugins now use an ABI-checked DLL/SO entry point rather than
+sharing STL ownership across module boundaries. Plugins can declare
+dependencies, receive application frame/update/render events, publish
+versioned services and register entity components. Copy-on-load keeps the
+original DLL buildable during development; shutdown is dependency-safe and a
+module cannot unload while one of its component instances is alive.
+
+```cpp
+app.GetPlugins().AddSearchPath("plugins");
+app.GetPlugins().LoadPlugin("ExamplePlugin",
+    engine::plugin::PluginLoadFlags::LoadCopy);
+
+auto entity = app.GetWorld().CreateEntity("Product");
+app.GetWorld().AddComponent(entity, "example.Rotator");
+```
+
+The new `runtime::World` supplies generation-checked entities, name/tag/layer,
+parent-child transforms, inherited active state and component lifecycle. It is
+a behavior layer beside the common renderer `Scene`, not an OpenGL/Vulkan
+scene duplicate. See the complete [runtime plugin and component guide](docs/runtime-cpp-plugins.md).
 
 Night-sky command-line overrides are `--star-density`, `--star-intensity`,
 `--star-size`, `--star-twinkle`, `--milky-way`, `--night-brightness` and
@@ -186,9 +332,13 @@ Rough order, each step buildable/testable on its own:
    FXAA, jittered HDR TAA with camera/object motion vectors, depth history,
    variance clipping, disocclusion/camera-cut/resize handling, runtime controls,
    animated visual test scene and asynchronous GPU benchmark mode.
-5. **Vulkan PBR parity** — shader modules (compile the GLSL to SPIR-V at
-   build time via `glslang`/`glslc`), pipeline + descriptor layout, depth
-   buffer, shadow pass — matching what `GLRenderBackend` already does.
+5. **Vulkan PBR parity** — core image parity complete: the shared Scene/Camera
+   frame drives indexed PBR meshes, mipmapped anisotropic textures, CSM and
+   local-light shadows/cookies, procedural/HDRI IBL, RGBA16F + 4x MSAA,
+   auto-exposure, bloom, tonemap, 3D LUT, FXAA/TAA and PNG capture. All seven
+   executables run on both backends without validation errors; current static
+   golden-image mean absolute differences are below 1.6% (animated day/night
+   timing excluded).
 6. **More local-light features** — complete: point cubemap shadows, shared
    spot/area shadow atlas, cookie atlas and Source 2-style barn/rect area lights.
 7. Only *then* revisit whether a shared RHI abstraction actually pays for
@@ -198,3 +348,174 @@ Done so far: HDR+MSAA pipeline, procedural/HDRI IBL (irradiance/prefilter/BRDF L
 sun shadow mapping with PCF, Jimenez bloom, VRF-parameterized Uncharted
 tonemap, textured materials with normal mapping, PNG capture, static glTF/GLB
 scene loading with the CC0 Khronos Water Bottle sample.
+
+### Extended roadmap after the current items
+
+The order below deliberately prioritizes measurable performance, Source 2-like
+material/lighting quality, AAA image stability and production robustness. A
+feature is only considered complete when it has automated correctness tests,
+a representative visual scene, resize/device-loss coverage where applicable,
+and CPU/GPU timing plus memory-budget measurements. Items already implemented
+above are not repeated here.
+
+8. **Performance, diagnostics and stability baseline (P0)**
+   - [x] CPU profiler with hierarchical RAII zones, per-thread timelines, bounded capture, rolling statistics and Chrome Trace export
+   - [ ] Memory profiler with allocation tags, leak reports and peak-budget tracking
+   - [ ] GPU profiler with per-pass timestamps, pipeline statistics and VRAM budgets
+   - [ ] RenderDoc integration, named GPU objects, markers and deterministic frame capture
+   - [ ] In-engine frame debugger for pass/resource inspection
+   - [ ] Golden-image visual regression tests with tolerant HDR comparisons
+   - [ ] Long-running resize/minimize/fullscreen, hot-reload and resource-lifetime stress tests
+   - [ ] GPU vendor/driver capability database and graceful feature fallback paths
+   - [ ] Pipeline cache, shader permutation cache and stutter regression benchmarks
+   - [ ] Render graph/frame graph with explicit resource lifetimes and transient target aliasing
+
+9. **Multithreaded renderer and asynchronous data path (P0)**
+   - [ ] Job system and general thread pool
+   - [ ] Multithreaded render preparation and command generation
+   - [ ] Parallel visibility, animation and particle updates
+   - [ ] Asynchronous model/texture loading with cancellation and priorities
+   - [ ] Vulkan transfer queue uploads, staging-ring allocator and synchronization2 barriers
+   - [ ] Background shader/pipeline creation with a visible fallback material
+   - [ ] Frame-safe deferred destruction and per-frame GPU memory arenas
+   - [ ] Asset streaming governed by CPU, VRAM and I/O budgets
+
+10. **Visibility, batching and GPU-driven rendering (P0)**
+    - [ ] CPU frustum and distance culling with bounds/debug visualization
+    - [ ] GPU Hi-Z occlusion culling with temporal conservatism to prevent popping
+    - [ ] GPU instancing and hierarchical instancing (HISM)
+    - [ ] Static batching, selective dynamic batching and offline mesh combining
+    - [ ] Authored and generated LOD chains with screen-space error selection
+    - [ ] HLOD cluster generation, impostors and streaming integration
+    - [ ] Indirect rendering and Multi Draw Indirect
+    - [ ] GPU-generated draw lists and fully GPU-driven submission
+    - [ ] Bindless textures/material resources with non-bindless fallback
+    - [ ] Meshlet generation and hierarchical cluster culling
+    - [ ] Visibility-buffer rendering path for extremely high geometry density
+    - [ ] Mesh shader path on capable GPUs with classic vertex/index fallback
+
+11. **Forward+ and large-light scalability (P0)**
+    - [ ] Profile-driven Forward+ versus deferred evaluation; prefer a hybrid Forward+ path
+      unless measured content demonstrates a clear deferred advantage
+    - [ ] Compute-built clustered light lists with depth slicing
+    - [ ] Thousands-of-lights stress scene with strict frame-time and overflow diagnostics
+    - [ ] Decal and projected-material integration without excessive G-buffer bandwidth
+    - [ ] Transparent-material lighting path consistent with opaque PBR
+
+12. **AAA shadow quality and scalability (P0/P1)**
+    - [ ] Variance Shadow Maps and EVSM as optional filtered-shadow techniques
+    - [ ] Contact shadows for small near-field details
+    - [ ] PCSS-style source-size-aware soft shadows with stable temporal filtering
+    - [ ] Virtual Shadow Maps with cached pages, invalidation and residency debugging
+    - [ ] Shadow caster culling, per-light update budgets and static shadow caching
+    - [ ] Alpha-tested foliage shadows and bias/leak regression scenes
+
+13. **Source 2-style advanced materials (P1)**
+    - [ ] Height mapping and parallax occlusion mapping
+    - [ ] Clear-coat lobe with independent normal and roughness
+    - [ ] Subsurface scattering and wrapped/transmission lighting for skin and foliage
+    - [ ] Anisotropic BRDF for brushed metal and hair-like surfaces
+    - [ ] Layered materials, detail normal maps, masks, tint regions and material blending
+    - [ ] Decals, wetness, dirt and environment-dependent material parameters
+    - [ ] Material feature permutations that avoid a single oversized uber-shader
+    - [ ] Reference-material validation against captured spheres and known renderers
+
+14. **AAA screen-space and volumetric rendering (P1)**
+    - [ ] GTAO as the primary ambient-occlusion path, plus a cheaper SSAO fallback
+    - [ ] Hierarchical, roughness-aware Screen Space Reflections with probe fallback
+    - [ ] Temporally stable volumetric fog with froxel lighting and height/density volumes
+    - [ ] Volumetric lighting, light shafts and local-light shadow injection
+    - [ ] Compute-shader versions of suitable post and lighting effects
+    - [ ] Physically motivated motion blur with camera and per-object velocity
+    - [ ] Cinematic depth of field with stable near/far bokeh
+    - [ ] Optional vignette, film grain, chromatic aberration and lens distortion
+    - [ ] SMAA as an additional non-temporal anti-aliasing option
+    - [ ] DLSS, FSR and XeSS integration behind one upscaler interface with native fallback
+
+15. **Baked, probe-based and dynamic global illumination (P1/P2)**
+    - [ ] Lightmaps with UV validation, baking metadata and streaming
+    - [ ] Irradiance/light probes with spatial interpolation and visibility handling
+    - [ ] Local reflection probes with parallax correction, blending and priority volumes
+    - [ ] SSGI with temporal accumulation and denoising
+    - [ ] DDGI probe volumes with relocation/classification and update budgets
+    - [ ] VXGI research path only after profiling its memory/performance trade-offs
+    - [ ] Hardware ray-traced GI with denoising and raster fallback
+    - [ ] Lumen-like software/hardware hybrid GI research after DDGI and RT foundations
+
+16. **Ray tracing and offline-quality rendering (P2)**
+    - [ ] Acceleration-structure build/update and instance management
+    - [ ] Ray-traced reflections with roughness-aware denoising
+    - [ ] Ray-traced shadows with raster/virtual-shadow fallback
+    - [ ] Hybrid raster/ray-traced rendering presets
+    - [ ] Progressive path tracer sharing the production material/light model
+    - [ ] Ray-traced GI quality/performance tiers and robust temporal denoisers
+
+17. **Virtualized geometry, textures and world streaming (P1/P2)**
+    - [ ] Virtual texturing with feedback, page cache and residency visualization
+    - [ ] Nanite-like virtual geometry research using meshlets and hierarchical clusters
+    - [ ] Scene graph with parent-child transforms and stable object identities
+    - [ ] Entity/component layer, tags, layers and prefab instances
+    - [ ] Chunked streaming world and World Partition-style spatial database
+    - [ ] Predictive streaming based on camera velocity and memory/I/O budgets
+    - [ ] Save/serialization foundation: versioned binary format, JSON diagnostics and scene serialization
+
+18. **Terrain, foliage and water rendering (P2)**
+    - [ ] Heightmap terrain with continuous LOD and crack-free transitions
+    - [ ] Terrain chunk streaming, splat maps and layered texture blending
+    - [ ] GPU-instanced grass and trees with wind, culling, LOD and HLOD impostors
+    - [ ] Water reflection/refraction with depth-aware shoreline blending
+    - [ ] Gerstner-wave water for smaller surfaces
+    - [ ] FFT ocean, foam, wakes and caustics for large water bodies
+
+19. **Animation and deformable geometry (P2)**
+    - [ ] Skeletal animation, GPU skinning and compute-based skinning option
+    - [ ] Morph targets/blend shapes and GPU evaluation
+    - [ ] Animation state machine and blend trees
+    - [ ] FK, IK, root motion and animation events
+    - [ ] Animation retargeting with validation tools
+    - [ ] Tessellation where supported and demonstrably useful
+    - [ ] Geometry-shader compatibility path only for effects where modern alternatives are unsuitable
+
+20. **GPU particle and effects system (P2)**
+    - [ ] CPU reference particle system
+    - [ ] GPU simulation, culling, sorting and indirect particle draws
+    - [ ] Mesh particles, trails and ribbon particles
+    - [ ] Niagara-like node graph/runtime compiled to efficient GPU kernels
+    - [ ] Particle-light, fog and collision integration with strict budgets
+
+21. **Additional modern graphics APIs (P2)**
+    - [ ] DirectX 12 backend after Vulkan PBR/performance parity stabilizes the resource model
+    - [ ] Metal backend, preferably through a measured native path or a proven portability layer
+    - [ ] Capability-based feature tiers shared across Vulkan, DirectX 12 and Metal
+    - [ ] Cross-backend golden-image and frame-time parity suite
+
+22. **Asset production pipeline (P2)**
+    - [ ] Asset database with stable GUIDs, dependency tracking and derived-data cache
+    - [ ] Offline texture/model/shader cooking and platform-specific compression
+    - [ ] Material asset format and inheritance/instance support
+    - [ ] Safe asset and shader hot reload with error fallback
+    - [ ] Streaming audio and large-asset package/archive support
+
+23. **Supporting engine systems (P3, after renderer goals)**
+    - [ ] Rigid-body physics, collision detection, triggers, raycasts and shape casts
+    - [ ] Character controller, continuous collision detection and vehicle physics
+    - [ ] Cloth, rope and soft-body simulation as later optional modules
+    - [ ] 2D/3D audio, mixer, reverb, occlusion and streaming playback
+    - [ ] Canvas UI, text/font rendering, images, buttons, sliders and DPI scaling
+    - [ ] Script layer selected from measured integration needs; C#, Lua and Python are
+      candidates, not simultaneous requirements
+    - [ ] Script hot reload and versioned save-game serialization
+
+24. **Editor and content tools (P4, intentionally near the end)**
+    - [ ] Scene editor with multi-viewport and perspective/orthographic cameras
+    - [ ] Multiple runtime/editor cameras and renderable viewport targets
+    - [ ] Transform gizmos, hierarchy, inspector, tags and layers
+    - [ ] Asset browser, material editor, console and profiling panels
+    - [ ] Visual frame debugger and render-graph/resource inspection UI
+    - [ ] Prefab authoring, world-partition visualization and streaming controls
+
+25. **Networking (P4, last)**
+    - [ ] Client/server transport and replication model
+    - [ ] Snapshot interpolation, client prediction and reconciliation
+    - [ ] Rollback netcode for appropriate deterministic gameplay
+    - [ ] Matchmaking/service integration only after the runtime/game layer requires it

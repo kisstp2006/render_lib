@@ -19,7 +19,6 @@ public:
     GLShader& operator=(const GLShader&) = delete;
 
     void Use() const;
-    unsigned int Id() const { return m_program; }
 
     void SetBool(const std::string& name, bool value);
     void SetInt(const std::string& name, int value);

@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
-project(SourceLikeEngine LANGUAGES CXX)
+project(SourceLikeEngine LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Keep C and C++ dependencies on the same MSVC CRT. GLAD is generated as C;
+# without enabling/configuring C explicitly it fell back to static LIBCMT,
+# while the engine used the dynamic debug CRT, producing LNK4098.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
@@ -12,8 +19,6 @@ endif()
 option(ENGINE_BUILD_VULKAN "Build the Vulkan backend" ON)
 option(ENGINE_BUILD_SANDBOX "Build the sandbox example app" ON)
 option(ENGINE_BUILD_TESTS "Build engine unit tests" ON)
-
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
 include(FetchContent)
 

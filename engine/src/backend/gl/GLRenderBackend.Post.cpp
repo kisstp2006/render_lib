@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLRenderBackend.h"
+#include "engine/profiling/CpuProfiler.h"
 
 #include "engine/core/Camera.h"
 #include "engine/core/Log.h"
@@ -15,6 +16,7 @@ namespace engine {
 
 void GLRenderBackend::RenderBloom(unsigned int sourceTexture, float threshold, float exposure)
 {
+    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Bloom", "Renderer/OpenGL/Post");
     glDisable(GL_DEPTH_TEST);
     glBindVertexArray(m_emptyVao);
 
@@ -51,9 +53,9 @@ void GLRenderBackend::RenderBloom(unsigned int sourceTexture, float threshold, f
 }
 
 unsigned int GLRenderBackend::ResolveTemporalAA(const Scene& scene, const Camera& camera,
-                                                const glm::mat4&, const glm::mat4&,
                                                 const glm::mat4& jitteredViewProjection)
 {
+    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("TemporalAA", "Renderer/OpenGL/Post");
     const PostProcessSettings& pp = scene.PostProcess;
     const int writeIndex = (m_taaHistoryIndex + 1) % 2;
     glBindFramebuffer(GL_FRAMEBUFFER, m_taaFbos[writeIndex]);

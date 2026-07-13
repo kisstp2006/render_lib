@@ -1,0 +1,46 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0, rg16f) uniform writeonly image2D outputLut;
+
+#include "environment/environment_common.glsl"
+
+float GeometrySchlickGgxIbl(float nDotV, float roughness)
+{
+    float k = roughness * roughness / 2.0;
+    return nDotV / (nDotV * (1.0 - k) + k);
+}
+
+void main()
+{
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputLut);
+    if (coordinate.x >= size.x || coordinate.y >= size.y)
+        return;
+    vec2 uv = (vec2(coordinate) + 0.5) / vec2(size);
+    float nDotV = max(uv.x, 1e-3);
+    float roughness = uv.y;
+    vec3 viewDirection = vec3(sqrt(1.0 - nDotV * nDotV), 0.0, nDotV);
+    vec3 normal = vec3(0.0, 0.0, 1.0);
+    float a = 0.0;
+    float b = 0.0;
+    const uint sampleCount = 1024u;
+    for (uint i = 0u; i < sampleCount; ++i)
+    {
+        vec3 halfVector = ImportanceSampleGgx(Hammersley(i, sampleCount), normal, roughness);
+        vec3 lightDirection = normalize(2.0 * dot(viewDirection, halfVector) * halfVector - viewDirection);
+        float nDotL = max(lightDirection.z, 0.0);
+        float nDotH = max(halfVector.z, 0.0);
+        float vDotH = max(dot(viewDirection, halfVector), 0.0);
+        if (nDotL > 0.0)
+        {
+            float geometry = GeometrySchlickGgxIbl(nDotV, roughness)
+                           * GeometrySchlickGgxIbl(nDotL, roughness);
+            float visibility = geometry * vDotH / max(nDotH * nDotV, 1e-6);
+            float fresnel = pow(1.0 - vDotH, 5.0);
+            a += (1.0 - fresnel) * visibility;
+            b += fresnel * visibility;
+        }
+    }
+    imageStore(outputLut, coordinate, vec4(vec2(a, b) / float(sampleCount), 0.0, 1.0));
+}

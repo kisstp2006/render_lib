@@ -1,0 +1,53 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2DArray outputCube;
+layout(set = 0, binding = 1) uniform samplerCube environmentMap;
+layout(push_constant) uniform EnvironmentBakeConstants
+{
+    vec4 SunDirectionIntensity; vec4 SunColorAngularRadius; vec4 ZenithIntensity; vec4 HorizonCycle;
+    vec4 GroundExposure; vec4 NightZenithIntensity; vec4 NightHorizonGlow; vec4 BakeParameters;
+} pc;
+
+#include "environment/environment_common.glsl"
+
+float DistributionGgx(float nDotH, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float d = (nDotH * a2 - nDotH) * nDotH + 1.0;
+    return a2 / max(ENV_PI * d * d, 1e-7);
+}
+
+void main()
+{
+    ivec3 coordinate = ivec3(gl_GlobalInvocationID);
+    ivec3 size = imageSize(outputCube);
+    if (coordinate.x >= size.x || coordinate.y >= size.y || coordinate.z >= 6)
+        return;
+    vec2 uv = (vec2(coordinate.xy) + 0.5) / vec2(size.xy) * 2.0 - 1.0;
+    vec3 normal = CubeDirection(uint(coordinate.z), uv);
+    vec3 viewDirection = normal;
+    float roughness = pc.BakeParameters.x;
+    const uint sampleCount = 1024u;
+    vec3 prefiltered = vec3(0.0);
+    float totalWeight = 0.0;
+    for (uint i = 0u; i < sampleCount; ++i)
+    {
+        vec3 halfVector = ImportanceSampleGgx(Hammersley(i, sampleCount), normal, roughness);
+        vec3 lightDirection = normalize(2.0 * dot(viewDirection, halfVector) * halfVector - viewDirection);
+        float nDotL = max(dot(normal, lightDirection), 0.0);
+        if (nDotL > 0.0)
+        {
+            float nDotH = max(dot(normal, halfVector), 0.0);
+            float hDotV = max(dot(halfVector, viewDirection), 0.0);
+            float pdf = DistributionGgx(nDotH, roughness) * nDotH / (4.0 * hDotV) + 0.0001;
+            float texelSolidAngle = 4.0 * ENV_PI / (6.0 * pc.BakeParameters.y * pc.BakeParameters.y);
+            float sampleSolidAngle = 1.0 / (float(sampleCount) * pdf + 0.0001);
+            float mip = roughness == 0.0 ? 0.0 : 0.5 * log2(sampleSolidAngle / texelSolidAngle);
+            prefiltered += textureLod(environmentMap, lightDirection, mip).rgb * nDotL;
+            totalWeight += nDotL;
+        }
+    }
+    imageStore(outputCube, coordinate, vec4(prefiltered / max(totalWeight, 1e-4), 1.0));
+}

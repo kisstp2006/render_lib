@@ -1,5 +1,6 @@
 #include "engine/backend/gl/GLEnvironment.h"
 #include "engine/core/Log.h"
+#include "engine/profiling/CpuProfiler.h"
 
 #include <glad/gl.h>
 
@@ -78,11 +79,13 @@ unsigned int CreateCubemap(int size, bool mipmapped)
 
 GLEnvironment::GLEnvironment(const std::string& shaderDir)
 {
-    m_skyGenShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/sky_gen.frag");
-    m_equirectShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/equirect_to_cube.frag");
-    m_irradianceShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/irradiance.frag");
-    m_prefilterShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/prefilter.frag");
-    m_brdfShader = std::make_unique<GLShader>(shaderDir + "/gl/fullscreen.vert", shaderDir + "/gl/brdf_lut.frag");
+    const std::string fullscreen = shaderDir + "/gl/common/fullscreen.vert";
+    const std::string environment = shaderDir + "/gl/environment/";
+    m_skyGenShader = std::make_unique<GLShader>(fullscreen, environment + "sky_gen.frag");
+    m_equirectShader = std::make_unique<GLShader>(fullscreen, environment + "equirect_to_cube.frag");
+    m_irradianceShader = std::make_unique<GLShader>(fullscreen, environment + "irradiance.frag");
+    m_prefilterShader = std::make_unique<GLShader>(fullscreen, environment + "prefilter.frag");
+    m_brdfShader = std::make_unique<GLShader>(fullscreen, environment + "brdf_lut.frag");
 
     glGenFramebuffers(1, &m_fbo);
     glGenVertexArrays(1, &m_emptyVao);
@@ -130,6 +133,7 @@ GLEnvironment::~GLEnvironment()
 
 void GLEnvironment::EnsureBaked(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment)
 {
+    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment.Check", "Renderer/OpenGL/IBL");
     const bool sourceChanged = !m_lastBake.Valid || m_lastBake.Source != environment.Source;
     const bool sunDirectionChanged = environment.Source == EnvironmentSource::ProceduralSky
                                   && m_lastBake.SunDir != sun.Direction;
@@ -191,6 +195,7 @@ unsigned int GLEnvironment::GetOrCreatePanorama(const std::shared_ptr<HdrImageDa
 
 void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment)
 {
+    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment.Bake", "Renderer/OpenGL/IBL");
     const auto bakeStart = std::chrono::steady_clock::now();
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
     glBindVertexArray(m_emptyVao);
