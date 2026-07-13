@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLRenderBackend.h"
+#include "engine/backend/gl/GLDebug.h"
 
 #include "engine/core/Log.h"
 #include "engine/core/Window.h"
@@ -39,9 +40,23 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     m_capabilities.AdapterName = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     m_capabilities.MaxMsaaSamples = static_cast<uint32_t>(std::max(maximumSamples, 1));
     m_capabilities.GpuTiming = true;
+    m_gpuPipelineStatisticsSupported = GLAD_GL_ARB_pipeline_statistics_query != 0;
+    m_gpuMemoryBudgetSupported = GLAD_GL_NVX_gpu_memory_info != 0;
+    m_capabilities.GpuPipelineStatistics = m_gpuPipelineStatisticsSupported;
+    m_capabilities.GpuMemoryBudget = m_gpuMemoryBudgetSupported;
     m_capabilities.ImmediatePresent = true;
     m_capabilities.AdaptivePresent = glfwExtensionSupported("WGL_EXT_swap_control_tear")
         || glfwExtensionSupported("GLX_EXT_swap_control_tear");
+    if (m_gpuMemoryBudgetSupported)
+    {
+        constexpr GLenum kGpuMemoryInfoTotalAvailableMemoryNvx = 0x9048;
+        GLint dedicatedVideoMemoryKilobytes = 0;
+        glGetIntegerv(kGpuMemoryInfoTotalAvailableMemoryNvx,
+                      &dedicatedVideoMemoryKilobytes);
+        if (dedicatedVideoMemoryKilobytes > 0)
+            m_capabilities.DedicatedVideoMemoryBytes =
+                static_cast<uint64_t>(dedicatedVideoMemoryKilobytes) * 1024ull;
+    }
 #ifdef GL_MAX_TEXTURE_MAX_ANISOTROPY
     float deviceAnisotropy = 1.0f;
     glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &deviceAnisotropy);
@@ -85,36 +100,42 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     m_environment = std::make_unique<GLEnvironment>(shaderDir);
 
     glGenVertexArrays(1, &m_emptyVao);
+    glBindVertexArray(m_emptyVao);
+    gl_debug::LabelObject(GL_VERTEX_ARRAY, m_emptyVao, "Fullscreen Triangle VAO");
+    glBindVertexArray(0);
     const auto white = textures::MakeSolidColor({1.0f, 1.0f, 1.0f, 1.0f}, false);
     const auto flatNormal = textures::MakeFlatNormal();
     m_defaultWhite = std::make_unique<GLTexture>(*white, m_maxAnisotropy);
     m_defaultNormal = std::make_unique<GLTexture>(*flatNormal, m_maxAnisotropy);
-    glGenTextures(1, &m_debugOverlayTexture);
-    glBindTexture(GL_TEXTURE_2D, m_debugOverlayTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, debug::DebugOverlayImage::Width,
-                 debug::DebugOverlayImage::Height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenTextures(static_cast<GLsizei>(m_debugOverlayTextures.size()),
+                  m_debugOverlayTextures.data());
+    for (size_t index = 0; index < m_debugOverlayTextures.size(); ++index)
+    {
+        glBindTexture(GL_TEXTURE_2D, m_debugOverlayTextures[index]);
+        gl_debug::LabelObject(GL_TEXTURE, m_debugOverlayTextures[index],
+            "Debug UI Atlas " + std::to_string(index));
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, debug::DebugOverlayImage::Width,
+                     debug::DebugOverlayImage::Height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
     InitShadowMap();
     InitLocalLightResources();
     CreateSceneTargets(m_width, m_height);
 
     glGenBuffers(2, m_exposurePbos);
-    for (unsigned int pbo : m_exposurePbos)
+    for (int index = 0; index < 2; ++index)
     {
+        const unsigned int pbo = m_exposurePbos[index];
         glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        gl_debug::LabelObject(GL_BUFFER, pbo,
+            "Auto Exposure Readback " + std::to_string(index));
         glBufferData(GL_PIXEL_PACK_BUFFER, sizeof(float) * 4, nullptr, GL_STREAM_READ);
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    if (m_gpuTimingEnabled)
-    {
-        glGenQueries(2, m_shadowTimeQueries);
-        glGenQueries(2, m_localShadowTimeQueries);
-        glGenQueries(2, m_postTimeQueries);
-        glGenQueries(2, m_mainTimeQueries);
-    }
+    CreateGpuProfilerQueries();
     log::Info("GL renderer initialized (HDR + MSAA + IBL + bloom)");
 }
 
@@ -156,15 +177,13 @@ void GLRenderBackend::Shutdown()
     DestroyLocalLightResources();
 
     if (m_emptyVao) glDeleteVertexArrays(1, &m_emptyVao);
-    if (m_debugOverlayTexture) glDeleteTextures(1, &m_debugOverlayTexture);
-    m_debugOverlayTexture = 0;
+    glDeleteTextures(static_cast<GLsizei>(m_debugOverlayTextures.size()),
+                     m_debugOverlayTextures.data());
+    m_debugOverlayTextures.fill(0);
     glDeleteTextures(kShadowCascadeCount, m_shadowMaps.data());
     if (m_shadowFbo) glDeleteFramebuffers(1, &m_shadowFbo);
     glDeleteBuffers(2, m_exposurePbos);
-    glDeleteQueries(2, m_shadowTimeQueries);
-    glDeleteQueries(2, m_localShadowTimeQueries);
-    glDeleteQueries(2, m_postTimeQueries);
-    glDeleteQueries(2, m_mainTimeQueries);
+    DestroyGpuProfilerQueries();
     m_exposurePbos[0] = m_exposurePbos[1] = 0;
 }
 
@@ -172,6 +191,7 @@ void GLRenderBackend::Resize(int width, int height)
 {
     m_width = width;
     m_height = height;
+    m_hasFrameDebugFrame = false;
     CreateSceneTargets(width, height);
 }
 

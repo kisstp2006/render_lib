@@ -129,6 +129,8 @@ class PluginManager
                                        void* service);
     static int32_t HostUnregisterService(void* context, const char* name);
     static void* HostGetService(void* context, const char* name, uint32_t minimumVersion);
+    static void* HostAllocate(void* context, size_t size, size_t alignment, const char* tag);
+    static void HostFree(void* context, void* memory);
     static int32_t HostRegisterComponentType(void* context,
                                              const PluginComponentType* componentType);
     static int32_t HostUnregisterComponentType(void* context, const char* typeName);

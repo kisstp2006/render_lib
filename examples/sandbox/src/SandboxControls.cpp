@@ -17,11 +17,13 @@ using namespace engine;
 SandboxControls::SandboxControls(Application& app, bool flashlightOn, bool manageFlashlight, bool localLightShowcase,
                                  bool dayNightShowcase, bool postShowcase, float dayNightCycleSeconds,
                                  float sunAzimuthDegrees, float sunElevationDegrees,
-                                 std::string screenshotPath, int screenshotFrame)
+                                 std::string screenshotPath, std::string hdrScreenshotPath,
+                                 int screenshotFrame)
     : App(app), FlashlightOn(flashlightOn), ManageFlashlight(manageFlashlight), LocalLightShowcase(localLightShowcase),
       DayNightShowcase(dayNightShowcase),
       PostShowcase(postShowcase),
-      ScreenshotPath(std::move(screenshotPath)), ScreenshotFrame(screenshotFrame),
+      ScreenshotPath(std::move(screenshotPath)), HdrScreenshotPath(std::move(hdrScreenshotPath)),
+      ScreenshotFrame(screenshotFrame),
       SunAzimuth(glm::radians(sunAzimuthDegrees)), SunElevation(glm::radians(sunElevationDegrees)),
       DayNightBaseAzimuth(glm::radians(sunAzimuthDegrees)), DayNightCycleSeconds(glm::max(dayNightCycleSeconds, 4.0f))
 {
@@ -313,11 +315,16 @@ void SandboxControls::Update(float deltaTime)
     }
     F12WasDown = f12Down;
 
-    if (!ScreenshotPath.empty())
+    if (!ScreenshotPath.empty() || !HdrScreenshotPath.empty())
     {
         ++FrameCounter;
         if (FrameCounter == ScreenshotFrame)
-            App.GetBackend().RequestScreenshot(ScreenshotPath);
+        {
+            if (!ScreenshotPath.empty())
+                App.GetBackend().RequestScreenshot(ScreenshotPath);
+            if (!HdrScreenshotPath.empty())
+                App.GetBackend().RequestHdrScreenshot(HdrScreenshotPath);
+        }
         else if (FrameCounter > ScreenshotFrame + 1)
             App.GetWindow().RequestClose();
     }

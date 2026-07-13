@@ -2,14 +2,16 @@
 
 #include "engine/plugin/PluginApi.h"
 
+#include <new>
 #include <type_traits>
 
 namespace engine::runtime
 {
 
 // Optional ergonomic C++ base for plugin components. Instances are always
-// created and destroyed by callbacks compiled into the owning plugin, so C++
-// allocation never crosses the DLL boundary.
+// created and destroyed by callbacks compiled into the owning plugin. Storage
+// comes from the host allocator so ownership and memory profiling remain on the
+// engine side of the DLL boundary.
 class Component
 {
   public:
@@ -20,6 +22,7 @@ class Component
     virtual ~Component() = default;
 
     plugin::EntityId Owner() const { return m_owner; }
+    const plugin::PluginHostApi& PluginHost() const { return m_host; }
 
     virtual void OnStart() {}
     virtual void OnActivate() {}
@@ -48,7 +51,20 @@ template <typename T> plugin::PluginComponentType MakeComponentType(const char* 
             return nullptr;
         try
         {
-            return new T(owner, *host);
+            if (!host->Allocate || !host->Free)
+                return nullptr;
+            void* storage = host->Allocate(host->HostContext, sizeof(T), alignof(T), nullptr);
+            if (!storage)
+                return nullptr;
+            try
+            {
+                return ::new (storage) T(owner, *host);
+            }
+            catch (...)
+            {
+                host->Free(host->HostContext, storage);
+                throw;
+            }
         }
         catch (...)
         {
@@ -62,7 +78,11 @@ template <typename T> plugin::PluginComponentType MakeComponentType(const char* 
     {
         try
         {
-            delete static_cast<T*>(instance);
+            T* component = static_cast<T*>(instance);
+            const plugin::PluginHostApi& host = component->PluginHost();
+            component->~T();
+            if (host.Free)
+                host.Free(host.HostContext, component);
         }
         catch (...)
         {

@@ -1,6 +1,10 @@
 #include "engine/backend/gl/GLTexture.h"
+#include "engine/backend/gl/GLDebug.h"
 
 #include <glad/gl.h>
+
+#include <atomic>
+#include <string>
 
 namespace engine
 {
@@ -8,7 +12,11 @@ namespace engine
 GLTexture::GLTexture(const TextureData& data, float maxAnisotropy)
 {
     glGenTextures(1, &m_texture);
+    static std::atomic<uint64_t> nextTextureId{1};
     glBindTexture(GL_TEXTURE_2D, m_texture);
+    gl_debug::LabelObject(GL_TEXTURE, m_texture,
+        "Material Texture " + std::to_string(nextTextureId.fetch_add(1)) +
+        (data.SRGB ? " (sRGB)" : " (Linear)"));
 
     const GLenum internalFormat = data.SRGB ? GL_SRGB8_ALPHA8 : GL_RGBA8;
     glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, data.Width, data.Height, 0, GL_RGBA, GL_UNSIGNED_BYTE,

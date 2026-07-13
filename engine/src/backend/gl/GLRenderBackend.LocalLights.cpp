@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLRenderBackend.h"
+#include "engine/backend/gl/GLDebug.h"
 
 #include "engine/scene/Scene.h"
 #include "engine/core/Log.h"
@@ -39,6 +40,7 @@ void GLRenderBackend::InitLocalLightResources()
     glGenFramebuffers(1, &m_localShadowAtlasFbo);
     glGenTextures(1, &m_localShadowAtlas);
     glBindTexture(GL_TEXTURE_2D, m_localShadowAtlas);
+    gl_debug::LabelObject(GL_TEXTURE, m_localShadowAtlas, "Spot + Area Shadow Atlas");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, kLocalShadowAtlasSize, kLocalShadowAtlasSize,
                  0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -48,6 +50,7 @@ void GLRenderBackend::InitLocalLightResources()
     const float depthBorder[] = {1, 1, 1, 1};
     glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, depthBorder);
     glBindFramebuffer(GL_FRAMEBUFFER, m_localShadowAtlasFbo);
+    gl_debug::LabelObject(GL_FRAMEBUFFER, m_localShadowAtlasFbo, "Local Shadow Atlas FBO");
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_localShadowAtlas, 0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
@@ -57,6 +60,7 @@ void GLRenderBackend::InitLocalLightResources()
     glGenFramebuffers(1, &m_pointShadowFbo);
     glGenTextures(1, &m_pointShadowArray);
     glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, m_pointShadowArray);
+    gl_debug::LabelObject(GL_TEXTURE, m_pointShadowArray, "Point Shadow Cube Array");
     glTexImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, GL_DEPTH_COMPONENT32F, m_pointShadowSize, m_pointShadowSize,
                  kMaxPointShadows * 6, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -65,6 +69,7 @@ void GLRenderBackend::InitLocalLightResources()
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
     glBindFramebuffer(GL_FRAMEBUFFER, m_pointShadowFbo);
+    gl_debug::LabelObject(GL_FRAMEBUFFER, m_pointShadowFbo, "Point Shadow Cube Array FBO");
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, m_pointShadowArray, 0, 0);
@@ -73,6 +78,7 @@ void GLRenderBackend::InitLocalLightResources()
 
     glGenTextures(1, &m_cookieAtlas);
     glBindTexture(GL_TEXTURE_2D, m_cookieAtlas);
+    gl_debug::LabelObject(GL_TEXTURE, m_cookieAtlas, "Local Light Cookie Atlas");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, kCookieAtlasSize, kCookieAtlasSize, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -158,29 +164,6 @@ void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
     }
     UpdateLightCookieAtlas();
 
-    const int readQuery = (m_localShadowQueryIndex + 1) % 2;
-    const bool localShadowQueryActive = m_gpuTimingEnabled
-        && (scene.Shadows.LogPerformance || frame.DebugOverlay != nullptr);
-    if (localShadowQueryActive && m_localShadowQueryIssued)
-    {
-        int available = 0;
-        glGetQueryObjectiv(m_localShadowTimeQueries[readQuery], GL_QUERY_RESULT_AVAILABLE, &available);
-        if (available)
-        {
-            unsigned long long nanoseconds = 0;
-            glGetQueryObjectui64v(m_localShadowTimeQueries[readQuery], GL_QUERY_RESULT, &nanoseconds);
-            const float milliseconds = static_cast<float>(nanoseconds) / 1'000'000.0f;
-            m_localShadowMilliseconds = milliseconds;
-            m_frameStats.GpuTimingAvailable = true;
-            RefreshGpuFrameTotal();
-            if (scene.Shadows.LogPerformance)
-                if (const auto summary = m_localShadowTiming.Submit(milliseconds))
-                    log::Info(FormatGpuTiming("OpenGL local shadows GPU", *summary));
-        }
-    }
-    if (localShadowQueryActive)
-        glBeginQuery(GL_TIME_ELAPSED, m_localShadowTimeQueries[m_localShadowQueryIndex]);
-
     for (int i = 0; i < m_localLights.PointCount; ++i)
         if (const auto found = m_cookieSlots.find(m_localLights.Points[i]->Cookie.get()); found != m_cookieSlots.end()) m_localLights.PointCookieSlots[i] = found->second;
     for (int i = 0; i < m_localLights.SpotCount; ++i)
@@ -222,6 +205,7 @@ void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
                 m_pointShadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
                 BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
                 GetOrCreateMesh(instance.Mesh).Draw();
+                ++m_gpuDrawCallsThisFrame;
             }
         }
         ++pointShadowSlot;
@@ -250,6 +234,7 @@ void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
             m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
             BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
             GetOrCreateMesh(instance.Mesh).Draw();
+            ++m_gpuDrawCallsThisFrame;
         }
     };
 
@@ -267,12 +252,6 @@ void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
     }
     glCullFace(GL_BACK);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    if (localShadowQueryActive)
-    {
-        glEndQuery(GL_TIME_ELAPSED);
-        m_localShadowQueryIndex = readQuery;
-        m_localShadowQueryIssued = true;
-    }
 }
 
 void GLRenderBackend::BindLocalLights()

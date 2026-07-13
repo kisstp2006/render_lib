@@ -1,6 +1,10 @@
 #include "engine/backend/gl/GLMesh.h"
+#include "engine/backend/gl/GLDebug.h"
 
 #include <glad/gl.h>
+
+#include <atomic>
+#include <string>
 
 namespace engine {
 
@@ -11,12 +15,17 @@ GLMesh::GLMesh(const MeshData& data)
     glGenBuffers(1, &m_vbo);
     glGenBuffers(1, &m_ebo);
 
+    static std::atomic<uint64_t> nextMeshId{1};
+    const std::string baseName = "Scene Mesh " + std::to_string(nextMeshId.fetch_add(1));
     glBindVertexArray(m_vao);
+    gl_debug::LabelObject(GL_VERTEX_ARRAY, m_vao, baseName + " VAO");
 
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    gl_debug::LabelObject(GL_BUFFER, m_vbo, baseName + " Vertex Buffer");
     glBufferData(GL_ARRAY_BUFFER, static_cast<long long>(data.Vertices.size() * sizeof(Vertex)), data.Vertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
+    gl_debug::LabelObject(GL_BUFFER, m_ebo, baseName + " Index Buffer");
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<long long>(data.Indices.size() * sizeof(uint32_t)), data.Indices.data(), GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);

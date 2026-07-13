@@ -22,6 +22,8 @@ void VulkanRenderBackend::CreateShadowResources()
     samplerInfo.maxLod = 0.0f;
     if (vkCreateSampler(m_device, &samplerInfo, nullptr, &m_shadowSampler) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create cascade shadow sampler");
+    SetDebugName(VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<uint64_t>(m_shadowSampler),
+                 "Directional Shadow PCF Sampler");
 
     try
     {
@@ -42,11 +44,18 @@ void VulkanRenderBackend::CreateShadowResources()
             {
                 m_shadowMaps[frame][cascade] = m_resources.CreateImage2D(
                     m_shadowSizes[cascade], m_shadowSizes[cascade], m_depthFormat,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT);
                 m_shadowUniformBuffers[frame][cascade] = m_resources.CreateBuffer(
                     sizeof(vulkan::ShadowUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                m_resources.SetDebugName(m_shadowMaps[frame][cascade],
+                    "Directional Shadow Frame " + std::to_string(frame) + " Cascade " +
+                    std::to_string(cascade));
+                m_resources.SetDebugName(m_shadowUniformBuffers[frame][cascade],
+                    "Directional Shadow Uniforms Frame " + std::to_string(frame) +
+                    " Cascade " + std::to_string(cascade));
                 m_shadowDescriptorSets[frame][cascade] = sets[setIndex++];
 
                 VkDescriptorBufferInfo bufferInfo{

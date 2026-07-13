@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "engine/scene/RenderSettings.h"
 #include "engine/scene/Texture.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/profiling/GpuProfiler.h"
 
 namespace engine {
 
@@ -38,8 +40,13 @@ public:
     void Resize(int width, int height) override;
     void RenderFrame(const RenderFrameData& frame) override;
     void RequestScreenshot(const std::string& path) override { m_screenshotPath = path; }
+    void RequestHdrScreenshot(const std::string& path) override { m_hdrScreenshotPath = path; }
     BackendFrameStats GetFrameStats() const override { return m_frameStats; }
     BackendCapabilities GetCapabilities() const override { return m_capabilities; }
+    debug::FrameDebugSnapshot GetFrameDebugSnapshot() const override;
+    bool CaptureFrameDebugResource(uint64_t resourceId, uint32_t mipLevel,
+                                   uint32_t layer,
+                                   debug::FrameDebugPreview& preview) override;
     bool SetPresentMode(PresentMode mode) override;
     const char* Name() const override { return "Vulkan 1.3 PBR"; }
 
@@ -142,13 +149,20 @@ private:
     GpuMaterial& GetOrCreateMaterial(const Material& material);
     void UpdateMaterial(const Material& material, GpuMaterial& gpuMaterial, uint32_t frameIndex);
     void SaveScreenshot(const vulkan::Buffer& readbackBuffer, const std::string& path) const;
+    void SaveHdrScreenshot(const vulkan::Buffer& readbackBuffer, const std::string& path) const;
     void CreateSyncObjects();
     void CreatePerformanceQueries();
     void DestroyPerformanceQueries();
     void ReadPerformanceQueries(uint32_t frameIndex);
+    profiling::GpuMemoryStatistics QueryGpuMemory() const;
     void CreateCommandObjects();
     void RecreateSwapchain(int width, int height);
     void DestroySwapchain();
+    void LoadDebugUtils();
+    void SetDebugName(VkObjectType type, uint64_t handle, std::string_view name) const;
+    void BeginDebugLabel(VkCommandBuffer commandBuffer, std::string_view name,
+                         const std::array<float, 4>& color) const;
+    void EndDebugLabel(VkCommandBuffer commandBuffer) const;
 
     QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device) const;
     bool IsDeviceSuitable(VkPhysicalDevice device) const;
@@ -159,6 +173,7 @@ private:
     PresentMode m_presentMode = PresentMode::VSync;
     bool m_presentModeExact = true;
     bool m_validationEnabled = false;
+    bool m_debugUtilsEnabled = false;
 
     VkInstance m_instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT m_debugMessenger = VK_NULL_HANDLE;
@@ -168,7 +183,12 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;
+    PFN_vkSetDebugUtilsObjectNameEXT m_setDebugObjectName = nullptr;
+    PFN_vkCmdBeginDebugUtilsLabelEXT m_beginDebugLabel = nullptr;
+    PFN_vkCmdEndDebugUtilsLabelEXT m_endDebugLabel = nullptr;
     bool m_samplerAnisotropySupported = false;
+    bool m_pipelineStatisticsSupported = false;
+    bool m_memoryBudgetSupported = false;
     float m_maxSamplerAnisotropy = 1.0f;
 
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
@@ -341,20 +361,51 @@ private:
     std::vector<VkSemaphore> m_imageAvailable;
     std::vector<VkSemaphore> m_renderFinished;
     std::vector<VkFence> m_inFlightFences;
-    static constexpr uint32_t kTimestampCountPerFrame = 6;
+    enum GpuProfilerPass : uint32_t
+    {
+        DirectionalShadowPass,
+        LocalShadowPass,
+        MainHdrPass,
+        PostProcessPass,
+        DebugUiPass,
+        GpuProfilerPassCount
+    };
+    static constexpr uint32_t kTimestampCountPerFrame = GpuProfilerPassCount * 2;
+    static constexpr uint32_t kPipelineCounterCount = 5;
     VkQueryPool m_timestampQueryPool = VK_NULL_HANDLE;
+    VkQueryPool m_pipelineStatisticsQueryPool = VK_NULL_HANDLE;
     float m_timestampPeriodNanoseconds = 1.0f;
     bool m_gpuTimingSupported = false;
     std::array<bool, kFramesInFlight> m_timestampFrameWritten{};
+    std::array<bool, kFramesInFlight> m_pipelineStatisticsFrameWritten{};
+    std::array<uint64_t, kFramesInFlight> m_gpuProfileFrameIds{};
+    std::array<uint64_t, kFramesInFlight> m_gpuProfileDrawCalls{};
+    std::array<uint64_t, kFramesInFlight> m_gpuProfileDispatches{};
     std::array<bool, kFramesInFlight> m_timestampLogShadows{};
     std::array<bool, kFramesInFlight> m_timestampLogPost{};
     std::array<AntiAliasingMode, kFramesInFlight> m_timestampAaMode{};
     GpuTimingAccumulator m_shadowTiming;
+    GpuTimingAccumulator m_localShadowTiming;
     GpuTimingAccumulator m_mainTiming;
     GpuTimingAccumulator m_postTiming;
     BackendFrameStats m_frameStats;
+    uint64_t m_gpuProfileFrameIndex = 0;
+    uint64_t m_gpuDrawCallsThisFrame = 0;
+    uint64_t m_gpuDispatchesThisFrame = 0;
     uint32_t m_currentFrame = 0;
+    uint32_t m_lastFrameDebugFrameSlot = 0;
+    uint32_t m_lastFrameDebugImageIndex = 0;
+    bool m_lastFrameDebugTaaActive = false;
+    bool m_lastFrameDebugFxaaActive = false;
+    bool m_lastFrameDebugPostEnabled = false;
+    bool m_hasFrameDebugFrame = false;
+    // Diagnostic readbacks stay allocated until shutdown. Some drivers can
+    // recycle freshly freed host-visible allocations into the next frame's
+    // overlay upload before presentation has fully retired; retaining this
+    // bounded diagnostic cache also makes repeated mip/layer inspection cheaper.
+    std::vector<vulkan::Buffer> m_frameDebugReadbackBuffers;
     std::string m_screenshotPath;
+    std::string m_hdrScreenshotPath;
 };
 
 } // namespace engine

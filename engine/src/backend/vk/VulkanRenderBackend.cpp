@@ -21,7 +21,31 @@ namespace engine {
 namespace {
 
 const std::vector<const char*> kValidationLayers = {"VK_LAYER_KHRONOS_validation"};
-const std::vector<const char*> kDeviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+const std::vector<const char*> kRequiredDeviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+
+bool DeviceHasExtension(VkPhysicalDevice device, const char* requested)
+{
+    uint32_t count = 0;
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> available(count);
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &count, available.data());
+    return std::any_of(available.begin(), available.end(), [&](const VkExtensionProperties& extension)
+    {
+        return std::strcmp(extension.extensionName, requested) == 0;
+    });
+}
+
+bool InstanceHasExtension(const char* requested)
+{
+    uint32_t count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> available(count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data());
+    return std::any_of(available.begin(), available.end(), [&](const VkExtensionProperties& extension)
+    {
+        return std::strcmp(extension.extensionName, requested) == 0;
+    });
+}
 
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                               VkDebugUtilsMessageTypeFlagsEXT /*type*/,
@@ -104,6 +128,7 @@ void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config
     CreateSurface(window);
     PickPhysicalDevice();
     CreateLogicalDevice();
+    LoadDebugUtils();
     m_resources.Init(m_physicalDevice, m_device);
     CreateShaderInfrastructure();
     CreatePostInfrastructure();
@@ -145,7 +170,8 @@ void VulkanRenderBackend::CreateInstance()
     std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
 
     const bool useValidation = m_validationEnabled;
-    if (useValidation)
+    m_debugUtilsEnabled = InstanceHasExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    if (m_debugUtilsEnabled)
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
     VkInstanceCreateInfo createInfo{};
@@ -239,7 +265,8 @@ bool VulkanRenderBackend::IsDeviceSuitable(VkPhysicalDevice device) const
     std::vector<VkExtensionProperties> available(extCount);
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extCount, available.data());
 
-    std::set<std::string> required(kDeviceExtensions.begin(), kDeviceExtensions.end());
+    std::set<std::string> required(kRequiredDeviceExtensions.begin(),
+                                   kRequiredDeviceExtensions.end());
     for (const auto& ext : available)
         required.erase(ext.extensionName);
 
@@ -300,6 +327,9 @@ void VulkanRenderBackend::PickPhysicalDevice()
     m_capabilities.AdapterName = props.deviceName;
     m_capabilities.MaxMsaaSamples = SampleCountValue(SelectSampleCount(commonSamples, 64));
     m_capabilities.ActiveMsaaSamples = SampleCountValue(m_msaaSamples);
+    m_memoryBudgetSupported = DeviceHasExtension(m_physicalDevice,
+                                                  VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    m_capabilities.GpuMemoryBudget = m_memoryBudgetSupported;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memoryProperties);
     for (uint32_t i = 0; i < memoryProperties.memoryHeapCount; ++i)
@@ -330,7 +360,10 @@ void VulkanRenderBackend::CreateLogicalDevice()
     VkPhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
     deviceFeatures.imageCubeArray = supportedFeatures.imageCubeArray;
+    deviceFeatures.pipelineStatisticsQuery = supportedFeatures.pipelineStatisticsQuery;
     m_samplerAnisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
+    m_pipelineStatisticsSupported = supportedFeatures.pipelineStatisticsQuery == VK_TRUE;
+    m_capabilities.GpuPipelineStatistics = m_pipelineStatisticsSupported;
 
     VkPhysicalDeviceProperties physicalDeviceProperties{};
     vkGetPhysicalDeviceProperties(m_physicalDevice, &physicalDeviceProperties);
@@ -353,8 +386,11 @@ void VulkanRenderBackend::CreateLogicalDevice()
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(kDeviceExtensions.size());
-    createInfo.ppEnabledExtensionNames = kDeviceExtensions.data();
+    std::vector<const char*> enabledExtensions = kRequiredDeviceExtensions;
+    if (m_memoryBudgetSupported)
+        enabledExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
     if (vkCreateDevice(m_physicalDevice, &createInfo, nullptr, &m_device) != VK_SUCCESS)
         throw std::runtime_error("Failed to create Vulkan logical device");
@@ -462,10 +498,15 @@ void VulkanRenderBackend::CreateSwapchain(int width, int height)
 
     if (vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &m_swapchain) != VK_SUCCESS)
         throw std::runtime_error("Failed to create Vulkan swapchain");
+    SetDebugName(VK_OBJECT_TYPE_SWAPCHAIN_KHR, reinterpret_cast<uint64_t>(m_swapchain),
+                 "Main Window Swapchain");
 
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, nullptr);
     m_swapchainImages.resize(imageCount);
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, m_swapchainImages.data());
+    for (size_t index = 0; index < m_swapchainImages.size(); ++index)
+        SetDebugName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_swapchainImages[index]),
+                     "Swapchain Image " + std::to_string(index));
 
     m_swapchainFormat = chosenFormat.format;
     m_swapchainExtent = extent;
@@ -487,6 +528,9 @@ void VulkanRenderBackend::CreateImageViews()
 
         if (vkCreateImageView(m_device, &viewInfo, nullptr, &m_swapchainImageViews[i]) != VK_SUCCESS)
             throw std::runtime_error("Failed to create swapchain image view");
+        SetDebugName(VK_OBJECT_TYPE_IMAGE_VIEW,
+                     reinterpret_cast<uint64_t>(m_swapchainImageViews[i]),
+                     "Swapchain Image " + std::to_string(i) + " View");
     }
 }
 
@@ -507,15 +551,22 @@ void VulkanRenderBackend::CreateDepthResources()
         {
             m_depthImages.push_back(m_resources.CreateImage2D(
                 m_swapchainExtent.width, m_swapchainExtent.height, m_depthFormat,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, aspect));
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT, aspect));
+            m_resources.SetDebugName(m_depthImages.back(),
+                "Main HDR Depth " + std::to_string(i));
         }
         if (m_msaaSamples != VK_SAMPLE_COUNT_1_BIT)
         {
-            for (vulkan::Image& image : m_msaaDepthImages)
+            for (size_t i = 0; i < m_msaaDepthImages.size(); ++i)
+            {
+                vulkan::Image& image = m_msaaDepthImages[i];
                 image = m_resources.CreateImage2D(
                     m_swapchainExtent.width, m_swapchainExtent.height, m_depthFormat,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, aspect,
                     1, 1, 0, m_msaaSamples);
+                m_resources.SetDebugName(image, "Main HDR MSAA Depth " + std::to_string(i));
+            }
         }
     }
     catch (...)
@@ -540,6 +591,8 @@ void VulkanRenderBackend::CreateCommandObjects()
 
     if (vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_commandPool) != VK_SUCCESS)
         throw std::runtime_error("Failed to create Vulkan command pool");
+    SetDebugName(VK_OBJECT_TYPE_COMMAND_POOL, reinterpret_cast<uint64_t>(m_commandPool),
+                 "Graphics Command Pool");
 
     m_commandBuffers.resize(kFramesInFlight);
     VkCommandBufferAllocateInfo allocInfo{};
@@ -550,6 +603,10 @@ void VulkanRenderBackend::CreateCommandObjects()
 
     if (vkAllocateCommandBuffers(m_device, &allocInfo, m_commandBuffers.data()) != VK_SUCCESS)
         throw std::runtime_error("Failed to allocate Vulkan command buffers");
+    for (size_t index = 0; index < m_commandBuffers.size(); ++index)
+        SetDebugName(VK_OBJECT_TYPE_COMMAND_BUFFER,
+                     reinterpret_cast<uint64_t>(m_commandBuffers[index]),
+                     "Frame Command Buffer " + std::to_string(index));
 }
 
 void VulkanRenderBackend::CreateSyncObjects()
@@ -573,6 +630,12 @@ void VulkanRenderBackend::CreateSyncObjects()
         {
             throw std::runtime_error("Failed to create Vulkan sync objects");
         }
+        SetDebugName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(m_imageAvailable[i]),
+                     "Frame " + std::to_string(i) + " Image Available");
+        SetDebugName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(m_renderFinished[i]),
+                     "Frame " + std::to_string(i) + " Render Finished");
+        SetDebugName(VK_OBJECT_TYPE_FENCE, reinterpret_cast<uint64_t>(m_inFlightFences[i]),
+                     "Frame " + std::to_string(i) + " In Flight Fence");
     }
 }
 
@@ -599,6 +662,7 @@ void VulkanRenderBackend::RecreateSwapchain(int width, int height)
         return;
 
     vkDeviceWaitIdle(m_device);
+    m_hasFrameDebugFrame = false;
     DestroyGraphicsPipeline();
     DestroyPostTargets();
     DestroySwapchain();
@@ -628,6 +692,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
 {
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Vulkan.RenderFrame", "Renderer/Vulkan");
     const Scene& scene = *frame.SceneData;
+    ++m_gpuProfileFrameIndex;
     {
         ENGINE_CPU_PROFILE_SCOPE_CATEGORY("WaitFrameFence", "Renderer/Vulkan/Sync");
         vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
@@ -696,6 +761,17 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
             static_cast<VkDeviceSize>(m_swapchainExtent.width) * m_swapchainExtent.height * 4,
             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_resources.SetDebugName(screenshotBuffer, "Screenshot Readback Buffer");
+    }
+    vulkan::Buffer hdrScreenshotBuffer;
+    const bool takeHdrScreenshot = !m_hdrScreenshotPath.empty();
+    if (takeHdrScreenshot)
+    {
+        hdrScreenshotBuffer = m_resources.CreateBuffer(
+            static_cast<VkDeviceSize>(m_swapchainExtent.width) * m_swapchainExtent.height * 8,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_resources.SetDebugName(hdrScreenshotBuffer, "Linear HDR Screenshot Readback Buffer");
     }
 
     vkResetFences(m_device, 1, &m_inFlightFences[m_currentFrame]);
@@ -707,11 +783,15 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     profiling::CpuProfileScope commandRecordingScope("RecordCommands", "Renderer/Vulkan");
     vkBeginCommandBuffer(cmd, &beginInfo);
+    BeginDebugLabel(cmd, "Frame", {0.20f, 0.45f, 0.95f, 1.0f});
 
-    const bool recordGpuTiming = m_gpuTimingSupported
-        && (scene.Shadows.LogPerformance || scene.PostProcess.LogPerformance
-            || frame.DebugOverlay != nullptr);
+    const bool gpuProfilerEnabled = profiling::GpuProfiler::Get().IsEnabled();
+    const bool recordGpuTiming = gpuProfilerEnabled && m_gpuTimingSupported;
+    const bool recordPipelineStatistics = gpuProfilerEnabled &&
+        m_pipelineStatisticsSupported && m_pipelineStatisticsQueryPool != VK_NULL_HANDLE;
     const uint32_t timestampBase = m_currentFrame * kTimestampCountPerFrame;
+    m_gpuDrawCallsThisFrame = 0;
+    m_gpuDispatchesThisFrame = 0;
     if (recordGpuTiming)
     {
         vkCmdResetQueryPool(cmd, m_timestampQueryPool, timestampBase,
@@ -719,7 +799,13 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                              m_timestampQueryPool, timestampBase + 0);
     }
+    if (recordPipelineStatistics)
+    {
+        vkCmdResetQueryPool(cmd, m_pipelineStatisticsQueryPool, m_currentFrame, 1);
+        vkCmdBeginQuery(cmd, m_pipelineStatisticsQueryPool, m_currentFrame, 0);
+    }
 
+    BeginDebugLabel(cmd, "Shadows / Directional Cascades", {0.55f, 0.35f, 0.85f, 1.0f});
     if (frame.SunShadowsActive)
     {
         std::array<VkImageMemoryBarrier2, 4> toDepth{};
@@ -748,6 +834,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
         for (int cascade = 0; cascade < 4; ++cascade)
         {
+            BeginDebugLabel(cmd, "Directional Cascade " + std::to_string(cascade),
+                            {0.45f, 0.25f, 0.75f, 1.0f});
             VkRenderingAttachmentInfo shadowDepth{};
             shadowDepth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             shadowDepth.imageView = m_shadowMaps[m_currentFrame][cascade].View;
@@ -784,8 +872,10 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
                 vkCmdPushConstants(cmd, m_shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                                    0, sizeof(draw.Object), &draw.Object);
                 vkCmdDrawIndexed(cmd, draw.Mesh->IndexCount, 1, 0, 0, 0);
+                ++m_gpuDrawCallsThisFrame;
             }
             vkCmdEndRendering(cmd);
+            EndDebugLabel(cmd);
         }
 
         std::array<VkImageMemoryBarrier2, 4> toSample{};
@@ -802,16 +892,28 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         shadowDependency.pImageMemoryBarriers = toSample.data();
         vkCmdPipelineBarrier2(cmd, &shadowDependency);
     }
+    EndDebugLabel(cmd);
 
-    RecordLocalLightShadows(cmd, scene);
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 1);
+                              m_timestampQueryPool, timestampBase + 1);
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 2);
+                              m_timestampQueryPool, timestampBase + 2);
+    }
+    BeginDebugLabel(cmd, "Shadows / Local Lights", {0.75f, 0.35f, 0.75f, 1.0f});
+    RecordLocalLightShadows(cmd, scene);
+    EndDebugLabel(cmd);
+    if (recordGpuTiming)
+    {
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             m_timestampQueryPool, timestampBase + 3);
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             m_timestampQueryPool, timestampBase + 4);
     }
 
+    BeginDebugLabel(cmd, "Main HDR / Geometry + Sky + Resolve",
+                    {0.20f, 0.70f, 0.35f, 1.0f});
     VkImageMemoryBarrier2 beginBarriers[6]{};
     beginBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     beginBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -919,6 +1021,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
                             0, 1, &m_frameDescriptorSets[m_currentFrame], 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyPipeline);
     vkCmdDraw(cmd, 3, 1, 0, 0);
+    ++m_gpuDrawCallsThisFrame;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbrPipeline);
     for (const PreparedDraw& draw : draws)
     {
@@ -930,12 +1033,14 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         vkCmdPushConstants(cmd, m_pbrPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(draw.Object), &draw.Object);
         vkCmdDrawIndexed(cmd, draw.Mesh->IndexCount, 1, 0, 0, 0);
+        ++m_gpuDrawCallsThisFrame;
     }
     vkCmdEndRendering(cmd);
+    EndDebugLabel(cmd);
 
     if (recordGpuTiming)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 3);
+                              m_timestampQueryPool, timestampBase + 5);
 
     VkImageMemoryBarrier2 hdrToSample{};
     hdrToSample.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -958,20 +1063,80 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
 
     if (recordGpuTiming)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 4);
+                              m_timestampQueryPool, timestampBase + 6);
+    BeginDebugLabel(cmd, "Post Process", {0.90f, 0.55f, 0.15f, 1.0f});
     RecordAutoExposure(cmd, frame, imageIndex);
     if (m_taaActive)
         RecordTemporalAA(cmd, frame, imageIndex);
     RecordPost(cmd, frame, imageIndex);
-    RecordDebugOverlay(cmd, frame, imageIndex);
+    EndDebugLabel(cmd);
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 5);
-        m_timestampFrameWritten[m_currentFrame] = true;
+                             m_timestampQueryPool, timestampBase + 7);
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             m_timestampQueryPool, timestampBase + 8);
+    }
+    BeginDebugLabel(cmd, "Debug UI", {0.20f, 0.75f, 0.85f, 1.0f});
+    RecordDebugOverlay(cmd, frame, imageIndex);
+    EndDebugLabel(cmd);
+    if (recordGpuTiming)
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             m_timestampQueryPool, timestampBase + 9);
+    if (recordPipelineStatistics)
+        vkCmdEndQuery(cmd, m_pipelineStatisticsQueryPool, m_currentFrame);
+    if (recordGpuTiming || recordPipelineStatistics)
+    {
+        m_timestampFrameWritten[m_currentFrame] = recordGpuTiming;
+        m_pipelineStatisticsFrameWritten[m_currentFrame] = recordPipelineStatistics;
+        m_gpuProfileFrameIds[m_currentFrame] = m_gpuProfileFrameIndex;
+        m_gpuProfileDrawCalls[m_currentFrame] = m_gpuDrawCallsThisFrame;
+        m_gpuProfileDispatches[m_currentFrame] = m_gpuDispatchesThisFrame;
         m_timestampLogShadows[m_currentFrame] = scene.Shadows.LogPerformance;
         m_timestampLogPost[m_currentFrame] = scene.PostProcess.LogPerformance;
         m_timestampAaMode[m_currentFrame] = scene.PostProcess.AntiAliasing;
+    }
+
+    if (takeHdrScreenshot)
+    {
+        const vulkan::Image& hdrSource = m_taaActive
+            ? m_taaHistoryColor[m_taaHistoryIndex]
+            : m_hdrImages[imageIndex];
+        VkImageMemoryBarrier2 toTransfer{};
+        toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        toTransfer.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        toTransfer.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        toTransfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        toTransfer.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = hdrSource.Handle;
+        toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo hdrCopyDependency{};
+        hdrCopyDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        hdrCopyDependency.imageMemoryBarrierCount = 1;
+        hdrCopyDependency.pImageMemoryBarriers = &toTransfer;
+        vkCmdPipelineBarrier2(cmd, &hdrCopyDependency);
+
+        VkBufferImageCopy hdrCopy{};
+        hdrCopy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        hdrCopy.imageExtent = {m_swapchainExtent.width, m_swapchainExtent.height, 1};
+        vkCmdCopyImageToBuffer(cmd, hdrSource.Handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               hdrScreenshotBuffer.Handle, 1, &hdrCopy);
+
+        VkImageMemoryBarrier2 toSample = toTransfer;
+        toSample.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        toSample.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        toSample.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                              | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        toSample.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        toSample.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toSample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        hdrCopyDependency.pImageMemoryBarriers = &toSample;
+        vkCmdPipelineBarrier2(cmd, &hdrCopyDependency);
     }
 
     VkImageMemoryBarrier2 finishBarrier{};
@@ -1013,6 +1178,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         vkCmdPipelineBarrier2(cmd, &finishDependency);
     }
 
+    EndDebugLabel(cmd);
     vkEndCommandBuffer(cmd);
     commandRecordingScope.End();
 
@@ -1031,12 +1197,20 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to submit rendered frame");
 
+    if (takeScreenshot || takeHdrScreenshot)
+        vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
+
     if (takeScreenshot)
     {
-        vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
         SaveScreenshot(screenshotBuffer, m_screenshotPath);
         m_resources.Destroy(screenshotBuffer);
         m_screenshotPath.clear();
+    }
+    if (takeHdrScreenshot)
+    {
+        SaveHdrScreenshot(hdrScreenshotBuffer, m_hdrScreenshotPath);
+        m_resources.Destroy(hdrScreenshotBuffer);
+        m_hdrScreenshotPath.clear();
     }
 
     VkPresentInfoKHR presentInfo{};
@@ -1062,6 +1236,13 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         if (instance.TemporalId != 0)
             m_previousTransforms[instance.TemporalId] = instance.Transform;
 
+    m_lastFrameDebugFrameSlot = m_currentFrame;
+    m_lastFrameDebugImageIndex = imageIndex;
+    m_lastFrameDebugTaaActive = m_taaActive;
+    m_lastFrameDebugFxaaActive = scene.PostProcess.Enabled &&
+        scene.PostProcess.AntiAliasing == AntiAliasingMode::Fxaa;
+    m_lastFrameDebugPostEnabled = scene.PostProcess.Enabled;
+    m_hasFrameDebugFrame = true;
     m_currentFrame = (m_currentFrame + 1) % kFramesInFlight;
 }
 
@@ -1069,6 +1250,10 @@ void VulkanRenderBackend::Shutdown()
 {
     if (m_device != VK_NULL_HANDLE)
         vkDeviceWaitIdle(m_device);
+
+    for (vulkan::Buffer& buffer : m_frameDebugReadbackBuffers)
+        m_resources.Destroy(buffer);
+    m_frameDebugReadbackBuffers.clear();
 
     DestroySceneResources();
     DestroyEnvironmentResources();

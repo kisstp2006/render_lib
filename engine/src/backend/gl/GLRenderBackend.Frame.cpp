@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLRenderBackend.h"
+#include "engine/backend/gl/GLDebug.h"
 #include "engine/core/Camera.h"
 #include "engine/core/Log.h"
 #include "engine/render/SceneRenderer.h"
@@ -34,19 +35,16 @@ constexpr std::array<int, kShadowCascadeCount> kUnitCascades{0, 10, 11, 12};
 
 void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
 {
+    gl_debug::ScopedGroup frameMarker("Frame");
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("OpenGL.RenderFrame", "Renderer/OpenGL");
     const Scene& scene = *frame.SceneData;
-    const bool debugOverlayActive = frame.DebugOverlay != nullptr;
-    if (debugOverlayActive && !frame.SunShadowsActive)
-    {
-        m_directionalShadowMilliseconds = 0.0f;
-        RefreshGpuFrameTotal();
-    }
     const Camera& camera = *frame.CameraData;
     {
+        gl_debug::ScopedGroup marker("Environment / IBL Update");
         ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment", "Renderer/OpenGL");
         m_environment->EnsureBaked(scene.Sun, scene.Sky, scene.Environment);
     }
+    BeginGpuProfilerFrame();
 
     const PostProcessSettings& pp = scene.PostProcess;
     const bool taaActive = pp.Enabled && pp.AntiAliasing == AntiAliasingMode::Taa;
@@ -78,86 +76,56 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     const CascadeShadowData& cascades = frame.Cascades;
 
     // --- Four-cascade sun shadow pass ---
-    if (sunShadowsActive)
+    BeginGpuProfilerPass(DirectionalShadowPass);
     {
-        ENGINE_CPU_PROFILE_SCOPE_CATEGORY("DirectionalShadows", "Renderer/OpenGL");
-        const int readQuery = (m_shadowQueryIndex + 1) % 2;
-        const bool shadowQueryActive = m_gpuTimingEnabled
-            && (scene.Shadows.LogPerformance || debugOverlayActive);
-        if (shadowQueryActive && m_shadowQueryIssued)
+        gl_debug::ScopedGroup marker("Shadows / Directional Cascades");
+        if (sunShadowsActive)
         {
-            int available = 0;
-            glGetQueryObjectiv(m_shadowTimeQueries[readQuery], GL_QUERY_RESULT_AVAILABLE, &available);
-            if (available)
+            ENGINE_CPU_PROFILE_SCOPE_CATEGORY("DirectionalShadows", "Renderer/OpenGL");
+            glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
+            m_shadowShader->Use();
+            glCullFace(GL_FRONT);
+            for (int cascade = 0; cascade < kShadowCascadeCount; ++cascade)
             {
-                unsigned long long nanoseconds = 0;
-                glGetQueryObjectui64v(m_shadowTimeQueries[readQuery], GL_QUERY_RESULT, &nanoseconds);
-                const float milliseconds = static_cast<float>(nanoseconds) / 1'000'000.0f;
-                m_directionalShadowMilliseconds = milliseconds;
-                m_frameStats.GpuTimingAvailable = true;
-                RefreshGpuFrameTotal();
-                if (scene.Shadows.LogPerformance)
-                    if (const auto summary = m_shadowTiming.Submit(milliseconds))
-                        log::Info(FormatGpuTiming("OpenGL CSM GPU", *summary));
+                gl_debug::ScopedGroup cascadeMarker(
+                    "Directional Cascade " + std::to_string(cascade));
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_shadowMaps[cascade], 0);
+                glViewport(0, 0, m_shadowSizes[cascade], m_shadowSizes[cascade]);
+                glClear(GL_DEPTH_BUFFER_BIT);
+                m_shadowShader->SetMat4("uLightSpaceMatrix", cascades.LightMatrices[cascade]);
+                for (const auto& instance : scene.Instances())
+                {
+                    if (!instance.CastsShadows)
+                        continue;
+                    m_shadowShader->SetMat4("uModel", instance.Transform);
+                    const Material& mat = instance.Mat;
+                    m_shadowShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
+                    m_shadowShader->SetBool("uHasAlbedoMap", mat.AlbedoMap != nullptr);
+                    m_shadowShader->SetFloat("uBaseColorAlpha", mat.BaseColorAlpha);
+                    m_shadowShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
+                    m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
+                    BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
+                    GetOrCreateMesh(instance.Mesh).Draw();
+                    ++m_gpuDrawCallsThisFrame;
+                }
             }
-        }
-        if (shadowQueryActive)
-            glBeginQuery(GL_TIME_ELAPSED, m_shadowTimeQueries[m_shadowQueryIndex]);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
-        m_shadowShader->Use();
-        glCullFace(GL_FRONT);
-        for (int cascade = 0; cascade < kShadowCascadeCount; ++cascade)
-        {
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_shadowMaps[cascade], 0);
-            glViewport(0, 0, m_shadowSizes[cascade], m_shadowSizes[cascade]);
-            glClear(GL_DEPTH_BUFFER_BIT);
-            m_shadowShader->SetMat4("uLightSpaceMatrix", cascades.LightMatrices[cascade]);
-            for (const auto& instance : scene.Instances())
-            {
-                if (!instance.CastsShadows)
-                    continue;
-                m_shadowShader->SetMat4("uModel", instance.Transform);
-                const Material& mat = instance.Mat;
-                m_shadowShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
-                m_shadowShader->SetBool("uHasAlbedoMap", mat.AlbedoMap != nullptr);
-                m_shadowShader->SetFloat("uBaseColorAlpha", mat.BaseColorAlpha);
-                m_shadowShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
-                m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
-                BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-                GetOrCreateMesh(instance.Mesh).Draw();
-            }
-        }
-        glCullFace(GL_BACK);
-        if (shadowQueryActive)
-        {
-            glEndQuery(GL_TIME_ELAPSED);
-            m_shadowQueryIndex = readQuery;
-            m_shadowQueryIssued = true;
+            glCullFace(GL_BACK);
         }
     }
+    EndGpuProfilerPass();
 
-    RenderLocalLightShadows(frame);
+    BeginGpuProfilerPass(LocalShadowPass);
+    {
+        gl_debug::ScopedGroup marker("Shadows / Local Lights");
+        RenderLocalLightShadows(frame);
+    }
+    EndGpuProfilerPass();
 
     // --- Main HDR pass (MSAA) ---
-    profiling::CpuProfileScope mainHdrScope("MainHDR", "Renderer/OpenGL");
-    const bool mainQueryActive = m_gpuTimingEnabled
-        && (debugOverlayActive || pp.LogPerformance);
-    const int mainReadQuery = (m_mainQueryIndex + 1) % 2;
-    if (mainQueryActive && m_mainQueryIssued)
     {
-        int available = 0;
-        glGetQueryObjectiv(m_mainTimeQueries[mainReadQuery], GL_QUERY_RESULT_AVAILABLE, &available);
-        if (available)
-        {
-            unsigned long long nanoseconds = 0;
-            glGetQueryObjectui64v(m_mainTimeQueries[mainReadQuery], GL_QUERY_RESULT, &nanoseconds);
-            m_frameStats.GpuMainMilliseconds = static_cast<float>(nanoseconds) / 1'000'000.0f;
-            m_frameStats.GpuTimingAvailable = true;
-            RefreshGpuFrameTotal();
-        }
-    }
-    if (mainQueryActive)
-        glBeginQuery(GL_TIME_ELAPSED, m_mainTimeQueries[m_mainQueryIndex]);
+    gl_debug::ScopedGroup marker("Main HDR / Geometry + Sky + Resolve");
+    profiling::CpuProfileScope mainHdrScope("MainHDR", "Renderer/OpenGL");
+    BeginGpuProfilerPass(MainHdrPass);
     glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFbo);
     glViewport(0, 0, m_width, m_height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -243,6 +211,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         BindMaterialTexture(mat.OcclusionMap, kUnitOcclusion, *m_defaultWhite);
 
         GetOrCreateMesh(instance.Mesh).Draw();
+        ++m_gpuDrawCallsThisFrame;
     }
 
     // --- Skybox (only fills pixels the geometry left at depth 1.0) ---
@@ -285,9 +254,10 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     m_skyShader->SetBool("uStarsEnabled", scene.Sky.StarsEnabled);
     m_skyShader->SetBool("uMilkyWayEnabled", scene.Sky.MilkyWayEnabled);
     m_skyShader->SetBool("uAnimateNightSky", scene.Sky.AnimateNightSky);
-    m_skyShader->SetFloat("uTime", static_cast<float>(glfwGetTime()));
+    m_skyShader->SetFloat("uTime", frame.TimeSeconds);
     glBindVertexArray(m_emptyVao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    ++m_gpuDrawCallsThisFrame;
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);
 
@@ -301,48 +271,14 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     glDrawBuffer(GL_COLOR_ATTACHMENT1);
     glBlitFramebuffer(0, 0, m_width, m_height, 0, 0, m_width, m_height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBlitFramebuffer(0, 0, m_width, m_height, 0, 0, m_width, m_height, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
-    if (mainQueryActive)
-    {
-        glEndQuery(GL_TIME_ELAPSED);
-        m_mainQueryIndex = mainReadQuery;
-        m_mainQueryIssued = true;
-    }
+    EndGpuProfilerPass();
     mainHdrScope.End();
-
-    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("PostProcessing", "Renderer/OpenGL");
-    bool postQueryActive = false;
-    if (m_gpuTimingEnabled && (pp.LogPerformance || debugOverlayActive))
-    {
-        const int readQuery = (m_postQueryIndex + 1) % 2;
-        if (m_postQueryIssued)
-        {
-            int available = 0;
-            glGetQueryObjectiv(m_postTimeQueries[readQuery], GL_QUERY_RESULT_AVAILABLE, &available);
-            if (available)
-            {
-                unsigned long long nanoseconds = 0;
-                glGetQueryObjectui64v(m_postTimeQueries[readQuery], GL_QUERY_RESULT, &nanoseconds);
-                const float milliseconds = static_cast<float>(nanoseconds) / 1'000'000.0f;
-                m_frameStats.GpuPostMilliseconds = milliseconds;
-                m_frameStats.GpuTimingAvailable = true;
-                RefreshGpuFrameTotal();
-                if (pp.LogPerformance)
-                {
-                    if (const auto summary = m_postTiming.Submit(milliseconds))
-                    {
-                        const char* mode = pp.AntiAliasing == AntiAliasingMode::Taa ? "TAA"
-                                         : pp.AntiAliasing == AntiAliasingMode::Fxaa ? "FXAA" : "NONE";
-                        log::Info(FormatGpuTiming(
-                            std::string("OpenGL post GPU (") + mode + ")", *summary));
-                    }
-                }
-            }
-        }
-        glBeginQuery(GL_TIME_ELAPSED, m_postTimeQueries[m_postQueryIndex]);
-        m_postQueryIndex = readQuery;
-        m_postQueryIssued = true;
-        postQueryActive = true;
     }
+
+    {
+    gl_debug::ScopedGroup marker("Post Process");
+    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("PostProcessing", "Renderer/OpenGL");
+    BeginGpuProfilerPass(PostProcessPass);
 
     unsigned int postSourceTexture = m_hdrColorTex;
     if (taaActive)
@@ -365,10 +301,11 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     // This is still a simple average rather than a percentile histogram, but
     // the double-buffered PBO readback keeps it off the current frame's CPU
     // critical path.
-    const double now = glfwGetTime();
-    const float deltaTime = m_lastFrameTime > 0.0 ? static_cast<float>(now - m_lastFrameTime) : 0.016f;
-    m_lastFrameTime = now;
+    const float deltaTime = frame.DeltaSeconds;
+    m_lastFrameTime = frame.TimeSeconds;
 
+    {
+    gl_debug::ScopedGroup autoExposureMarker("Post / Auto Exposure");
     if (pp.Enabled && pp.AutoExposure)
     {
         glBindTexture(GL_TEXTURE_2D, m_hdrColorTex);
@@ -408,6 +345,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         m_autoExposure = 1.0f;
         m_exposurePboFrames = 0;
     }
+    }
 
     const float effectiveExposure = pp.Exposure * m_autoExposure;
 
@@ -416,6 +354,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         RenderBloom(postSourceTexture, pp.BloomThreshold, effectiveExposure);
 
     // --- Tonemap/color-grade pass; FXAA consumes an intermediate LDR image. ---
+    gl_debug::ScopedGroup outputMarker("Post / Tonemap + Color Grade + AA");
     const bool fxaaActive = pp.Enabled && pp.AntiAliasing == AntiAliasingMode::Fxaa;
     glBindFramebuffer(GL_FRAMEBUFFER, fxaaActive ? m_postFbo : 0);
     glViewport(0, 0, m_width, m_height);
@@ -454,6 +393,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
 
     glBindVertexArray(m_emptyVao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    ++m_gpuDrawCallsThisFrame;
 
     if (fxaaActive)
     {
@@ -467,14 +407,24 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         m_fxaaShader->SetFloat("uEdgeThreshold", pp.FxaaEdgeThreshold);
         m_fxaaShader->SetFloat("uEdgeThresholdMin", pp.FxaaEdgeThresholdMin);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        ++m_gpuDrawCallsThisFrame;
     }
-    if (postQueryActive)
-        glEndQuery(GL_TIME_ELAPSED);
-    RenderDebugOverlay(frame);
+    if (!m_hdrScreenshotPath.empty())
+        SaveHdrScreenshot(postSourceTexture);
+    EndGpuProfilerPass();
+    }
+    BeginGpuProfilerPass(DebugUiPass);
+    {
+        gl_debug::ScopedGroup marker("Debug UI");
+        RenderDebugOverlay(frame);
+    }
+    EndGpuProfilerPass();
+    EndGpuProfilerFrame(scene);
     glEnable(GL_DEPTH_TEST);
 
     if (!m_screenshotPath.empty())
         SaveScreenshot();
+    m_hasFrameDebugFrame = true;
 }
 
 } // namespace engine

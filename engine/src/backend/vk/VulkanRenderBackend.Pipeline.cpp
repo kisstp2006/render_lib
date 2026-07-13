@@ -107,6 +107,8 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
 
     if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_pbrPipeline) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create PBR graphics pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_pbrPipeline),
+                 "Main HDR PBR Pipeline");
 
     VkPipelineShaderStageCreateInfo shadowVertexStage = vertexStage;
     shadowVertexStage.module = m_shadowVertexShader;
@@ -142,6 +144,8 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
         DestroyGraphicsPipeline();
         throw std::runtime_error("Vulkan: failed to create cascade shadow pipeline");
     }
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_shadowPipeline),
+                 "Directional Shadow Pipeline");
 
     VkPipelineShaderStageCreateInfo skyVertexStage = vertexStage;
     skyVertexStage.module = m_skyVertexShader;
@@ -168,6 +172,8 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
         DestroyGraphicsPipeline();
         throw std::runtime_error("Vulkan: failed to create sky graphics pipeline");
     }
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_skyPipeline),
+                 "Main HDR Sky Pipeline");
 
     CreatePostPipelines();
 }

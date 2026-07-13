@@ -203,8 +203,10 @@ bool SaveApplicationConfig(const std::filesystem::path& path, const ApplicationD
          << "renderer.gpu_timing=" << renderer.EnableGpuTiming << '\n'
          << "application.unfocused=" << Name(config.Unfocused) << '\n'
          << "application.max_delta=" << config.MaximumDeltaSeconds << '\n'
+         << "application.fixed_delta=" << config.FixedDeltaSeconds << '\n'
          << "application.max_fps=" << config.FrameRateLimit << '\n'
-         << "application.capture_cursor_on_look=" << config.CaptureCursorOnRightMouse << '\n';
+         << "application.capture_cursor_on_look=" << config.CaptureCursorOnRightMouse << '\n'
+         << "diagnostics.runtime_monitors=" << config.EnableRuntimeMonitors << '\n';
     if (!file)
     {
         if (error)
@@ -311,10 +313,19 @@ bool LoadApplicationConfig(const std::filesystem::path& path, ApplicationDesc& c
             if (valid)
                 parsed.MaximumDeltaSeconds = static_cast<float>(number);
         }
+        else if (key == "application.fixed_delta")
+        {
+            double number = 0.0;
+            valid = ParseDouble(value, number) && number >= 0.0;
+            if (valid)
+                parsed.FixedDeltaSeconds = static_cast<float>(number);
+        }
         else if (key == "application.max_fps")
             valid = ParseDouble(value, parsed.FrameRateLimit) && parsed.FrameRateLimit >= 0.0;
         else if (key == "application.capture_cursor_on_look")
             valid = ParseBool(value, parsed.CaptureCursorOnRightMouse);
+        else if (key == "diagnostics.runtime_monitors")
+            valid = ParseBool(value, parsed.EnableRuntimeMonitors);
         if (!valid)
             return Invalid(error, lineNumber, key);
     }

@@ -7,6 +7,8 @@
 #include "engine/core/ApplicationConfig.h"
 #include "engine/core/Log.h"
 #include "engine/profiling/CpuProfiler.h"
+#include "engine/profiling/GpuProfiler.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -75,9 +77,14 @@ const char* PresetName(SandboxPreset preset)
 
 void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
                       SandboxSceneConfig& sceneConfig,
-                      std::string& screenshotPath, int& screenshotFrame,
+                      std::string& screenshotPath, std::string& hdrScreenshotPath,
+                      int& screenshotFrame,
                       std::string& cpuProfilePath, bool& cpuProfileLog,
-                      uint32_t& cpuProfileRetainedFrames, bool& debugUi,
+                      uint32_t& cpuProfileRetainedFrames,
+                       std::string& memoryProfilePath, bool& memoryLeakReport,
+                       uint32_t& memoryProfileRetainedFrames,
+                       std::string& gpuProfilePath, uint32_t& gpuProfileRetainedFrames,
+                       bool& debugUi, bool& frameDebugger,
                       std::string& saveConfigPath)
 {
     WindowDesc& window = application.Window;
@@ -132,10 +139,31 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
         else if (argument == "--validation") renderer.EnableValidation = true;
         else if (argument == "--no-validation") renderer.EnableValidation = false;
         else if (argument == "--no-gpu-timing") renderer.EnableGpuTiming = false;
+        else if (argument == "--no-runtime-monitors") application.EnableRuntimeMonitors = false;
+        else if (argument == "--renderdoc-capture" && i + 1 < argc)
+        {
+            application.FrameCapture.Enabled = true;
+            application.FrameCapture.RequireAvailable = true;
+            application.FrameCapture.CapturePathTemplate = argv[++i];
+        }
+        else if (argument == "--renderdoc-frame" && i + 1 < argc)
+            application.FrameCapture.FrameIndex = static_cast<uint64_t>(
+                std::max(std::strtoll(argv[++i], nullptr, 10), 0ll));
+        else if (argument == "--renderdoc-library" && i + 1 < argc)
+            application.FrameCapture.LibraryPath = argv[++i];
+        else if (argument == "--renderdoc-fixed-delta" && i + 1 < argc)
+            application.FrameCapture.FixedDeltaSeconds =
+                std::max(std::strtof(argv[++i], nullptr), 0.0001f);
+        else if (argument == "--renderdoc-keep-running")
+            application.FrameCapture.QuitAfterCapture = false;
+        else if (argument == "--renderdoc-api-validation")
+            application.FrameCapture.ApiValidation = true;
         else if (argument == "--max-fps" && i + 1 < argc)
             application.FrameRateLimit = std::max(std::strtod(argv[++i], nullptr), 0.0);
         else if (argument == "--max-delta" && i + 1 < argc)
             application.MaximumDeltaSeconds = std::max(std::strtof(argv[++i], nullptr), 0.001f);
+        else if (argument == "--fixed-delta" && i + 1 < argc)
+            application.FixedDeltaSeconds = std::max(std::strtof(argv[++i], nullptr), 0.0001f);
         else if (argument == "--unfocused" && i + 1 < argc)
         {
             const std::string value = argv[++i];
@@ -145,12 +173,21 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
         }
         else if (argument == "--no-look-capture") application.CaptureCursorOnRightMouse = false;
         else if (argument == "--screenshot" && i + 1 < argc) screenshotPath = argv[++i];
+        else if (argument == "--hdr-screenshot" && i + 1 < argc) hdrScreenshotPath = argv[++i];
         else if (argument == "--frames" && i + 1 < argc) screenshotFrame = std::atoi(argv[++i]);
         else if (argument == "--cpu-profile" && i + 1 < argc) cpuProfilePath = argv[++i];
         else if (argument == "--cpu-profile-log") cpuProfileLog = true;
         else if (argument == "--cpu-profile-retain" && i + 1 < argc)
             cpuProfileRetainedFrames = static_cast<uint32_t>(std::max(std::atoi(argv[++i]), 1));
+        else if (argument == "--memory-profile" && i + 1 < argc) memoryProfilePath = argv[++i];
+        else if (argument == "--memory-leak-report") memoryLeakReport = true;
+        else if (argument == "--memory-profile-retain" && i + 1 < argc)
+            memoryProfileRetainedFrames = static_cast<uint32_t>(std::max(std::atoi(argv[++i]), 1));
+        else if (argument == "--gpu-profile" && i + 1 < argc) gpuProfilePath = argv[++i];
+        else if (argument == "--gpu-profile-retain" && i + 1 < argc)
+            gpuProfileRetainedFrames = static_cast<uint32_t>(std::max(std::atoi(argv[++i]), 1));
         else if (argument == "--debug-ui") debugUi = true;
+        else if (argument == "--frame-debugger") frameDebugger = true;
         else if (argument == "--flashlight") sceneConfig.FlashlightOn = true;
         else if (argument == "--shadow-debug") sceneConfig.ShadowDebug = true;
         else if (argument == "--shadow-stress") sceneConfig.ShadowStress = true;
@@ -218,16 +255,26 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     ApplyPreset(preset, window, sceneConfig);
 
     std::string screenshotPath;
+    std::string hdrScreenshotPath;
     std::string cpuProfilePath;
     bool cpuProfileLog = false;
     uint32_t cpuProfileRetainedFrames = 600;
+    std::string memoryProfilePath;
+    bool memoryLeakReport = false;
+    uint32_t memoryProfileRetainedFrames = 240;
+    std::string gpuProfilePath;
+    uint32_t gpuProfileRetainedFrames = 240;
     bool debugUi = false;
+    bool frameDebugger = false;
     std::string saveConfigPath;
     int screenshotFrame = 10;
     try
     {
-        ParseCommandLine(argc, argv, application, sceneConfig, screenshotPath, screenshotFrame,
-                         cpuProfilePath, cpuProfileLog, cpuProfileRetainedFrames, debugUi,
+        ParseCommandLine(argc, argv, application, sceneConfig, screenshotPath, hdrScreenshotPath,
+                         screenshotFrame,
+                         cpuProfilePath, cpuProfileLog, cpuProfileRetainedFrames,
+                         memoryProfilePath, memoryLeakReport, memoryProfileRetainedFrames,
+                         gpuProfilePath, gpuProfileRetainedFrames, debugUi, frameDebugger,
                          saveConfigPath);
         if (!saveConfigPath.empty())
         {
@@ -250,31 +297,74 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     profilerConfig.LogIntervalFrames = cpuProfileLog ? 120u : 0u;
     profiler.Configure(profilerConfig);
 
+    profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
+    memoryProfiler.SetEnabled(false);
+    memoryProfiler.Reset();
+    profiling::MemoryProfilerConfig memoryConfig;
+    memoryConfig.Enabled = !memoryProfilePath.empty() || memoryLeakReport || debugUi;
+    memoryConfig.LeakReportOnShutdown = memoryLeakReport;
+    memoryConfig.RetainedFrames = memoryProfileRetainedFrames;
+    memoryProfiler.Configure(memoryConfig);
+
+    profiling::GpuProfiler& gpuProfiler = profiling::GpuProfiler::Get();
+    gpuProfiler.Reset();
+    profiling::GpuProfilerConfig gpuConfig;
+    gpuConfig.Enabled = application.Renderer.EnableGpuTiming;
+    gpuConfig.RetainedFrames = gpuProfileRetainedFrames;
+    gpuProfiler.Configure(gpuConfig);
+
     try
     {
-        Application app(application);
-        app.GetDebugOverlay().SetVisible(debugUi);
-        app.GetDebugOverlay().SetValue("APPLICATION", "SAMPLE", PresetName(preset));
-        PopulateSandboxScene(app, sceneConfig);
-        SandboxControls controls(app, sceneConfig.FlashlightOn,
-                                 !sceneConfig.LocalLightShowcase && !sceneConfig.HdriStudio,
-                                 sceneConfig.LocalLightShowcase, sceneConfig.DayNightShowcase, sceneConfig.PostShowcase,
-                                 sceneConfig.DayNightCycleSeconds, sceneConfig.SunAzimuthDegrees,
-                                 sceneConfig.SunElevationDegrees, screenshotPath, screenshotFrame);
-        app.SetUpdateCallback([&controls](float deltaTime) { controls.Update(deltaTime); });
-        app.Run();
+        {
+            ENGINE_MEMORY_TAG_SCOPE("Core");
+            Application app(application);
+            app.GetDebugOverlay().SetVisible(debugUi);
+            app.GetDebugOverlay().SetFrameDebuggerVisible(frameDebugger);
+            app.GetDebugOverlay().SetValue("APPLICATION", "SAMPLE", PresetName(preset));
+            PopulateSandboxScene(app, sceneConfig);
+            SandboxControls controls(app, sceneConfig.FlashlightOn,
+                                     !sceneConfig.LocalLightShowcase && !sceneConfig.HdriStudio,
+                                     sceneConfig.LocalLightShowcase, sceneConfig.DayNightShowcase,
+                                     sceneConfig.PostShowcase, sceneConfig.DayNightCycleSeconds,
+                                     sceneConfig.SunAzimuthDegrees, sceneConfig.SunElevationDegrees,
+                                     screenshotPath, hdrScreenshotPath, screenshotFrame);
+            app.SetUpdateCallback([&controls](float deltaTime) { controls.Update(deltaTime); });
+            app.Run();
+            if (application.FrameCapture.Enabled && !app.GetFrameCapture().CaptureCompleted())
+            {
+                throw std::runtime_error(app.GetFrameCapture().LastError().empty()
+                    ? "The requested RenderDoc frame capture did not complete."
+                    : app.GetFrameCapture().LastError());
+            }
+        }
         if (!cpuProfilePath.empty())
         {
             if (!profiler.WriteChromeTrace(cpuProfilePath))
                 throw std::runtime_error("Failed to write CPU profile: " + cpuProfilePath);
             log::Info("Saved CPU profile: " + cpuProfilePath);
         }
+        if (!memoryProfilePath.empty())
+        {
+            if (!memoryProfiler.WriteJsonReport(memoryProfilePath, true))
+                throw std::runtime_error("Failed to write memory profile: " + memoryProfilePath);
+            log::Info("Saved memory profile: " + memoryProfilePath);
+        }
+        if (!gpuProfilePath.empty())
+        {
+            if (!gpuProfiler.WriteJsonReport(gpuProfilePath))
+                throw std::runtime_error("Failed to write GPU profile: " + gpuProfilePath);
+            log::Info("Saved GPU profile: " + gpuProfilePath);
+        }
         profiler.SetEnabled(false);
+        memoryProfiler.SetEnabled(false);
+        gpuProfiler.SetEnabled(false);
         return EXIT_SUCCESS;
     }
     catch (const std::exception& error)
     {
         profiler.SetEnabled(false);
+        memoryProfiler.SetEnabled(false);
+        gpuProfiler.SetEnabled(false);
         std::fprintf(stderr, "%s\n", error.what());
         return EXIT_FAILURE;
     }

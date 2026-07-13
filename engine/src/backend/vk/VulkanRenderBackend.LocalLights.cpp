@@ -186,10 +186,13 @@ void VulkanRenderBackend::CreateLocalLightResources()
     m_pointShadowPipeline = CreatePointShadowPipeline(
         m_device, m_shadowPipelineLayout, m_depthFormat,
         m_pointShadowVertexShader, m_pointShadowFragmentShader);
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_pointShadowPipeline),
+                 "Point Light Shadow Pipeline");
 
     m_pointShadowArray = m_resources.CreateImage2D(
         kPointShadowSize, kPointShadowSize, m_depthFormat,
-        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_DEPTH_BIT, 1, kMaxPointShadows * 6,
         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
     m_pointShadowCubeArrayView = CreateView(
@@ -202,12 +205,17 @@ void VulkanRenderBackend::CreateLocalLightResources()
 
     m_localShadowAtlas = m_resources.CreateImage2D(
         kLocalShadowAtlasSize, kLocalShadowAtlasSize, m_depthFormat,
-        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_DEPTH_BIT);
     m_cookieAtlas = m_resources.CreateImage2D(
         kCookieAtlasSize, kCookieAtlasSize, VK_FORMAT_R8_UNORM,
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
+    m_resources.SetDebugName(m_pointShadowArray, "Point Light Shadow Cube Array");
+    m_resources.SetDebugName(m_localShadowAtlas, "Spot + Area Shadow Atlas");
+    m_resources.SetDebugName(m_cookieAtlas, "Local Light Cookie Atlas");
 
     VkSamplerCreateInfo shadowSampler{};
     shadowSampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -228,6 +236,12 @@ void VulkanRenderBackend::CreateLocalLightResources()
     shadowSampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     if (vkCreateSampler(m_device, &shadowSampler, nullptr, &m_cookieSampler) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create cookie sampler");
+    SetDebugName(VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<uint64_t>(m_pointShadowSampler),
+                 "Point Shadow Sampler");
+    SetDebugName(VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<uint64_t>(m_localShadowSampler),
+                 "Spot + Area Shadow Sampler");
+    SetDebugName(VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<uint64_t>(m_cookieSampler),
+                 "Light Cookie Sampler");
 
     std::array<VkDescriptorSetLayout, 32> layouts{};
     layouts.fill(m_shadowDescriptorLayout);
@@ -245,6 +259,8 @@ void VulkanRenderBackend::CreateLocalLightResources()
         m_pointShadowUniformBuffers[i] = m_resources.CreateBuffer(
             sizeof(vulkan::ShadowUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_resources.SetDebugName(m_pointShadowUniformBuffers[i],
+            "Point Shadow Face Uniforms " + std::to_string(i));
         m_pointShadowDescriptorSets[i] = sets[i];
         const VkDescriptorBufferInfo buffer{
             m_pointShadowUniformBuffers[i].Handle, 0, sizeof(vulkan::ShadowUniforms)};
@@ -262,6 +278,8 @@ void VulkanRenderBackend::CreateLocalLightResources()
         m_projectedShadowUniformBuffers[i] = m_resources.CreateBuffer(
             sizeof(vulkan::ShadowUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_resources.SetDebugName(m_projectedShadowUniformBuffers[i],
+            "Projected Local Shadow Uniforms " + std::to_string(i));
         m_projectedShadowDescriptorSets[i] = sets[m_pointShadowUniformBuffers.size() + i];
         const VkDescriptorBufferInfo buffer{
             m_projectedShadowUniformBuffers[i].Handle, 0, sizeof(vulkan::ShadowUniforms)};
@@ -478,6 +496,7 @@ void VulkanRenderBackend::RecordLocalLightShadows(VkCommandBuffer commandBuffer,
             vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(object), &object);
             vkCmdDrawIndexed(commandBuffer, mesh.IndexCount, 1, 0, 0, 0);
+            ++m_gpuDrawCallsThisFrame;
         }
     };
 

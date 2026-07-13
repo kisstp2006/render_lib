@@ -2,6 +2,9 @@
 
 #include <filesystem>
 #include <initializer_list>
+#include <atomic>
+#include <cstdint>
+#include <string_view>
 
 #include <vulkan/vulkan.h>
 
@@ -12,6 +15,9 @@ struct Buffer
     VkBuffer Handle = VK_NULL_HANDLE;
     VkDeviceMemory Memory = VK_NULL_HANDLE;
     VkDeviceSize Size = 0;
+    VkDeviceSize AllocationSize = 0;
+    bool DeviceLocal = false;
+    bool AllocationTracked = false;
 };
 
 struct Image
@@ -24,6 +30,18 @@ struct Image
     uint32_t MipLevels = 1;
     uint32_t ArrayLayers = 1;
     VkSampleCountFlagBits Samples = VK_SAMPLE_COUNT_1_BIT;
+    VkDeviceSize AllocationSize = 0;
+    bool DeviceLocal = true;
+    bool AllocationTracked = false;
+};
+
+struct ResourceMemoryStats
+{
+    uint64_t DeviceLocalBytes = 0;
+    uint64_t PeakDeviceLocalBytes = 0;
+    uint64_t HostVisibleBytes = 0;
+    uint64_t PeakHostVisibleBytes = 0;
+    uint64_t AllocationCount = 0;
 };
 
 // Small Vulkan-only allocation helper. It deliberately does not leak into
@@ -48,15 +66,27 @@ public:
     void Destroy(Buffer& buffer) const;
     void Destroy(Image& image) const;
 
+    void SetDebugName(const Buffer& buffer, std::string_view name) const;
+    void SetDebugName(const Image& image, std::string_view name) const;
+
     VkFormat FindSupportedFormat(std::initializer_list<VkFormat> candidates,
                                  VkImageTiling tiling,
                                  VkFormatFeatureFlags features) const;
+    ResourceMemoryStats MemoryStats() const;
 
 private:
     uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
+    void TrackAllocation(uint64_t bytes, bool deviceLocal) const;
+    void TrackFree(uint64_t bytes, bool deviceLocal) const;
 
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
+    PFN_vkSetDebugUtilsObjectNameEXT m_setDebugObjectName = nullptr;
+    mutable std::atomic<uint64_t> m_deviceLocalBytes{0};
+    mutable std::atomic<uint64_t> m_peakDeviceLocalBytes{0};
+    mutable std::atomic<uint64_t> m_hostVisibleBytes{0};
+    mutable std::atomic<uint64_t> m_peakHostVisibleBytes{0};
+    mutable std::atomic<uint64_t> m_allocationCount{0};
 };
 
 VkShaderModule LoadShaderModule(VkDevice device, const std::filesystem::path& path);

@@ -3,6 +3,8 @@
 #include "engine/backend/gl/GLRenderBackend.h"
 #include "engine/core/Log.h"
 #include "engine/profiling/CpuProfiler.h"
+#include "engine/profiling/GpuProfiler.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #if ENGINE_HAS_VULKAN
 #include "engine/backend/vk/VulkanRenderBackend.h"
@@ -56,10 +58,23 @@ Application::Application(const WindowDesc& desc) : Application(ApplicationDesc{d
 
 Application::Application(const ApplicationDesc& desc) : m_desc(desc)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Core");
+    if (m_desc.FrameCapture.CaptureTitle.empty())
+    {
+        m_desc.FrameCapture.CaptureTitle = m_desc.Window.title + " - " +
+            (m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL" : "Vulkan");
+    }
+    m_desc.FrameCapture.PrepareVulkanLayer =
+        m_desc.Window.api == GraphicsApi::Vulkan;
+    // RenderDoc must be discovered/loaded before the graphics API is created so
+    // it can install its hooks deterministically.
+    m_frameCapture.Initialize(m_desc.FrameCapture);
+    SetRuntimeMonitorsEnabled(m_desc.EnableRuntimeMonitors);
     m_desc.MaximumDeltaSeconds = std::max(m_desc.MaximumDeltaSeconds, 0.001f);
     m_desc.FrameRateLimit = std::max(m_desc.FrameRateLimit, 0.0);
     m_desc.Renderer.MsaaSamples = std::max(m_desc.Renderer.MsaaSamples, 1u);
     m_desc.Renderer.MaxAnisotropy = std::max(m_desc.Renderer.MaxAnisotropy, 1.0f);
+    profiling::GpuProfiler::Get().SetEnabled(m_desc.Renderer.EnableGpuTiming);
 
     m_window = std::make_unique<Window>(m_desc.Window);
     m_input.Attach(m_window->Handle());
@@ -77,13 +92,21 @@ Application::Application(const ApplicationDesc& desc) : m_desc(desc)
 #endif
     }
 
-    m_backend->Init(*m_window, m_desc.Renderer);
+    {
+        profiling::MemoryTagScope tag(m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL"
+                                                                              : "Vulkan");
+        m_backend->Init(*m_window, m_desc.Renderer);
+    }
 
     m_window->SetResizeCallback(
         [this](int w, int h)
         {
             if (w > 0 && h > 0)
+            {
+                profiling::MemoryTagScope tag(m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL"
+                                                                                      : "Vulkan");
                 m_backend->Resize(w, h);
+            }
         });
 
     m_wasFocused = m_window->IsFocused();
@@ -106,25 +129,59 @@ Application::Application(const ApplicationDesc& desc) : m_desc(desc)
 
 Application::~Application()
 {
+    ENGINE_MEMORY_TAG_SCOPE("Core");
     // Components contain callbacks into their owning plugin. Destroy them
     // before unloading modules, while renderer services are still alive.
     m_world.Clear();
     m_plugins.UnloadAll();
     if (m_backend)
+    {
+        profiling::MemoryTagScope tag(m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL"
+                                                                              : "Vulkan");
         m_backend->Shutdown();
+    }
     if (m_profilerOwnedByDebugOverlay)
         profiling::CpuProfiler::Get().SetEnabled(false);
+    if (m_memoryProfilerOwnedByDiagnostics)
+        profiling::MemoryProfiler::Get().SetEnabled(false);
+}
+
+void Application::SetRuntimeMonitorsEnabled(bool enabled)
+{
+#if !ENGINE_ENABLE_RUNTIME_MONITORS
+    enabled = false;
+#endif
+    m_desc.EnableRuntimeMonitors = enabled;
+    m_debugOverlay.SetRuntimeMonitorsVisible(enabled);
+    profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
+    if (enabled && !memoryProfiler.IsEnabled())
+    {
+        memoryProfiler.SetEnabled(true);
+        m_memoryProfilerOwnedByDiagnostics = true;
+    }
+    else if (!enabled && m_memoryProfilerOwnedByDiagnostics)
+    {
+        memoryProfiler.SetEnabled(false);
+        m_memoryProfilerOwnedByDiagnostics = false;
+    }
 }
 
 void Application::Run()
 {
     profiling::CpuProfiler& profiler = profiling::CpuProfiler::Get();
+    profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
     if (m_debugOverlay.IsVisible() && !profiler.IsEnabled())
     {
         profiler.SetEnabled(true);
         m_profilerOwnedByDebugOverlay = true;
     }
     profiler.SetThreadName("Main");
+    if (m_debugOverlay.IsVisible() && !memoryProfiler.IsEnabled())
+    {
+        memoryProfiler.SetEnabled(true);
+        memoryProfiler.SetLeakReportOnShutdown(true);
+        m_memoryProfilerOwnedByDiagnostics = true;
+    }
 
     while (RunOneFrame())
     {
@@ -135,19 +192,32 @@ void Application::Run()
         profiler.SetEnabled(false);
         m_profilerOwnedByDebugOverlay = false;
     }
+    if (m_memoryProfilerOwnedByDiagnostics)
+    {
+        memoryProfiler.SetEnabled(false);
+        m_memoryProfilerOwnedByDiagnostics = false;
+    }
 }
 
 bool Application::RunOneFrame()
 {
+    ENGINE_MEMORY_TAG_SCOPE("Core");
     if (m_window->ShouldClose())
         return false;
 
     profiling::CpuProfiler& profiler = profiling::CpuProfiler::Get();
+    profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
     if (m_debugOverlay.IsVisible() && !profiler.IsEnabled())
     {
         profiler.SetEnabled(true);
         profiler.SetThreadName("Main");
         m_profilerOwnedByDebugOverlay = true;
+    }
+    if (m_debugOverlay.IsVisible() && !memoryProfiler.IsEnabled())
+    {
+        memoryProfiler.SetEnabled(true);
+        memoryProfiler.SetLeakReportOnShutdown(true);
+        m_memoryProfilerOwnedByDiagnostics = true;
     }
 
     const double frameStart = glfwGetTime();
@@ -156,12 +226,21 @@ bool Application::RunOneFrame()
         m_lastFrameTime = frameStart;
         m_hasFrameClock = true;
     }
-    const float deltaTime =
-        std::clamp(static_cast<float>(frameStart - m_lastFrameTime), 0.0f, m_desc.MaximumDeltaSeconds);
+    const float fixedDelta = m_frameCapture.IsRequested()
+        ? m_frameCapture.Config().FixedDeltaSeconds : m_desc.FixedDeltaSeconds;
+    const float deltaTime = fixedDelta > 0.0f
+        ? fixedDelta
+        : std::clamp(static_cast<float>(frameStart - m_lastFrameTime), 0.0f,
+                     m_desc.MaximumDeltaSeconds);
     m_lastFrameTime = frameStart;
 
     bool pauseCompletely = false;
+    bool frameDebugCapturePending = false;
+    uint64_t frameDebugResourceId = 0;
+    uint32_t frameDebugMipLevel = 0;
+    uint32_t frameDebugLayer = 0;
     profiler.BeginFrame();
+    memoryProfiler.BeginFrame();
     {
         ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Application.Frame", "Frame");
         EmitEvent(ApplicationEventType::BeginFrame, deltaTime);
@@ -189,6 +268,38 @@ bool Application::RunOneFrame()
             log::Info(std::string("Debug overlay: ") + (m_debugOverlay.IsVisible() ? "ON" : "OFF"));
         }
         m_debugToggleWasDown = debugToggleDown;
+
+        const auto frameDebugPressed = [&](size_t state, int key) {
+            const bool down = m_input.IsKeyDown(key);
+            const bool pressed = down && !m_frameDebuggerKeyStates[state];
+            m_frameDebuggerKeyStates[state] = down;
+            return pressed;
+        };
+        if (frameDebugPressed(0, GLFW_KEY_F4))
+        {
+            m_debugOverlay.ToggleFrameDebugger();
+            log::Info(std::string("Frame debugger: ") +
+                      (m_debugOverlay.FrameDebuggerVisible() ? "ON" : "OFF"));
+        }
+        const bool frameDebuggerVisible = m_debugOverlay.FrameDebuggerVisible();
+        if (frameDebugPressed(1, GLFW_KEY_LEFT) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugPass(-1);
+        if (frameDebugPressed(2, GLFW_KEY_RIGHT) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugPass(1);
+        if (frameDebugPressed(3, GLFW_KEY_UP) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugResource(-1);
+        if (frameDebugPressed(4, GLFW_KEY_DOWN) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugResource(1);
+        if (frameDebugPressed(5, GLFW_KEY_COMMA) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugMip(-1);
+        if (frameDebugPressed(6, GLFW_KEY_PERIOD) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugMip(1);
+        if (frameDebugPressed(7, GLFW_KEY_LEFT_BRACKET) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugLayer(-1);
+        if (frameDebugPressed(8, GLFW_KEY_RIGHT_BRACKET) && frameDebuggerVisible)
+            m_debugOverlay.MoveFrameDebugLayer(1);
+        if (frameDebugPressed(9, GLFW_KEY_R) && frameDebuggerVisible)
+            m_debugOverlay.RequestFrameDebugRefresh();
 
         pauseCompletely = !focused && m_desc.Unfocused == UnfocusedBehavior::Pause;
         if (!pauseCompletely)
@@ -218,9 +329,18 @@ bool Application::RunOneFrame()
                 EmitEvent(ApplicationEventType::AfterUpdate, deltaTime);
             }
 
-            if (m_debugOverlay.IsVisible())
+            if (m_debugOverlay.HasVisibleContent())
             {
+                ENGINE_MEMORY_TAG_SCOPE("Debug");
                 ENGINE_CPU_PROFILE_SCOPE_CATEGORY("DebugOverlay.Update", "Debug");
+                const profiling::GpuProfileSnapshot gpuProfile =
+                    profiling::GpuProfiler::Get().Snapshot();
+                if (m_debugOverlay.FrameDebuggerVisible())
+                {
+                    m_debugOverlay.SetFrameDebugSnapshot(m_backend->GetFrameDebugSnapshot());
+                    frameDebugCapturePending = m_debugOverlay.GetFrameDebugCaptureRequest(
+                        frameDebugResourceId, frameDebugMipLevel, frameDebugLayer);
+                }
                 debug::DebugOverlayMetrics metrics;
                 metrics.BackendName = m_backend->Name();
                 metrics.ViewWidth = m_window->Width();
@@ -254,19 +374,36 @@ bool Application::RunOneFrame()
                 metrics.AreaLightCount = static_cast<uint32_t>(
                     std::count_if(m_scene.AreaLights().begin(), m_scene.AreaLights().end(),
                                   [](const AreaLight& light) { return light.Enabled; }));
-                m_debugOverlay.Update(metrics, profiler.Snapshot());
+                metrics.Capabilities = m_backend->GetCapabilities();
+                m_debugOverlay.Update(metrics, profiler.Snapshot(), memoryProfiler.Snapshot(),
+                                      gpuProfile);
             }
 
             EmitEvent(ApplicationEventType::BeforeRender, deltaTime);
             const RenderFrameData* frame = nullptr;
             {
                 ENGINE_CPU_PROFILE_SCOPE_CATEGORY("PrepareFrame", "Renderer");
+                ENGINE_MEMORY_TAG_SCOPE("Renderer");
                 frame = &m_sceneRenderer.PrepareFrame(
                     m_scene, m_camera, m_window->Width(), m_window->Height(),
-                    m_debugOverlay.IsVisible() ? &m_debugOverlay.Image() : nullptr);
+                    m_debugOverlay.HasVisibleContent() ? &m_debugOverlay.Image() : nullptr,
+                    fixedDelta > 0.0f
+                        ? static_cast<float>(m_frameCounter) * fixedDelta
+                        : static_cast<float>(frameStart),
+                    deltaTime);
             }
             {
                 ENGINE_CPU_PROFILE_SCOPE_CATEGORY("RenderBackend", "Renderer");
+                profiling::MemoryTagScope memoryTag(
+                    m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL" : "Vulkan");
+                const bool captureStarted = m_frameCapture.BeginFrame(m_frameCounter);
+                if (m_frameCapture.IsRequested() && m_frameCapture.Config().RequireAvailable &&
+                    m_frameCounter == m_frameCapture.Config().FrameIndex && !captureStarted)
+                {
+                    throw std::runtime_error(m_frameCapture.LastError().empty()
+                        ? "The requested RenderDoc frame capture could not be started."
+                        : m_frameCapture.LastError());
+                }
                 m_backend->RenderFrame(*frame);
             }
 
@@ -274,6 +411,26 @@ bool Application::RunOneFrame()
             {
                 ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Present", "Renderer");
                 m_window->SwapBuffers();
+            }
+            if (frameDebugCapturePending)
+            {
+                ENGINE_CPU_PROFILE_SCOPE_CATEGORY("FrameDebugger.Capture", "Debug");
+                debug::FrameDebugPreview preview;
+                preview.ResourceId = frameDebugResourceId;
+                preview.MipLevel = frameDebugMipLevel;
+                preview.Layer = frameDebugLayer;
+                if (!m_backend->CaptureFrameDebugResource(
+                        frameDebugResourceId, frameDebugMipLevel, frameDebugLayer, preview) &&
+                    preview.Error.empty())
+                    preview.Error = "Backend could not capture this resource";
+                m_debugOverlay.SetFrameDebugPreview(std::move(preview));
+            }
+            if (m_frameCapture.IsCapturing())
+            {
+                m_frameCapture.EndFrame();
+                if (m_frameCapture.CaptureCompleted() &&
+                    m_frameCapture.Config().QuitAfterCapture)
+                    RequestQuit();
             }
             EmitEvent(ApplicationEventType::AfterRender, deltaTime);
             EmitEvent(ApplicationEventType::EndFrame, deltaTime);
@@ -284,6 +441,7 @@ bool Application::RunOneFrame()
         }
     }
     profiler.EndFrame();
+    memoryProfiler.EndFrame();
     if (pauseCompletely)
     {
         m_window->WaitEvents(0.05);
@@ -308,6 +466,7 @@ void Application::SetFrameRateLimit(double framesPerSecond)
 
 bool Application::SetPresentMode(PresentMode mode)
 {
+    profiling::MemoryTagScope tag(m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL" : "Vulkan");
     m_desc.Renderer.Presentation = mode;
     const bool exact = m_backend->SetPresentMode(mode);
     m_debugOverlay.SetValue("APPLICATION", "PRESENT", PresentModeName(mode));

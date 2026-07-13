@@ -1,5 +1,6 @@
 #include "engine/scene/Environment.h"
 #include "engine/core/Log.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include <stb_image.h>
 
@@ -27,6 +28,7 @@ std::string NormalizePath(const std::string& path)
 
 std::shared_ptr<HdrImageData> LoadHdrFromFile(const std::string& path, bool flipVertically)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Asset");
     if (path.empty())
         throw EnvironmentLoadError("HDR environment path is empty");
 

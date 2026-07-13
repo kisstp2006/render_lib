@@ -49,7 +49,9 @@ glm::mat4 ProjectedLightMatrix(const glm::vec3& position, const glm::vec3& direc
 
 const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Camera& camera,
                                                     int width, int height,
-                                                    const debug::DebugOverlayImage* debugOverlay)
+                                                    const debug::DebugOverlayImage* debugOverlay,
+                                                    float timeSeconds,
+                                                    float deltaSeconds)
 {
     const uint64_t nextFrameIndex = m_frame.FrameIndex + 1;
     m_frame = {};
@@ -59,6 +61,8 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
     m_frame.Height = std::max(height, 1);
     m_frame.AspectRatio = static_cast<float>(m_frame.Width) / static_cast<float>(m_frame.Height);
     m_frame.FrameIndex = nextFrameIndex;
+    m_frame.TimeSeconds = timeSeconds;
+    m_frame.DeltaSeconds = std::max(deltaSeconds, 0.0f);
     m_frame.DebugOverlay = debugOverlay;
     m_frame.View = camera.GetView();
     m_frame.BaseProjection = camera.GetProjection(m_frame.AspectRatio);

@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "engine/debug/FrameDebugger.h"
+
 namespace engine
 {
 
@@ -44,6 +46,8 @@ struct BackendCapabilities
     float ActiveAnisotropy = 1.0f;
     bool HardwareAccelerated = true;
     bool GpuTiming = false;
+    bool GpuPipelineStatistics = false;
+    bool GpuMemoryBudget = false;
     bool ImmediatePresent = false;
     bool AdaptivePresent = false;
 };
@@ -80,8 +84,24 @@ class IRenderBackend
     // Saves the next presented frame as a PNG. Default: unsupported no-op.
     virtual void RequestScreenshot(const std::string& /*path*/) {}
 
+    // Saves the next resolved scene-color target before exposure, bloom,
+    // tonemapping and color grading as a linear Radiance HDR image. This is
+    // primarily used by backend-parity and golden-image regression tests.
+    virtual void RequestHdrScreenshot(const std::string& /*path*/) {}
+
     virtual BackendFrameStats GetFrameStats() const { return {}; }
     virtual BackendCapabilities GetCapabilities() const { return {}; }
+
+    // API-neutral frame graph/resource metadata plus an explicit frozen
+    // preview capture. Capture may synchronize the GPU and is therefore only
+    // called while the in-engine frame debugger is open.
+    virtual debug::FrameDebugSnapshot GetFrameDebugSnapshot() const { return {}; }
+    virtual bool CaptureFrameDebugResource(uint64_t /*resourceId*/, uint32_t /*mipLevel*/,
+                                           uint32_t /*layer*/,
+                                           debug::FrameDebugPreview& /*preview*/)
+    {
+        return false;
+    }
 
     // Returns false when the requested mode is unavailable and a safe fallback
     // was selected. Changing this may recreate a native swapchain.

@@ -171,7 +171,12 @@ void VulkanRenderBackend::CreatePostInfrastructure()
                                &m_exposurePipelineLayout) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create auto-exposure pipeline layout");
 
+    VkPushConstantRange overlayPush{};
+    overlayPush.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    overlayPush.size = sizeof(glm::vec4);
     pipelineLayout.pSetLayouts = &m_debugOverlayDescriptorLayout;
+    pipelineLayout.pushConstantRangeCount = 1;
+    pipelineLayout.pPushConstantRanges = &overlayPush;
     if (vkCreatePipelineLayout(m_device, &pipelineLayout, nullptr,
                                &m_debugOverlayPipelineLayout) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create debug overlay pipeline layout");
@@ -308,25 +313,38 @@ void VulkanRenderBackend::CreatePostTargets()
     {
         m_hdrImages.push_back(m_resources.CreateImage2D(
             m_swapchainExtent.width, m_swapchainExtent.height, kHdrFormat,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT));
         m_ldrImages.push_back(m_resources.CreateImage2D(
             m_swapchainExtent.width, m_swapchainExtent.height, kLdrFormat,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT));
         m_velocityImages.push_back(m_resources.CreateImage2D(
             m_swapchainExtent.width, m_swapchainExtent.height,
             VK_FORMAT_R16G16_SFLOAT,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT));
+        m_resources.SetDebugName(m_hdrImages.back(),
+            "Main HDR Color " + std::to_string(imageIndex));
+        m_resources.SetDebugName(m_ldrImages.back(),
+            "Post Tonemap LDR " + std::to_string(imageIndex));
+        m_resources.SetDebugName(m_velocityImages.back(),
+            "Main HDR Velocity " + std::to_string(imageIndex));
         uint32_t width = std::max(1u, m_swapchainExtent.width / 2u);
         uint32_t height = std::max(1u, m_swapchainExtent.height / 2u);
+        size_t bloomLevel = 0;
         for (vulkan::Image& level : m_bloomChains[imageIndex].Levels)
         {
             level = m_resources.CreateImage2D(
                 width, height, kHdrFormat,
-                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT);
+            m_resources.SetDebugName(level, "Bloom Image " + std::to_string(imageIndex) +
+                " Level " + std::to_string(bloomLevel++));
             width = std::max(1u, width / 2u);
             height = std::max(1u, height / 2u);
         }
@@ -343,6 +361,10 @@ void VulkanRenderBackend::CreatePostTargets()
                 m_swapchainExtent.width, m_swapchainExtent.height,
                 VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, 0, m_msaaSamples);
+            m_resources.SetDebugName(m_msaaHdrImages[frame],
+                "Main HDR MSAA Color " + std::to_string(frame));
+            m_resources.SetDebugName(m_msaaVelocityImages[frame],
+                "Main HDR MSAA Velocity " + std::to_string(frame));
         }
     }
 
@@ -350,12 +372,18 @@ void VulkanRenderBackend::CreatePostTargets()
     {
         m_taaHistoryColor[history] = m_resources.CreateImage2D(
             m_swapchainExtent.width, m_swapchainExtent.height, kHdrFormat,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
         m_taaHistoryDepth[history] = m_resources.CreateImage2D(
             m_swapchainExtent.width, m_swapchainExtent.height, VK_FORMAT_R32_SFLOAT,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
+        m_resources.SetDebugName(m_taaHistoryColor[history],
+            "TAA History Color " + std::to_string(history));
+        m_resources.SetDebugName(m_taaHistoryDepth[history],
+            "TAA History Depth " + std::to_string(history));
     }
     {
         VkCommandBuffer commandBuffer = BeginImmediateCommands();
@@ -401,6 +429,14 @@ void VulkanRenderBackend::CreatePostTargets()
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         m_debugOverlayImageInitialized[frame] = false;
+        m_resources.SetDebugName(m_postUniformBuffers.back(),
+            "Post Uniforms " + std::to_string(frame));
+        m_resources.SetDebugName(m_exposureBuffers[frame],
+            "Auto Exposure Buffer " + std::to_string(frame));
+        m_resources.SetDebugName(m_debugOverlayImages[frame],
+            "Debug UI Atlas " + std::to_string(frame));
+        m_resources.SetDebugName(m_debugOverlayStaging[frame],
+            "Debug UI Upload " + std::to_string(frame));
     }
 
     const uint32_t postSetCount = static_cast<uint32_t>(imageCount) * kFramesInFlight;
@@ -713,6 +749,14 @@ void VulkanRenderBackend::CreatePostPipelines()
                              m_swapchainFormat, false, m_fxaaPipeline);
     createFullscreenPipeline(m_debugOverlayFragmentShader, m_debugOverlayPipelineLayout,
                              m_swapchainFormat, true, m_debugOverlayPipeline);
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_postSwapchainPipeline),
+                 "Post Tonemap to Swapchain Pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_postLdrPipeline),
+                 "Post Tonemap to LDR Pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_fxaaPipeline),
+                 "Post FXAA Pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_debugOverlayPipeline),
+                 "Debug UI Pipeline");
 
     {
         const VkPipelineShaderStageCreateInfo stages[] = {
@@ -764,6 +808,8 @@ void VulkanRenderBackend::CreatePostPipelines()
                                       &m_taaPipeline) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create TAA pipeline");
     }
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_taaPipeline),
+                 "Post TAA Resolve Pipeline");
 
     auto createComputePipeline = [&](VkShaderModule shader, VkPipeline& pipeline) {
         VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -778,6 +824,12 @@ void VulkanRenderBackend::CreatePostPipelines()
     };
     createComputePipeline(m_bloomDownsampleShader, m_bloomDownsamplePipeline);
     createComputePipeline(m_bloomUpsampleShader, m_bloomUpsamplePipeline);
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE,
+                 reinterpret_cast<uint64_t>(m_bloomDownsamplePipeline),
+                 "Post Bloom Downsample Pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE,
+                 reinterpret_cast<uint64_t>(m_bloomUpsamplePipeline),
+                 "Post Bloom Upsample Pipeline");
 
     VkPipelineShaderStageCreateInfo exposureStage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     exposureStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -789,6 +841,8 @@ void VulkanRenderBackend::CreatePostPipelines()
     if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &exposureInfo,
                                  nullptr, &m_exposurePipeline) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create auto-exposure pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_exposurePipeline),
+                 "Post Auto Exposure Pipeline");
 }
 
 void VulkanRenderBackend::DestroyPostPipelines()
@@ -814,10 +868,8 @@ void VulkanRenderBackend::DestroyPostPipelines()
 void VulkanRenderBackend::UpdateAutoExposure(const RenderFrameData& frame)
 {
     const PostProcessSettings& settings = frame.SceneData->PostProcess;
-    const double now = glfwGetTime();
-    const float deltaTime = m_lastExposureTime > 0.0
-        ? static_cast<float>(now - m_lastExposureTime) : 0.016f;
-    m_lastExposureTime = now;
+    const float deltaTime = frame.DeltaSeconds;
+    m_lastExposureTime = frame.TimeSeconds;
 
     if (settings.Enabled && settings.AutoExposure)
     {
@@ -850,6 +902,7 @@ void VulkanRenderBackend::RecordAutoExposure(VkCommandBuffer commandBuffer,
     const PostProcessSettings& settings = frame.SceneData->PostProcess;
     if (!settings.Enabled || !settings.AutoExposure)
         return;
+    BeginDebugLabel(commandBuffer, "Post / Auto Exposure", {0.95f, 0.70f, 0.20f, 1.0f});
     const uint32_t setIndex = m_currentFrame
         * static_cast<uint32_t>(m_swapchainImages.size()) + imageIndex;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_exposurePipeline);
@@ -857,6 +910,7 @@ void VulkanRenderBackend::RecordAutoExposure(VkCommandBuffer commandBuffer,
                             m_exposurePipelineLayout, 0, 1,
                             &m_exposureDescriptorSets[setIndex], 0, nullptr);
     vkCmdDispatch(commandBuffer, 1, 1, 1);
+    ++m_gpuDispatchesThisFrame;
 
     VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -872,6 +926,7 @@ void VulkanRenderBackend::RecordAutoExposure(VkCommandBuffer commandBuffer,
     dependency.pBufferMemoryBarriers = &barrier;
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
     m_exposureReadbackValid[m_currentFrame] = true;
+    EndDebugLabel(commandBuffer);
 }
 
 void VulkanRenderBackend::PreparePost(const RenderFrameData& frame, uint32_t imageIndex)
@@ -947,6 +1002,7 @@ void VulkanRenderBackend::PreparePost(const RenderFrameData& frame, uint32_t ima
 const vulkan::Image& VulkanRenderBackend::RecordTemporalAA(
     VkCommandBuffer commandBuffer, const RenderFrameData& frame, uint32_t imageIndex)
 {
+    BeginDebugLabel(commandBuffer, "Post / TAA Resolve", {0.90f, 0.65f, 0.20f, 1.0f});
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("RecordTemporalAA", "Renderer/Vulkan/Post");
     const int readHistory = m_taaHistoryIndex;
     const int writeHistory = (readHistory + 1) % 2;
@@ -1025,6 +1081,7 @@ const vulkan::Image& VulkanRenderBackend::RecordTemporalAA(
     vkCmdPushConstants(commandBuffer, m_taaPipelineLayout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    ++m_gpuDrawCallsThisFrame;
     vkCmdEndRendering(commandBuffer);
 
     const VkImageMemoryBarrier2 outputBarriers[] = {
@@ -1050,6 +1107,7 @@ const vulkan::Image& VulkanRenderBackend::RecordTemporalAA(
     m_taaHistoryIndex = writeHistory;
     m_taaHistoryValid = true;
     ++m_taaFrameIndex;
+    EndDebugLabel(commandBuffer);
     return m_taaHistoryColor[writeHistory];
 }
 
@@ -1060,6 +1118,7 @@ void VulkanRenderBackend::RecordPost(VkCommandBuffer commandBuffer,
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("RecordPost", "Renderer/Vulkan/Post");
     const PostProcessSettings& settings = frame.SceneData->PostProcess;
     BloomChain& bloom = m_bloomChains[imageIndex];
+    BeginDebugLabel(commandBuffer, "Post / Bloom Pyramid", {0.95f, 0.45f, 0.15f, 1.0f});
     if (settings.Enabled)
     {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1083,6 +1142,7 @@ void VulkanRenderBackend::RecordPost(VkCommandBuffer commandBuffer,
                                sizeof(constants), &constants);
             vkCmdDispatch(commandBuffer, (target.Extent.width + 7) / 8,
                           (target.Extent.height + 7) / 8, 1);
+            ++m_gpuDispatchesThisFrame;
             EmitBarrier(commandBuffer, ImageBarrier(
                 target.Handle, VK_IMAGE_LAYOUT_GENERAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1109,6 +1169,7 @@ void VulkanRenderBackend::RecordPost(VkCommandBuffer commandBuffer,
                                     m_bloomPipelineLayout, 0, 1, &set, 0, nullptr);
             vkCmdDispatch(commandBuffer, (target.Extent.width + 7) / 8,
                           (target.Extent.height + 7) / 8, 1);
+            ++m_gpuDispatchesThisFrame;
             EmitBarrier(commandBuffer, ImageBarrier(
                 target.Handle, VK_IMAGE_LAYOUT_GENERAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1119,8 +1180,12 @@ void VulkanRenderBackend::RecordPost(VkCommandBuffer commandBuffer,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT));
         }
     }
+    EndDebugLabel(commandBuffer);
 
     const bool fxaa = settings.Enabled && settings.AntiAliasing == AntiAliasingMode::Fxaa;
+    BeginDebugLabel(commandBuffer, fxaa ? "Post / Tonemap + Color Grade + FXAA"
+                                       : "Post / Tonemap + Color Grade",
+                    {0.90f, 0.55f, 0.15f, 1.0f});
     EmitBarrier(commandBuffer, ImageBarrier(
         m_swapchainImages[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
@@ -1158,6 +1223,7 @@ void VulkanRenderBackend::RecordPost(VkCommandBuffer commandBuffer,
                            VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(srgbAttachment), &srgbAttachment);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        ++m_gpuDrawCallsThisFrame;
         vkCmdEndRendering(commandBuffer);
     };
 
@@ -1198,10 +1264,12 @@ void VulkanRenderBackend::RecordPost(VkCommandBuffer commandBuffer,
                            VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        ++m_gpuDrawCallsThisFrame;
         vkCmdEndRendering(commandBuffer);
     }
     else
         drawPost(m_swapchainImageViews[imageIndex], m_postSwapchainPipeline, 1);
+    EndDebugLabel(commandBuffer);
 }
 
 } // namespace engine

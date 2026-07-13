@@ -8,10 +8,61 @@
 
 namespace engine::vulkan {
 
+namespace {
+
+void RaisePeak(std::atomic<uint64_t>& peak, uint64_t value)
+{
+    uint64_t previous = peak.load(std::memory_order_relaxed);
+    while (previous < value &&
+           !peak.compare_exchange_weak(previous, value, std::memory_order_relaxed))
+    {
+    }
+}
+
+} // namespace
+
 void ResourceAllocator::Init(VkPhysicalDevice physicalDevice, VkDevice device)
 {
     m_physicalDevice = physicalDevice;
     m_device = device;
+    m_setDebugObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+        vkGetDeviceProcAddr(device, "vkSetDebugUtilsObjectNameEXT"));
+}
+
+namespace
+{
+
+void SetObjectName(VkDevice device, PFN_vkSetDebugUtilsObjectNameEXT setName,
+                   VkObjectType type, uint64_t handle, std::string_view name)
+{
+    if (setName == nullptr || handle == 0 || name.empty())
+        return;
+    const std::string ownedName(name);
+    VkDebugUtilsObjectNameInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    info.objectType = type;
+    info.objectHandle = handle;
+    info.pObjectName = ownedName.c_str();
+    setName(device, &info);
+}
+
+} // namespace
+
+void ResourceAllocator::SetDebugName(const Buffer& buffer, std::string_view name) const
+{
+    SetObjectName(m_device, m_setDebugObjectName, VK_OBJECT_TYPE_BUFFER,
+                  reinterpret_cast<uint64_t>(buffer.Handle), name);
+    SetObjectName(m_device, m_setDebugObjectName, VK_OBJECT_TYPE_DEVICE_MEMORY,
+                  reinterpret_cast<uint64_t>(buffer.Memory), std::string(name) + " Memory");
+}
+
+void ResourceAllocator::SetDebugName(const Image& image, std::string_view name) const
+{
+    SetObjectName(m_device, m_setDebugObjectName, VK_OBJECT_TYPE_IMAGE,
+                  reinterpret_cast<uint64_t>(image.Handle), name);
+    SetObjectName(m_device, m_setDebugObjectName, VK_OBJECT_TYPE_IMAGE_VIEW,
+                  reinterpret_cast<uint64_t>(image.View), std::string(name) + " View");
+    SetObjectName(m_device, m_setDebugObjectName, VK_OBJECT_TYPE_DEVICE_MEMORY,
+                  reinterpret_cast<uint64_t>(image.Memory), std::string(name) + " Memory");
 }
 
 uint32_t ResourceAllocator::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const
@@ -53,6 +104,8 @@ Buffer ResourceAllocator::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usa
     allocationInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocationInfo.allocationSize = requirements.size;
     allocationInfo.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits, memoryProperties);
+    buffer.AllocationSize = requirements.size;
+    buffer.DeviceLocal = (memoryProperties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
     if (vkAllocateMemory(m_device, &allocationInfo, nullptr, &buffer.Memory) != VK_SUCCESS)
     {
         vkDestroyBuffer(m_device, buffer.Handle, nullptr);
@@ -64,6 +117,8 @@ Buffer ResourceAllocator::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usa
         Destroy(buffer);
         throw std::runtime_error("Vulkan: failed to bind buffer memory");
     }
+    TrackAllocation(static_cast<uint64_t>(buffer.AllocationSize), buffer.DeviceLocal);
+    buffer.AllocationTracked = true;
     return buffer;
 }
 
@@ -117,6 +172,9 @@ Image ResourceAllocator::CreateImage2D(uint32_t width, uint32_t height, VkFormat
         Destroy(image);
         throw std::runtime_error("Vulkan: failed to bind image memory");
     }
+    image.AllocationSize = requirements.size;
+    TrackAllocation(static_cast<uint64_t>(image.AllocationSize), true);
+    image.AllocationTracked = true;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -181,6 +239,9 @@ Image ResourceAllocator::CreateImage3D(uint32_t width, uint32_t height, uint32_t
         Destroy(image);
         throw std::runtime_error("Vulkan: failed to bind 3D image memory");
     }
+    image.AllocationSize = requirements.size;
+    TrackAllocation(static_cast<uint64_t>(image.AllocationSize), true);
+    image.AllocationTracked = true;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -200,6 +261,8 @@ Image ResourceAllocator::CreateImage3D(uint32_t width, uint32_t height, uint32_t
 
 void ResourceAllocator::Destroy(Buffer& buffer) const
 {
+    if (buffer.AllocationTracked)
+        TrackFree(static_cast<uint64_t>(buffer.AllocationSize), buffer.DeviceLocal);
     if (buffer.Handle != VK_NULL_HANDLE)
         vkDestroyBuffer(m_device, buffer.Handle, nullptr);
     if (buffer.Memory != VK_NULL_HANDLE)
@@ -209,6 +272,8 @@ void ResourceAllocator::Destroy(Buffer& buffer) const
 
 void ResourceAllocator::Destroy(Image& image) const
 {
+    if (image.AllocationTracked)
+        TrackFree(static_cast<uint64_t>(image.AllocationSize), image.DeviceLocal);
     if (image.View != VK_NULL_HANDLE)
         vkDestroyImageView(m_device, image.View, nullptr);
     if (image.Handle != VK_NULL_HANDLE)
@@ -216,6 +281,33 @@ void ResourceAllocator::Destroy(Image& image) const
     if (image.Memory != VK_NULL_HANDLE)
         vkFreeMemory(m_device, image.Memory, nullptr);
     image = {};
+}
+
+void ResourceAllocator::TrackAllocation(uint64_t bytes, bool deviceLocal) const
+{
+    std::atomic<uint64_t>& current = deviceLocal ? m_deviceLocalBytes : m_hostVisibleBytes;
+    std::atomic<uint64_t>& peak = deviceLocal ? m_peakDeviceLocalBytes : m_peakHostVisibleBytes;
+    const uint64_t value = current.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    RaisePeak(peak, value);
+    m_allocationCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ResourceAllocator::TrackFree(uint64_t bytes, bool deviceLocal) const
+{
+    std::atomic<uint64_t>& current = deviceLocal ? m_deviceLocalBytes : m_hostVisibleBytes;
+    current.fetch_sub(bytes, std::memory_order_relaxed);
+    m_allocationCount.fetch_sub(1, std::memory_order_relaxed);
+}
+
+ResourceMemoryStats ResourceAllocator::MemoryStats() const
+{
+    ResourceMemoryStats result;
+    result.DeviceLocalBytes = m_deviceLocalBytes.load(std::memory_order_relaxed);
+    result.PeakDeviceLocalBytes = m_peakDeviceLocalBytes.load(std::memory_order_relaxed);
+    result.HostVisibleBytes = m_hostVisibleBytes.load(std::memory_order_relaxed);
+    result.PeakHostVisibleBytes = m_peakHostVisibleBytes.load(std::memory_order_relaxed);
+    result.AllocationCount = m_allocationCount.load(std::memory_order_relaxed);
+    return result;
 }
 
 VkFormat ResourceAllocator::FindSupportedFormat(std::initializer_list<VkFormat> candidates,

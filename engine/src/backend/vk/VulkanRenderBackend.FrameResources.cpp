@@ -25,9 +25,12 @@ VkShaderModule VulkanRenderBackend::LoadShader(
         std::filesystem::path(ENGINE_SHADER_DIR) / "vk";
     const std::filesystem::path cachePath =
         std::filesystem::path(ENGINE_VULKAN_SHADER_CACHE_DIR) / (relativePath.string() + ".spv");
-    return vulkan::CompileAndLoadShaderModule(
+    VkShaderModule module = vulkan::CompileAndLoadShaderModule(
         m_device, shaderRoot / relativePath, cachePath,
         { shaderRoot, std::filesystem::path(ENGINE_SHADER_DIR) });
+    SetDebugName(VK_OBJECT_TYPE_SHADER_MODULE, reinterpret_cast<uint64_t>(module),
+                 "Shader Module: " + relativePath.generic_string());
+    return module;
 }
 
 void VulkanRenderBackend::CreateShaderInfrastructure()
@@ -73,6 +76,9 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
         frameLayoutInfo.pBindings = frameBindings;
         if (vkCreateDescriptorSetLayout(m_device, &frameLayoutInfo, nullptr, &m_frameDescriptorLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create frame descriptor layout");
+        SetDebugName(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                     reinterpret_cast<uint64_t>(m_frameDescriptorLayout),
+                     "Frame Descriptor Layout");
 
         const VkDescriptorSetLayoutBinding materialBindings[] = {
             {vulkan::binding::MaterialUniforms, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
@@ -94,6 +100,9 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
         materialLayoutInfo.pBindings = materialBindings;
         if (vkCreateDescriptorSetLayout(m_device, &materialLayoutInfo, nullptr, &m_materialDescriptorLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create material descriptor layout");
+        SetDebugName(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                     reinterpret_cast<uint64_t>(m_materialDescriptorLayout),
+                     "Material Descriptor Layout");
 
         VkDescriptorSetLayoutBinding shadowBinding{};
         shadowBinding.binding = 0;
@@ -106,6 +115,9 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
         shadowLayoutInfo.pBindings = &shadowBinding;
         if (vkCreateDescriptorSetLayout(m_device, &shadowLayoutInfo, nullptr, &m_shadowDescriptorLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create shadow descriptor layout");
+        SetDebugName(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                     reinterpret_cast<uint64_t>(m_shadowDescriptorLayout),
+                     "Shadow Descriptor Layout");
 
         const VkDescriptorSetLayout setLayouts[] = {m_frameDescriptorLayout, m_materialDescriptorLayout};
         VkPushConstantRange objectRange{};
@@ -121,12 +133,16 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
         pipelineLayoutInfo.pPushConstantRanges = &objectRange;
         if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pbrPipelineLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create PBR pipeline layout");
+        SetDebugName(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                     reinterpret_cast<uint64_t>(m_pbrPipelineLayout), "PBR Pipeline Layout");
 
         const VkDescriptorSetLayout shadowSetLayouts[] = {m_shadowDescriptorLayout, m_materialDescriptorLayout};
         pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(std::size(shadowSetLayouts));
         pipelineLayoutInfo.pSetLayouts = shadowSetLayouts;
         if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_shadowPipelineLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create shadow pipeline layout");
+        SetDebugName(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                     reinterpret_cast<uint64_t>(m_shadowPipelineLayout), "Shadow Pipeline Layout");
 
         const VkDescriptorPoolSize poolSizes[] = {
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096},
@@ -147,6 +163,8 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
             m_frameUniformBuffers.push_back(m_resources.CreateBuffer(
                 sizeof(vulkan::FrameUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+            m_resources.SetDebugName(m_frameUniformBuffers.back(),
+                "Frame Uniforms " + std::to_string(i));
         }
 
         std::vector<VkDescriptorSetLayout> frameLayouts(kFramesInFlight, m_frameDescriptorLayout);
@@ -291,7 +309,7 @@ void VulkanRenderBackend::UpdateFrameUniforms(const RenderFrameData& frame)
     uniforms.StarCoolSize = glm::vec4(scene.Sky.StarCoolColor, scene.Sky.StarSize);
     uniforms.StarAnimation = {
         scene.Sky.StarIntensity, scene.Sky.StarTwinkle, scene.Sky.StarTwinkleSpeed,
-        static_cast<float>(glfwGetTime())};
+        frame.TimeSeconds};
     uniforms.NightRotationFlags = {
         scene.Sky.NightSkyRotationDegrees, scene.Sky.NightSkyRotationSpeed, 0.0f, 0.0f};
     uniforms.SkyFeatureFlags = {

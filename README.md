@@ -70,8 +70,10 @@ Current Vulkan renderer (core OpenGL image parity complete):
   per-object push constants
 - backend-owned buffer/image allocator, mipmapped anisotropic material textures,
   per-frame uniforms and resize-safe swapchain-dependent render targets
-- Vulkan timestamp-query profiling for shadow, main HDR and post passes, with
-  the same warm-up and min/average/max logging used by OpenGL
+- asynchronous OpenGL/Vulkan GPU profiling for directional/local shadows,
+  main HDR, post and debug UI, with native pipeline statistics, bounded
+  history, driver VRAM budgets, engine-owned Vulkan allocation tracking and
+  JSON export
 
 The platform layer is cross-platform by construction (GLFW, no Win32-only
 code paths) and the current OpenGL 4.6/Vulkan targets support Windows and
@@ -105,7 +107,20 @@ MoltenVK; the current renderer does not build there as-is.
 ## Layout
 
 ```
-engine/                  Static library: everything backend-agnostic + both backends
+engine/                  Modular engine libraries plus compatibility facade
+  cmake/                  Shared target policy and module helper
+  modules/                One CMake/IDE project per architectural module
+    Foundation/           Logging and CPU/GPU/memory profiling
+    Core/                 Window, input, camera and RenderDoc host integration
+    Scene/                Backend-neutral render scene data
+    Assets/               glTF and color-grading asset loaders
+    Runtime/              Components, world hierarchy and C++ plugins
+    RendererCore/         Shared frame preparation and renderer algorithms
+    RendererOpenGL/       Native OpenGL backend
+    RendererVulkan/       Native Vulkan backend
+    Application/          Main loop and backend selection
+    RenderTools/          Visual comparison and HDR image tooling
+    ThirdParty/           Third-party implementation translation units
   include/engine/
     asset/                glTF import and color-grading LUT assets/loaders
     core/                 Window, Input, Camera, Application, Log
@@ -117,7 +132,7 @@ engine/                  Static library: everything backend-agnostic + both back
       IRenderBackend.h     Shared Init/Resize/RenderFrame/Shutdown contract
       gl/                  OpenGL 4.6 backend (full renderer)
       vk/                  Vulkan resources, shader contract and backend scaffold
-  src/                     .cpp implementations mirroring the include tree
+  src/                     Implementations mirroring the stable public include tree
 
 shaders/
   common/                  PBR/BRDF math shared by OpenGL and Vulkan
@@ -134,9 +149,17 @@ examples/assets/           Bundled CC0 test assets
 tests/src/                 Renderer CPU/regression test entry point
 ```
 
+The historical `engine` static target remains as a tiny compatibility facade,
+so existing consumers do not need changes. New code may link narrower aliases
+such as `engine::foundation`, `engine::scene`, `engine::renderer_core`,
+`engine::renderer_opengl` or `engine::renderer_vulkan`. Module responsibilities,
+allowed dependency directions and extension rules are documented in the
+[engine module architecture guide](docs/engine-modules.md).
+
 ## Building
 
-Requires CMake >= 3.21 and a C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+).
+Requires CMake >= 3.21, Python 3 with Jinja2 for GLAD code generation, and a
+C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+).
 Dependencies (GLFW, GLAD2, GLM, stb) are fetched at configure time via
 `FetchContent` — nothing to install beyond a compiler and CMake. The Vulkan
 backend additionally requires the LunarG Vulkan SDK (including shaderc); if it
@@ -200,8 +223,17 @@ and `--taa-depth-threshold`; the same fields are available through
 **Controls:** right-click + mouse to look around, WASD to move, Q/E for
 down/up, hold Shift to move faster. I/K/J/L move the sun (sky + IBL re-bake
 live), F toggles the flashlight, C toggles cascade debug colors, F12 saves a
-PNG render into `renders/`. F3 toggles the built-in debug UI; `--debug-ui`
-starts with it visible. `--shadow-stress --shadow-benchmark` runs the CSM
+PNG render into `renders/`. The compact CPU-memory and GPU monitor cards are
+visible by default; F3 toggles the larger detailed debug panel and `--debug-ui`
+starts that panel visible. `--no-runtime-monitors` disables the two persistent
+cards. F4 opens the in-engine frame debugger (`--frame-debugger` starts it
+visible): left/right selects a render pass, up/down selects a texture,
+comma/period selects a mip, brackets select an array layer or cubemap face,
+and R refreshes the deliberately frozen GPU preview. The panel shows pass
+order/timing, input/output relationships, format, dimensions, samples and
+estimated memory identically on OpenGL and Vulkan. See the
+[frame debugger guide](docs/frame-debugger.md). `--shadow-stress
+--shadow-benchmark` runs the CSM
 stress scene with asynchronous GPU timing. `--light-showcase` displays point,
 spot and barn/area lights side by side, with shadowed examples on the left and
 unshadowed examples on the right. In this showcase, T toggles shadows for all
@@ -239,14 +271,58 @@ Engine and application code can add RAII instrumentation with
 application loop and the important OpenGL/Vulkan render passes are already
 instrumented.
 
-The small debug UI is engine-owned and has no ImGui dependency. It displays
-the active API, resolution, FPS/frame time history, asynchronous GPU pass
-timings, scene/triangle/light counts, post settings and the hottest CPU
-profiler zones. Applications can add persistent grouped values without
-backend-specific code:
+The CPU memory profiler tracks global C++ `new/delete` plus plugin allocations
+made through the ABI v2 host allocator. It records current/peak usage,
+allocation counts, subsystem tags, size buckets, bounded frame history and
+live leak records. `--memory-profile <path.json>` exports a report,
+`--memory-profile-retain N` controls retained frames and
+`--memory-leak-report` prints remaining allocations at process shutdown.
+The default runtime CPU-memory card enables collection automatically and
+displays live memory, peak, largest tag and per-frame allocation/free traffic.
+Engine code can classify work with
+`ENGINE_MEMORY_TAG_SCOPE("Streaming")`. See the
+[memory profiler guide](docs/memory-profiler.md).
+
+The GPU profiler collects native, non-blocking timestamp and pipeline queries
+on both backends. It retains per-pass history and min/average/max summaries,
+tracks draw/dispatch and shader-invocation counts, reads Vulkan
+`VK_EXT_memory_budget` or OpenGL `GL_NVX_gpu_memory_info`, and separately tracks
+engine-owned Vulkan device allocations. `--gpu-profile <path.json>` exports a
+report and `--gpu-profile-retain N` sets its bounded history. Disable all native
+GPU queries with `--no-gpu-timing` or `Renderer.EnableGpuTiming = false`. See
+the [GPU profiler guide](docs/gpu-profiler.md).
+
+RenderDoc capture is deterministic and backend-neutral. `--renderdoc-capture
+<path-template> --renderdoc-frame N` captures the same fixed-step frame from
+OpenGL or Vulkan and exits after saving; `--renderdoc-library <path>` supports
+direct launches when the process was not started from RenderDoc. Both backends
+emit the same named frame/pass hierarchy and semantic GPU resource names. See
+the [RenderDoc capture guide](docs/renderdoc-capture.md).
+
+Golden-image regression tests capture both the final sRGB PNG and the linear,
+pre-tonemap HDR scene color for the materials, glTF, local-lights and HDRI
+samples. Separate OpenGL/Vulkan baselines catch backend-specific regressions;
+a direct cross-backend comparison verifies parity with a tolerance designed
+for localized rasterization-edge and highlight differences. Every comparison
+emits a diff PNG, heatmap and JSON metrics report. Run
+`cmake --build build --config Release --target golden_images`; see the
+[visual regression guide](docs/visual-regression.md) before intentionally
+updating baselines.
+
+The small debug UI is engine-owned and has no ImGui dependency. Its atlas can
+draw independent layers at any screen corner. By default the CPU-memory card
+is at the top-right and the GPU adapter/timing/VRAM card is at the bottom-right;
+the detailed F3 panel remains at the top-left. The detailed panel displays the
+active API, resolution, FPS/frame time history, scene/triangle/light counts,
+post settings and the hottest CPU profiler zones. Applications can add
+persistent grouped values or move the monitor cards without backend-specific
+code:
 
 ```cpp
 app.GetDebugOverlay().SetValue("STREAMING", "VISIBLE CHUNKS", "24");
+app.GetDebugOverlay().SetRuntimeMonitorPlacements(
+    engine::debug::DebugOverlayPlacement::TopRight,
+    engine::debug::DebugOverlayPlacement::BottomRight);
 ```
 
 The architecture follows the useful parts of
@@ -268,6 +344,9 @@ config.Renderer.MsaaSamples = 4;
 config.Renderer.MaxAnisotropy = 16.0f;
 config.Unfocused = engine::UnfocusedBehavior::RenderOnly;
 config.FrameRateLimit = 144.0;
+// Default is true. This one flag disables both persistent runtime cards and
+// their automatic CPU-memory collection for this Application.
+config.EnableRuntimeMonitors = false;
 
 engine::Application app(config);
 app.Run();
@@ -278,11 +357,19 @@ Every sample accepts `--windowed`, `--fixed-window`, `--borderless`,
 `--position X Y`, `--cursor MODE`, `--vsync`,
 `--no-vsync`, `--adaptive-vsync`, `--msaa N`, `--anisotropy N`, `--adapter NAME`,
 `--no-prefer-discrete`, `--validation`, `--no-validation`, `--no-gpu-timing`,
+`--no-runtime-monitors`,
 `--max-fps N`, `--max-delta N` and `--unfocused continue|render|pause`.
+Profiling switches shared by every sample are `--cpu-profile path.json`,
+`--cpu-profile-log`, `--cpu-profile-retain N`, `--memory-profile path.json`,
+`--memory-profile-retain N`, `--memory-leak-report` and `--debug-ui`.
 `--save-config path.cfg` stores the resolved settings; `--config path.cfg`
 loads them, and later command-line switches override loaded values. See the
 [ezEngine configuration study](docs/ezengine-application-renderer-settings.md)
 for the source comparison and intentionally deferred renderer-pass features.
+The build-wide `-DENGINE_ENABLE_RUNTIME_MONITORS=OFF` option removes automatic
+runtime monitor activation from every application. See the
+[runtime monitor guide](docs/runtime-monitors.md) for code, config and placement
+examples.
 
 Runtime C++ plugins now use an ABI-checked DLL/SO entry point rather than
 sharing STL ownership across module boundaries. Plugins can declare
@@ -336,9 +423,9 @@ Rough order, each step buildable/testable on its own:
    frame drives indexed PBR meshes, mipmapped anisotropic textures, CSM and
    local-light shadows/cookies, procedural/HDRI IBL, RGBA16F + 4x MSAA,
    auto-exposure, bloom, tonemap, 3D LUT, FXAA/TAA and PNG capture. All seven
-   executables run on both backends without validation errors; current static
-   golden-image mean absolute differences are below 1.6% (animated day/night
-   timing excluded).
+   executables run on both backends without validation errors. The automated
+   golden suite currently measures at most 0.0032 mean linear LDR error and
+   0.0073 mean absolute HDR radiance error across its four static scenes.
 6. **More local-light features** — complete: point cubemap shadows, shared
    spot/area shadow atlas, cookie atlas and Source 2-style barn/rect area lights.
 7. Only *then* revisit whether a shared RHI abstraction actually pays for
@@ -360,11 +447,11 @@ above are not repeated here.
 
 8. **Performance, diagnostics and stability baseline (P0)**
    - [x] CPU profiler with hierarchical RAII zones, per-thread timelines, bounded capture, rolling statistics and Chrome Trace export
-   - [ ] Memory profiler with allocation tags, leak reports and peak-budget tracking
-   - [ ] GPU profiler with per-pass timestamps, pipeline statistics and VRAM budgets
-   - [ ] RenderDoc integration, named GPU objects, markers and deterministic frame capture
-   - [ ] In-engine frame debugger for pass/resource inspection
-   - [ ] Golden-image visual regression tests with tolerant HDR comparisons
+   - [x] Memory profiler with global C++ and plugin-host allocation tracking, subsystem tags, current/peak and size-bucket statistics, bounded frame history, JSON export, debug UI, shutdown leak reports and multithreaded tests
+   - [x] GPU profiler with asynchronous per-pass timestamps, pipeline statistics, VRAM budgets/peaks, bounded history, debug UI, JSON export and automated OpenGL/Vulkan runtime validation
+   - [x] RenderDoc integration with named OpenGL/Vulkan resources, matching pass markers, fixed-step automatic capture and backend-neutral CLI validation mode
+   - [x] In-engine frame debugger with unified pass order/timing, input/output resource links, texture metadata/memory and frozen mip/layer previews for OpenGL and Vulkan
+   - [x] Golden-image visual regression tests with deterministic OpenGL/Vulkan LDR+HDR capture, mixed absolute/relative tolerance, diff images, heatmaps and JSON reports
    - [ ] Long-running resize/minimize/fullscreen, hot-reload and resource-lifetime stress tests
    - [ ] GPU vendor/driver capability database and graceful feature fallback paths
    - [ ] Pipeline cache, shader permutation cache and stutter regression benchmarks

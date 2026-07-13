@@ -1,6 +1,7 @@
 #include "engine/core/Camera.h"
 #include "engine/core/ApplicationConfig.h"
 #include "engine/debug/DebugOverlay.h"
+#include "engine/debug/RenderDocCapture.h"
 #include "engine/render/CascadedShadows.h"
 #include "engine/render/Exposure.h"
 #include "engine/render/GpuTiming.h"
@@ -8,8 +9,11 @@
 #include "engine/render/ShaderSource.h"
 #include "engine/render/TemporalAA.h"
 #include "engine/profiling/CpuProfiler.h"
+#include "engine/profiling/GpuProfiler.h"
+#include "engine/profiling/MemoryProfiler.h"
 #include "engine/plugin/PluginManager.h"
 #include "engine/runtime/World.h"
+#include "engine/testing/VisualRegression.h"
 #include "engine/asset/ColorGrading.h"
 #include "engine/backend/vk/VulkanShaderInterop.h"
 #include "engine/scene/Texture.h"
@@ -339,7 +343,8 @@ void TestSharedSceneRendererFrame()
     Camera camera;
     camera.Position = {2.0f, 3.0f, 7.0f};
     SceneRenderer renderer;
-    const RenderFrameData first = renderer.PrepareFrame(scene, camera, 1600, 900);
+    const RenderFrameData first = renderer.PrepareFrame(
+        scene, camera, 1600, 900, nullptr, 2.5f, 1.0f / 120.0f);
     Require(first.SceneData == &scene && first.CameraData == &camera,
             "shared frame must reference the exact scene and camera consumed by both backends");
     Require(std::abs(first.AspectRatio - 16.0f / 9.0f) < 1.0e-6f,
@@ -355,12 +360,41 @@ void TestSharedSceneRendererFrame()
             "shared frame must use scene shadow settings for both backends");
     Require(std::isfinite(first.TonemapWhitePointScale) && first.TonemapWhitePointScale > 0.0f,
             "shared frame must provide a valid common tonemap scale");
+    Require(std::abs(first.TimeSeconds - 2.5f) < 1.0e-6f &&
+                std::abs(first.DeltaSeconds - 1.0f / 120.0f) < 1.0e-6f,
+            "shared frame must carry deterministic animation time to both backends");
 
     const RenderFrameData second = renderer.PrepareFrame(scene, camera, 800, 800);
     Require(second.FrameIndex == first.FrameIndex + 1,
             "shared scene renderer frame index must advance exactly once per application frame");
     Require(std::abs(second.AspectRatio - 1.0f) < 1.0e-6f,
             "shared frame must react to viewport resize independently of the backend");
+}
+
+void TestRenderDocCaptureFallback()
+{
+    debug::RenderDocCapture capture;
+    debug::RenderDocCaptureConfig disabled;
+    Require(!capture.Initialize(disabled) && !capture.IsRequested() && !capture.IsAvailable(),
+            "disabled RenderDoc capture must have zero runtime dependency");
+
+    debug::RenderDocCaptureConfig requested;
+    requested.Enabled = true;
+    requested.RequireAvailable = false;
+    requested.FrameIndex = 7;
+    requested.FixedDeltaSeconds = 1.0f / 120.0f;
+    requested.LibraryPath = "definitely-missing-renderdoc-library";
+    requested.CapturePathTemplate = "test-output/renderdoc/frame";
+    const bool available = capture.Initialize(requested);
+    Require(capture.IsRequested() && capture.Config().FrameIndex == 7 &&
+                std::abs(capture.Config().FixedDeltaSeconds - 1.0f / 120.0f) < 1.0e-6f,
+            "RenderDoc capture configuration must retain its deterministic frame schedule");
+    if (!available)
+    {
+        Require(!capture.LastError().empty() && !capture.BeginFrame(7),
+                "missing RenderDoc must produce a useful error without attempting capture");
+    }
+    capture.Shutdown();
 }
 
 void TestSharedRendererUtilities()
@@ -393,6 +427,145 @@ void TestSharedRendererUtilities()
     Require(shader.Source.find("#include") == std::string::npos
                 && shader.Source.find("D_GGX") != std::string::npos,
             "shared shader loader must expand backend and common GLSL includes");
+
+    const ShaderSourceDocument glSky = LoadShaderSource(
+        shaderRoot / "gl/environment/sky.frag", {shaderRoot / "gl", shaderRoot});
+    const ShaderSourceDocument vkSky = LoadShaderSource(
+        shaderRoot / "vk/environment/sky.frag", {shaderRoot / "vk", shaderRoot});
+    for (const ShaderSourceDocument* sky : {&glSky, &vkSky})
+    {
+        Require(sky->Source.find("EngineEvaluateProceduralStar") != std::string::npos &&
+                    sky->Source.find("EngineStarCubeGrid") != std::string::npos,
+                "both backends must use the shared pole-safe procedural star field");
+        Require(sky->Source.find("atan(nightDirection") == std::string::npos,
+                "procedural stars must not use pole-singular equirectangular coordinates");
+    }
+}
+
+void TestVisualRegressionComparison()
+{
+    using namespace engine::testing;
+    VisualImage reference;
+    reference.Width = 4;
+    reference.Height = 2;
+    reference.SourceWasHdr = true;
+    reference.LinearRgb.assign(4 * 2 * 3, 0.25f);
+    VisualImage candidate = reference;
+
+    VisualTolerance tolerance;
+    tolerance.Absolute = 0.01f;
+    tolerance.Relative = 0.05f;
+    tolerance.RelativeFloor = 0.05f;
+    tolerance.MaximumFailingPixelFraction = 0.01f;
+    tolerance.MaximumMeanNormalizedError = 0.20f;
+    const VisualComparison identical = CompareVisualImages(reference, candidate, tolerance);
+    Require(identical.Valid() && identical.Metrics.Passed &&
+                identical.Metrics.MeanAbsoluteError == 0.0 &&
+                identical.DifferenceRgba.size() == 4 * 2 * 4 &&
+                identical.HeatmapRgba.size() == 4 * 2 * 4,
+            "identical golden images must pass and generate complete diagnostics");
+
+    candidate.LinearRgb[0] += 0.015f;
+    const VisualComparison tolerated = CompareVisualImages(reference, candidate, tolerance);
+    Require(tolerated.Metrics.Passed && tolerated.Metrics.FailingPixelCount == 0,
+            "mixed absolute/relative HDR tolerance must accept small radiance drift");
+
+    candidate = reference;
+    candidate.LinearRgb[0] = candidate.LinearRgb[1] = candidate.LinearRgb[2] = 2.0f;
+    const VisualComparison regression = CompareVisualImages(reference, candidate, tolerance);
+    Require(!regression.Metrics.Passed && regression.Metrics.FailingPixelCount == 1 &&
+                regression.Metrics.FailingPixelFraction > 0.10 &&
+                regression.Metrics.MaximumAbsoluteError > 1.0,
+            "a localized material/lighting regression must fail and be measured per pixel");
+
+    const std::filesystem::path hdrPath = std::filesystem::temp_directory_path() /
+                                          "source_like_visual_roundtrip.hdr";
+    const std::filesystem::path diffPath = std::filesystem::temp_directory_path() /
+                                           "source_like_visual_diff.png";
+    std::string error;
+    Require(WriteHdrImage(hdrPath, reference.Width, reference.Height,
+                          reference.LinearRgb, &error),
+            "visual regression must write linear Radiance HDR captures");
+    VisualImage loaded;
+    Require(LoadVisualImage(hdrPath, loaded, &error) && loaded.Valid() && loaded.SourceWasHdr,
+            "visual regression must load its HDR captures in linear light");
+    const VisualComparison roundTrip = CompareVisualImages(reference, loaded, tolerance);
+    Require(roundTrip.Metrics.Passed,
+            "Radiance encoding quantization must remain inside the configured HDR tolerance");
+    Require(WriteRgbaImage(diffPath, regression.Width, regression.Height,
+                           regression.DifferenceRgba, &error) &&
+                std::filesystem::file_size(diffPath) > 0,
+            "visual regression must emit a PNG difference artifact");
+    std::error_code removeError;
+    std::filesystem::remove(hdrPath, removeError);
+    std::filesystem::remove(diffPath, removeError);
+}
+
+void TestGpuProfilerHistoryAndExport()
+{
+    using namespace engine::profiling;
+    const std::filesystem::path reportPath = std::filesystem::temp_directory_path() /
+                                             "source_like_gpu_profile_test.json";
+    GpuProfiler& profiler = GpuProfiler::Get();
+    profiler.SetEnabled(false);
+    profiler.Reset();
+    GpuProfilerConfig config;
+    config.Enabled = true;
+    config.RetainedFrames = 2;
+    profiler.Configure(config);
+
+    for (uint64_t frameIndex = 1; frameIndex <= 3; ++frameIndex)
+    {
+        GpuFrameProfile frame;
+        frame.FrameIndex = frameIndex;
+        frame.BackendName = "Test API";
+        frame.AdapterName = "Test GPU";
+        frame.TimingAvailable = true;
+        frame.PipelineStatisticsAvailable = true;
+        frame.MemoryBudgetAvailable = true;
+        frame.Passes = {{"Shadows/Directional", static_cast<float>(frameIndex)},
+                        {"Main HDR", static_cast<float>(frameIndex * 2)}};
+        frame.Pipeline.DrawCalls = frameIndex * 10;
+        frame.Pipeline.InputAssemblyPrimitives = frameIndex * 100;
+        frame.Memory.UsageBytes = frameIndex * 1024;
+        frame.Memory.BudgetBytes = 16 * 1024;
+        frame.Memory.EngineOwnedBytes = frameIndex * 512;
+        profiler.SubmitFrame(std::move(frame));
+    }
+
+    const GpuProfileSnapshot snapshot = profiler.Snapshot();
+    Require(snapshot.Enabled && snapshot.Frames.size() == 2 &&
+                snapshot.CompletedFrame == 3 && snapshot.FrameMilliseconds == 9.0f,
+            "GPU profiler must retain bounded asynchronous frame history and total pass time");
+    Require(snapshot.Passes.size() == 2 &&
+                std::abs(snapshot.Passes[0].AverageMilliseconds - 2.5f) < 1.0e-6f &&
+                snapshot.Passes[0].MinimumMilliseconds == 2.0f &&
+                snapshot.Passes[0].MaximumMilliseconds == 3.0f,
+            "GPU profiler must aggregate per-pass latest/average/minimum/maximum timings");
+    Require(snapshot.Pipeline.DrawCalls == 30 &&
+                snapshot.Pipeline.InputAssemblyPrimitives == 300 &&
+                snapshot.Memory.PeakUsageBytes == 3072,
+            "GPU profiler must publish latest pipeline statistics and VRAM peak usage");
+    Require(profiler.WriteJsonReport(reportPath.string()),
+            "GPU profiler must export a JSON report");
+    std::ifstream report(reportPath);
+    const std::string text((std::istreambuf_iterator<char>(report)),
+                           std::istreambuf_iterator<char>());
+    Require(text.find("Shadows/Directional") != std::string::npos &&
+                text.find("\"pipelineStatisticsAvailable\": true") != std::string::npos &&
+                text.find("\"vramBudgetBytes\"") != std::string::npos &&
+                text.find("\"frames\"") != std::string::npos,
+            "GPU JSON report must contain passes, pipeline counters, VRAM and history");
+    std::error_code removeError;
+    std::filesystem::remove(reportPath, removeError);
+
+    profiler.SetEnabled(false);
+    profiler.Reset();
+    GpuFrameProfile ignored;
+    ignored.FrameIndex = 99;
+    profiler.SubmitFrame(std::move(ignored));
+    Require(profiler.Snapshot().Frames.empty(),
+            "disabled GPU profiling must discard samples with negligible overhead");
 }
 
 void TestCpuProfilerHierarchyAndTimeline()
@@ -516,9 +689,18 @@ void TestDebugOverlayRasterAndState()
     metrics.TriangleCount = 128;
     metrics.Backend.GpuTimingAvailable = true;
     metrics.Backend.GpuFrameMilliseconds = 2.5f;
+    profiling::MemoryProfileSnapshot memoryProfile;
+    memoryProfile.Enabled = true;
+    memoryProfile.CurrentBytes = 3 * 1024 * 1024;
+    memoryProfile.PeakBytes = 5 * 1024 * 1024;
+    memoryProfile.LiveAllocations = 17;
+    memoryProfile.Tags.push_back({"Renderer", 2 * 1024 * 1024, 4 * 1024 * 1024,
+                                  9, 20, 11, 6 * 1024 * 1024});
+    memoryProfile.Frames.push_back({7, memoryProfile.CurrentBytes, memoryProfile.PeakBytes,
+                                    memoryProfile.LiveAllocations, 64 * 1024, 24 * 1024, 4, 2});
     overlay.SetValue("Test group", "Custom", "42");
     overlay.SetVisible(true);
-    overlay.Update(metrics, {});
+    overlay.Update(metrics, {}, memoryProfile);
 
     const debug::DebugOverlayImage& image = overlay.Image();
     Require(image.Pixels.size() == static_cast<size_t>(debug::DebugOverlayImage::Width)
@@ -531,11 +713,265 @@ void TestDebugOverlayRasterAndState()
             "debug overlay must rasterize its accent bar deterministically");
     const uint64_t visibleRevision = image.Revision;
     overlay.SetVisible(false);
-    overlay.Update(metrics, {});
+    overlay.Update(metrics, {}, memoryProfile);
     Require(overlay.Image().Revision == visibleRevision,
             "hidden debug overlay must not spend work publishing frames");
+
+    metrics.Capabilities.AdapterName = "Test GPU";
+    metrics.Capabilities.DedicatedVideoMemoryBytes = 8ull * 1024 * 1024 * 1024;
+    overlay.SetRuntimeMonitorsVisible(true);
+    overlay.Update(metrics, {}, memoryProfile);
+    Require(overlay.Image().Revision == visibleRevision + 1 &&
+                overlay.Image().LayerCount == 2,
+            "persistent runtime monitors must update while the detailed panel is hidden");
+    Require(overlay.Image().Layers[0].Placement == debug::DebugOverlayPlacement::TopRight &&
+                overlay.Image().Layers[1].Placement == debug::DebugOverlayPlacement::BottomRight,
+            "CPU-memory and GPU monitors must use independent default screen placements");
+    const debug::DebugOverlayDrawRect cpuRect = debug::ResolveDebugOverlayLayer(
+        overlay.Image().Layers[0], 1280, 720);
+    const debug::DebugOverlayDrawRect gpuRect = debug::ResolveDebugOverlayLayer(
+        overlay.Image().Layers[1], 1280, 720);
+    Require(cpuRect.X == 970 && cpuRect.Y == 10 && cpuRect.Width == 300 &&
+                cpuRect.Height == 96 && gpuRect.X == 970 && gpuRect.Y == 562 &&
+                gpuRect.Height == 148,
+            "overlay placement must resolve top-right and bottom-right anchors in pixels");
+    const debug::DebugOverlayDrawRect clippedCpuRect = debug::ResolveDebugOverlayLayer(
+        overlay.Image().Layers[0], 200, 80);
+    Require(clippedCpuRect.X == 0 && clippedCpuRect.Y == 10 &&
+                clippedCpuRect.Width == 200 && clippedCpuRect.Height == 70,
+            "overlay placement must clip safely when a resized viewport is smaller than a card");
+    overlay.SetVisible(true);
+    overlay.Update(metrics, {}, memoryProfile);
+    Require(overlay.Image().LayerCount == 3 &&
+                overlay.Image().Layers[0].Placement == debug::DebugOverlayPlacement::TopLeft,
+            "detailed and persistent widgets must render as three independent layers");
+    overlay.SetRuntimeMonitorPlacements(debug::DebugOverlayPlacement::BottomLeft,
+                                        debug::DebugOverlayPlacement::TopRight);
+    overlay.SetVisible(false);
+    overlay.Update(metrics, {}, memoryProfile);
+    Require(overlay.Image().Layers[0].Placement == debug::DebugOverlayPlacement::BottomLeft &&
+                overlay.Image().Layers[1].Placement == debug::DebugOverlayPlacement::TopRight,
+            "runtime monitor placement must be configurable in code");
+    overlay.SetRuntimeMonitorsVisible(false);
     overlay.RemoveValue("Test group", "Custom");
     overlay.ClearValues();
+}
+
+void TestFrameDebuggerModelAndNavigation()
+{
+    constexpr uint64_t colorId = debug::FrameDebugId("test.color");
+    constexpr uint64_t depthId = debug::FrameDebugId("test.depth");
+    Require(colorId == debug::FrameDebugId("test.color") && colorId != depthId,
+            "frame-debug resource ids must be deterministic and distinct");
+
+    debug::FrameDebugSnapshot snapshot;
+    snapshot.BackendName = "Test API";
+    snapshot.FrameIndex = 42;
+    debug::FrameDebugResource color;
+    color.Id = colorId;
+    color.Name = "HDR Color";
+    color.Width = 1280;
+    color.Height = 720;
+    color.MipLevels = 2;
+    color.Layers = 1;
+    color.Format = "RGBA16F";
+    color.EstimatedBytes = 1280ull * 720 * 8;
+    debug::FrameDebugResource depth;
+    depth.Id = depthId;
+    depth.Name = "Shadow Array";
+    depth.Kind = debug::FrameDebugResourceKind::Texture2DArray;
+    depth.Visualization = debug::FrameDebugVisualization::Depth;
+    depth.Width = 512;
+    depth.Height = 512;
+    depth.MipLevels = 1;
+    depth.Layers = 3;
+    depth.Format = "D32F";
+    depth.EstimatedBytes = 512ull * 512 * 4 * 3;
+    snapshot.Resources = {color, depth};
+    snapshot.Passes.push_back({"Main HDR", {depthId}, {colorId}, 1.25f, true});
+    Require(debug::FindFrameDebugResource(snapshot, depthId) != nullptr &&
+                debug::FindFrameDebugResource(snapshot, 1234) == nullptr,
+            "frame-debug snapshots must resolve stable resource references");
+
+    debug::DebugOverlay overlay;
+    overlay.SetFrameDebuggerVisible(true);
+    overlay.SetFrameDebugSnapshot(snapshot);
+    uint64_t requestId = 0;
+    uint32_t mip = 0;
+    uint32_t layer = 0;
+    Require(overlay.GetFrameDebugCaptureRequest(requestId, mip, layer) &&
+                requestId == colorId && mip == 0 && layer == 0,
+            "opening the frame debugger must request the selected resource preview");
+    debug::FrameDebugPreview preview;
+    preview.ResourceId = colorId;
+    preview.SourceWidth = 2;
+    preview.SourceHeight = 1;
+    preview.Width = 2;
+    preview.Height = 1;
+    preview.Pixels = {255, 0, 0, 255, 0, 255, 0, 255};
+    overlay.SetFrameDebugPreview(std::move(preview));
+    Require(!overlay.GetFrameDebugCaptureRequest(requestId, mip, layer),
+            "a completed frozen preview must clear the capture request");
+
+    overlay.MoveFrameDebugResource(1);
+    overlay.MoveFrameDebugLayer(1);
+    Require(overlay.GetFrameDebugCaptureRequest(requestId, mip, layer) &&
+                requestId == depthId && layer == 1,
+            "resource and array-layer navigation must request the selected subresource");
+    debug::FrameDebugPreview depthPreview;
+    depthPreview.ResourceId = depthId;
+    depthPreview.Width = depthPreview.Height = 1;
+    depthPreview.Pixels = {128, 128, 128, 255};
+    overlay.SetFrameDebugPreview(std::move(depthPreview));
+    overlay.MoveFrameDebugResource(-1);
+    overlay.MoveFrameDebugMip(1);
+    Require(overlay.GetFrameDebugCaptureRequest(requestId, mip, layer) &&
+                requestId == colorId && mip == 1 && layer == 0,
+            "mip navigation must wrap safely within the selected texture");
+
+    debug::DebugOverlayMetrics metrics;
+    metrics.BackendName = "Test API";
+    metrics.DeltaSeconds = 1.0f / 60.0f;
+    overlay.Update(metrics, {});
+    Require(overlay.Image().LayerCount == 1 &&
+                overlay.Image().Layers[0].Width == debug::DebugOverlayImage::FrameDebuggerWidth &&
+                overlay.Image().Layers[0].Height == debug::DebugOverlayImage::FrameDebuggerHeight,
+            "frame debugger must publish one backend-neutral full inspection layer");
+}
+
+void TestMemoryProfilerDisabledMode()
+{
+    profiling::MemoryProfiler& profiler = profiling::MemoryProfiler::Get();
+    profiler.SetEnabled(false);
+    profiler.Reset();
+
+    uint8_t* allocation = new uint8_t[4096];
+    const profiling::MemoryProfileSnapshot snapshot = profiler.Snapshot(true);
+    Require(!snapshot.Enabled && snapshot.CurrentBytes == 0 &&
+                snapshot.LiveAllocations == 0 && snapshot.TotalAllocations == 0 &&
+                snapshot.Leaks.empty(),
+            "disabled memory profiling must not record global C++ allocations");
+    delete[] allocation;
+}
+
+void TestMemoryProfilerTrackingAndExport()
+{
+    const std::filesystem::path reportPath = std::filesystem::temp_directory_path() /
+                                             "source_like_memory_profile_test.json";
+    profiling::MemoryProfiler& profiler = profiling::MemoryProfiler::Get();
+    profiler.SetEnabled(false);
+    profiler.Reset();
+    profiling::MemoryProfilerConfig config;
+    config.Enabled = true;
+    config.RetainedFrames = 4;
+    profiler.Configure(config);
+
+    profiler.BeginFrame();
+    void* small = profiler.Allocate(32, 16, "Test/Small");
+    void* medium = profiler.Allocate(2048, 64, "Test/Medium");
+    Require(small && medium && reinterpret_cast<uintptr_t>(medium) % 64 == 0,
+            "memory profiler allocator must honor requested alignment");
+    uint8_t* globalAllocation = nullptr;
+    {
+        profiling::MemoryTagScope tag("Test/GlobalNew");
+        globalAllocation = new uint8_t[70'000];
+    }
+
+    const profiling::MemoryProfileSnapshot live = profiler.Snapshot(true);
+    Require(live.LiveAllocations >= 3 && live.CurrentBytes >= 72'080 &&
+                live.PeakBytes >= live.CurrentBytes,
+            "memory profiler must report current bytes, live count and peak usage");
+    const auto smallTag = std::find_if(live.Tags.begin(), live.Tags.end(),
+                                       [](const profiling::MemoryTagStats& tag)
+                                       { return tag.Name == "Test/Small"; });
+    const auto globalTag = std::find_if(live.Tags.begin(), live.Tags.end(),
+                                        [](const profiling::MemoryTagStats& tag)
+                                        { return tag.Name == "Test/GlobalNew"; });
+    Require(smallTag != live.Tags.end() && smallTag->CurrentBytes == 32 &&
+                globalTag != live.Tags.end() && globalTag->CurrentBytes >= 70'000,
+            "explicit and global new allocations must preserve subsystem tags");
+    Require(live.SizeBuckets[0].LiveAllocations >= 1 &&
+                live.SizeBuckets[3].LiveAllocations >= 1 &&
+                live.SizeBuckets[6].LiveAllocations >= 1,
+            "memory profiler must distribute allocations into size buckets");
+    Require(std::any_of(live.Leaks.begin(), live.Leaks.end(),
+                        [&](const profiling::MemoryLeakInfo& leak)
+                        { return leak.Address == reinterpret_cast<uintptr_t>(medium) &&
+                                 leak.Tag == "Test/Medium"; }),
+            "live-allocation snapshot must expose leak address, size and tag");
+
+    delete[] globalAllocation;
+    profiler.Free(medium);
+    profiler.Free(small);
+    profiler.EndFrame();
+    const profiling::MemoryProfileSnapshot released = profiler.Snapshot();
+    Require(released.PeakBytes >= 72'080 && !released.Frames.empty() &&
+                released.Frames.back().PeakBytes >= 72'080 &&
+                released.Frames.back().AllocatedBytes >= 72'080 &&
+                released.Frames.back().FreedBytes >= 72'080,
+            "global/frame peak usage and per-frame allocation/free traffic must survive release");
+    Require(profiler.WriteJsonReport(reportPath.string(), true),
+            "memory profiler must export a JSON report");
+    std::ifstream report(reportPath);
+    const std::string reportText((std::istreambuf_iterator<char>(report)),
+                                 std::istreambuf_iterator<char>());
+    Require(reportText.find("\"sizeBuckets\"") != std::string::npos &&
+                reportText.find("Test/Small") != std::string::npos &&
+                reportText.find("\"trackingCapacity\"") != std::string::npos &&
+                reportText.find("\"liveAllocations\"") != std::string::npos &&
+                reportText.find("\"frames\"") != std::string::npos,
+            "memory JSON report must contain tags, buckets and frame history");
+    std::error_code removeError;
+    std::filesystem::remove(reportPath, removeError);
+
+    profiler.SetEnabled(false);
+    profiler.Reset();
+}
+
+void TestMemoryProfilerMultithreaded()
+{
+    profiling::MemoryProfiler& profiler = profiling::MemoryProfiler::Get();
+    profiler.SetEnabled(false);
+    profiler.Reset();
+    profiling::MemoryProfilerConfig config;
+    config.Enabled = true;
+    profiler.Configure(config);
+    profiler.BeginFrame();
+    constexpr int threadCount = 6;
+    constexpr int allocationsPerThread = 1500;
+    {
+        std::vector<std::thread> workers;
+        workers.reserve(threadCount);
+        for (int threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+        {
+            workers.emplace_back(
+                [&profiler, threadIndex]
+                {
+                    for (int allocation = 0; allocation < allocationsPerThread; ++allocation)
+                    {
+                        const size_t size = static_cast<size_t>(16 +
+                            ((allocation + threadIndex) % 257));
+                        void* memory = profiler.Allocate(size, 16, "Test/Threaded");
+                        Require(memory != nullptr, "threaded profiler allocation must succeed");
+                        profiler.Free(memory);
+                    }
+                });
+        }
+        for (std::thread& worker : workers)
+            worker.join();
+    }
+    profiler.EndFrame();
+    const profiling::MemoryProfileSnapshot snapshot = profiler.Snapshot();
+    const auto threaded = std::find_if(snapshot.Tags.begin(), snapshot.Tags.end(),
+                                        [](const profiling::MemoryTagStats& tag)
+                                        { return tag.Name == "Test/Threaded"; });
+    Require(threaded != snapshot.Tags.end() &&
+                threaded->TotalAllocations == threadCount * allocationsPerThread &&
+                threaded->LiveAllocations == 0 &&
+                threaded->TotalFrees == threaded->TotalAllocations,
+            "memory profiler bookkeeping must remain exact under concurrent allocation/free");
+    profiler.SetEnabled(false);
+    profiler.Reset();
 }
 
 void TestApplicationConfigRoundTrip()
@@ -558,8 +994,10 @@ void TestApplicationConfigRoundTrip()
     source.Renderer.EnableGpuTiming = false;
     source.Unfocused = UnfocusedBehavior::RenderOnly;
     source.MaximumDeltaSeconds = 0.05f;
+    source.FixedDeltaSeconds = 1.0f / 60.0f;
     source.FrameRateLimit = 144.0;
     source.CaptureCursorOnRightMouse = false;
+    source.EnableRuntimeMonitors = false;
 
     const std::filesystem::path path = std::filesystem::temp_directory_path()
         / "source_like_application_config_test.cfg";
@@ -589,8 +1027,10 @@ void TestApplicationConfigRoundTrip()
             "renderer configuration must survive a complete round trip");
     Require(loaded.Unfocused == UnfocusedBehavior::RenderOnly
             && std::abs(loaded.MaximumDeltaSeconds - 0.05f) < 1.0e-6f
+            && std::abs(loaded.FixedDeltaSeconds - 1.0f / 60.0f) < 1.0e-6f
             && loaded.FrameRateLimit == 144.0
-            && !loaded.CaptureCursorOnRightMouse,
+            && !loaded.CaptureCursorOnRightMouse
+            && !loaded.EnableRuntimeMonitors,
             "application loop configuration must survive a complete round trip");
 
     {
@@ -607,6 +1047,12 @@ void TestApplicationConfigRoundTrip()
 
 void TestRuntimePluginAndWorld()
 {
+    profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
+    memoryProfiler.SetEnabled(false);
+    memoryProfiler.Reset();
+    profiling::MemoryProfilerConfig memoryConfig;
+    memoryConfig.Enabled = true;
+    memoryProfiler.Configure(memoryConfig);
     runtime::ComponentRegistry components;
     plugin::PluginManager plugins(components);
     runtime::World world(components);
@@ -641,6 +1087,12 @@ void TestRuntimePluginAndWorld()
     std::string error;
     Require(world.AddComponent(child, kTestRuntimeComponentName, &error),
             "plugin component factory must attach behavior to an entity");
+    const profiling::MemoryProfileSnapshot pluginMemory = memoryProfiler.Snapshot();
+    Require(std::any_of(pluginMemory.Tags.begin(), pluginMemory.Tags.end(),
+                        [](const profiling::MemoryTagStats& tag)
+                        { return tag.Name == "Plugin/TestRuntimePlugin" &&
+                                 tag.LiveAllocations > 0; }),
+            "plugin component allocations must use the tagged host allocator");
     Require(service->ActivateCount == 1, "active entities must activate newly attached components");
     world.Update(0.25f);
     Require(service->StartCount == 1 && service->UpdateCount == 1 &&
@@ -684,6 +1136,7 @@ void TestRuntimePluginAndWorld()
                 std::find(events.begin(), events.end(), plugin::PluginEventType::AfterUnloading) !=
                     events.end(),
             "plugin manager must publish symmetric load and unload events");
+    memoryProfiler.SetEnabled(false);
 }
 
 void TestRuntimePluginDependencies()
@@ -720,10 +1173,17 @@ int main()
     TestTemporalSamplingAndCuts();
     TestVulkanMaterialPacking();
     TestSharedSceneRendererFrame();
+    TestRenderDocCaptureFallback();
     TestSharedRendererUtilities();
+    TestVisualRegressionComparison();
+    TestGpuProfilerHistoryAndExport();
     TestCpuProfilerHierarchyAndTimeline();
     TestCpuProfilerBounds();
     TestDebugOverlayRasterAndState();
+    TestFrameDebuggerModelAndNavigation();
+    TestMemoryProfilerDisabledMode();
+    TestMemoryProfilerTrackingAndExport();
+    TestMemoryProfilerMultithreaded();
     TestApplicationConfigRoundTrip();
     TestRuntimePluginAndWorld();
     TestRuntimePluginDependencies();

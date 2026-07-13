@@ -4,9 +4,11 @@ in vec2 vUv;
 out vec4 FragColor;
 
 uniform sampler2D uOverlay;
+uniform vec4 uUvRect;
 
 void main()
 {
     // CPU rows use top-left origin; OpenGL texture coordinates use bottom-left.
-    FragColor = texture(uOverlay, vec2(vUv.x, 1.0 - vUv.y));
+    vec2 localUv = vec2(vUv.x, 1.0 - vUv.y);
+    FragColor = texture(uOverlay, uUvRect.xy + localUv * uUvRect.zw);
 }

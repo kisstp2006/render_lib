@@ -6,12 +6,63 @@
 
 #include <algorithm>
 #include <cstring>
+#include <glm/vec4.hpp>
 
 namespace engine {
 
+void VulkanRenderBackend::LoadDebugUtils()
+{
+    if (!m_debugUtilsEnabled)
+        return;
+    m_setDebugObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+        vkGetDeviceProcAddr(m_device, "vkSetDebugUtilsObjectNameEXT"));
+    m_beginDebugLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+        vkGetDeviceProcAddr(m_device, "vkCmdBeginDebugUtilsLabelEXT"));
+    m_endDebugLabel = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+        vkGetDeviceProcAddr(m_device, "vkCmdEndDebugUtilsLabelEXT"));
+    SetDebugName(VK_OBJECT_TYPE_DEVICE, reinterpret_cast<uint64_t>(m_device),
+                 "Renderer Vulkan Device");
+    SetDebugName(VK_OBJECT_TYPE_QUEUE, reinterpret_cast<uint64_t>(m_graphicsQueue),
+                 "Graphics Queue");
+    SetDebugName(VK_OBJECT_TYPE_QUEUE, reinterpret_cast<uint64_t>(m_presentQueue),
+                 "Present Queue");
+}
+
+void VulkanRenderBackend::SetDebugName(VkObjectType type, uint64_t handle,
+                                       std::string_view name) const
+{
+    if (m_setDebugObjectName == nullptr || handle == 0 || name.empty())
+        return;
+    const std::string ownedName(name);
+    VkDebugUtilsObjectNameInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    info.objectType = type;
+    info.objectHandle = handle;
+    info.pObjectName = ownedName.c_str();
+    m_setDebugObjectName(m_device, &info);
+}
+
+void VulkanRenderBackend::BeginDebugLabel(VkCommandBuffer commandBuffer,
+                                          std::string_view name,
+                                          const std::array<float, 4>& color) const
+{
+    if (m_beginDebugLabel == nullptr)
+        return;
+    const std::string ownedName(name);
+    VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+    label.pLabelName = ownedName.c_str();
+    std::copy(color.begin(), color.end(), label.color);
+    m_beginDebugLabel(commandBuffer, &label);
+}
+
+void VulkanRenderBackend::EndDebugLabel(VkCommandBuffer commandBuffer) const
+{
+    if (m_endDebugLabel != nullptr)
+        m_endDebugLabel(commandBuffer);
+}
+
 void VulkanRenderBackend::PrepareDebugOverlay(const RenderFrameData& frame)
 {
-    if (!frame.DebugOverlay)
+    if (!frame.DebugOverlay || frame.DebugOverlay->LayerCount == 0)
         return;
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("PrepareDebugOverlay", "Renderer/Vulkan/Debug");
     const VkDeviceSize byteCount = static_cast<VkDeviceSize>(debug::DebugOverlayImage::Width)
@@ -28,7 +79,8 @@ void VulkanRenderBackend::RecordDebugOverlay(VkCommandBuffer commandBuffer,
                                              const RenderFrameData& frame,
                                              uint32_t imageIndex)
 {
-    if (!frame.DebugOverlay || m_debugOverlayPipeline == VK_NULL_HANDLE)
+    if (!frame.DebugOverlay || frame.DebugOverlay->LayerCount == 0 ||
+        m_debugOverlayPipeline == VK_NULL_HANDLE)
         return;
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("RecordDebugOverlay", "Renderer/Vulkan/Debug");
 
@@ -69,9 +121,7 @@ void VulkanRenderBackend::RecordDebugOverlay(VkCommandBuffer commandBuffer,
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
     m_debugOverlayImageInitialized[m_currentFrame] = true;
 
-    constexpr int32_t margin = 10;
-    if (m_swapchainExtent.width <= static_cast<uint32_t>(margin)
-        || m_swapchainExtent.height <= static_cast<uint32_t>(margin))
+    if (m_swapchainExtent.width == 0 || m_swapchainExtent.height == 0)
         return;
 
     VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -86,27 +136,40 @@ void VulkanRenderBackend::RecordDebugOverlay(VkCommandBuffer commandBuffer,
     rendering.pColorAttachments = &attachment;
     vkCmdBeginRendering(commandBuffer, &rendering);
 
-    VkViewport viewport{};
-    viewport.x = static_cast<float>(margin);
-    viewport.y = static_cast<float>(margin);
-    viewport.width = static_cast<float>(debug::DebugOverlayImage::Width);
-    viewport.height = static_cast<float>(debug::DebugOverlayImage::Height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    VkRect2D scissor{};
-    scissor.offset = {margin, margin};
-    scissor.extent.width = std::min(debug::DebugOverlayImage::Width,
-        m_swapchainExtent.width - static_cast<uint32_t>(margin));
-    scissor.extent.height = std::min(debug::DebugOverlayImage::Height,
-        m_swapchainExtent.height - static_cast<uint32_t>(margin));
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       m_debugOverlayPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             m_debugOverlayPipelineLayout, 0, 1,
                             &m_debugOverlayDescriptorSets[m_currentFrame], 0, nullptr);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    for (uint32_t index = 0; index < frame.DebugOverlay->LayerCount; ++index)
+    {
+        const debug::DebugOverlayDrawRect rect = debug::ResolveDebugOverlayLayer(
+            frame.DebugOverlay->Layers[index], m_swapchainExtent.width,
+            m_swapchainExtent.height);
+        if (rect.Width == 0 || rect.Height == 0)
+            continue;
+        VkViewport viewport{};
+        viewport.x = static_cast<float>(rect.X);
+        viewport.y = static_cast<float>(rect.Y);
+        viewport.width = static_cast<float>(rect.Width);
+        viewport.height = static_cast<float>(rect.Height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        VkRect2D scissor{};
+        scissor.offset = {rect.X, rect.Y};
+        scissor.extent = {rect.Width, rect.Height};
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        const glm::vec4 uvRect{
+            static_cast<float>(rect.SourceX) / debug::DebugOverlayImage::TextureWidth,
+            static_cast<float>(rect.SourceY) / debug::DebugOverlayImage::TextureHeight,
+            static_cast<float>(rect.Width) / debug::DebugOverlayImage::TextureWidth,
+            static_cast<float>(rect.Height) / debug::DebugOverlayImage::TextureHeight};
+        vkCmdPushConstants(commandBuffer, m_debugOverlayPipelineLayout,
+                           VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uvRect), &uvRect);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        ++m_gpuDrawCallsThisFrame;
+    }
     vkCmdEndRendering(commandBuffer);
 }
 

@@ -219,6 +219,14 @@ void VulkanRenderBackend::CreateEnvironmentInfrastructure()
         m_device, m_environmentBakePipelineLayout, m_prefilterShader);
     m_brdfPipeline = CreateComputePipeline(
         m_device, m_environmentBakePipelineLayout, m_brdfShader);
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_environmentSourcePipeline),
+                 "IBL Environment Source Pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_irradiancePipeline),
+                 "IBL Irradiance Pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_prefilterPipeline),
+                 "IBL GGX Prefilter Pipeline");
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_brdfPipeline),
+                 "IBL BRDF LUT Pipeline");
 }
 
 void VulkanRenderBackend::DestroyEnvironmentInfrastructure()
@@ -251,17 +259,24 @@ void VulkanRenderBackend::CreateEnvironmentResources()
         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
     m_irradianceCube = m_resources.CreateImage2D(
         kIrradianceSize, kIrradianceSize, VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, 1, 6, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
     m_prefilterCube = m_resources.CreateImage2D(
         kPrefilterSize, kPrefilterSize, VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, kPrefilterMipLevels, 6,
         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
     m_brdfLut = m_resources.CreateImage2D(
         kBrdfLutSize, kBrdfLutSize, VK_FORMAT_R16G16_SFLOAT,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
+    m_resources.SetDebugName(m_environmentCube, "IBL Environment Cubemap");
+    m_resources.SetDebugName(m_irradianceCube, "IBL Irradiance Cubemap");
+    m_resources.SetDebugName(m_prefilterCube, "IBL GGX Prefilter Cubemap");
+    m_resources.SetDebugName(m_brdfLut, "IBL BRDF LUT");
 
     m_environmentStorageView = CreateSubresourceView(
         m_device, m_environmentCube, VK_IMAGE_VIEW_TYPE_2D_ARRAY, 0, 1, 0, 6);
@@ -314,6 +329,7 @@ void VulkanRenderBackend::CreateEnvironmentResources()
 
     const auto start = std::chrono::steady_clock::now();
     VkCommandBuffer commandBuffer = BeginImmediateCommands();
+    BeginDebugLabel(commandBuffer, "IBL / BRDF LUT Bake", {0.15f, 0.60f, 0.90f, 1.0f});
     TransitionImage(commandBuffer, m_brdfLut.Handle, VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_GENERAL, 0, 1, 1);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_brdfPipeline);
@@ -322,6 +338,7 @@ void VulkanRenderBackend::CreateEnvironmentResources()
     vkCmdDispatch(commandBuffer, kBrdfLutSize / 8, kBrdfLutSize / 8, 1);
     TransitionImage(commandBuffer, m_brdfLut.Handle, VK_IMAGE_LAYOUT_GENERAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 1);
+    EndDebugLabel(commandBuffer);
     EndImmediateCommands(commandBuffer);
     const float milliseconds = std::chrono::duration<float, std::milli>(
         std::chrono::steady_clock::now() - start).count();
@@ -462,6 +479,9 @@ void VulkanRenderBackend::EnsureEnvironmentBaked(const RenderFrameData& frame)
     const VkImageLayout oldLayout = m_environmentImagesInitialized
         ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
     VkCommandBuffer commandBuffer = BeginImmediateCommands();
+    BeginDebugLabel(commandBuffer, "Environment / IBL Bake", {0.15f, 0.60f, 0.90f, 1.0f});
+    BeginDebugLabel(commandBuffer, "IBL / Source to Environment Cubemap",
+                    {0.15f, 0.50f, 0.85f, 1.0f});
     TransitionImage(commandBuffer, m_environmentCube.Handle, oldLayout,
                     VK_IMAGE_LAYOUT_GENERAL, 0, 1, 6);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_environmentSourcePipeline);
@@ -495,7 +515,10 @@ void VulkanRenderBackend::EnsureEnvironmentBaked(const RenderFrameData& frame)
     }
     TransitionImage(commandBuffer, m_environmentCube.Handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, kEnvironmentMipLevels, 6);
+    EndDebugLabel(commandBuffer);
 
+    BeginDebugLabel(commandBuffer, "IBL / Irradiance Convolution",
+                    {0.20f, 0.65f, 0.90f, 1.0f});
     TransitionImage(commandBuffer, m_irradianceCube.Handle, oldLayout,
                     VK_IMAGE_LAYOUT_GENERAL, 0, 1, 6);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_irradiancePipeline);
@@ -504,7 +527,10 @@ void VulkanRenderBackend::EnsureEnvironmentBaked(const RenderFrameData& frame)
     vkCmdDispatch(commandBuffer, kIrradianceSize / 8, kIrradianceSize / 8, 6);
     TransitionImage(commandBuffer, m_irradianceCube.Handle, VK_IMAGE_LAYOUT_GENERAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 6);
+    EndDebugLabel(commandBuffer);
 
+    BeginDebugLabel(commandBuffer, "IBL / GGX Prefilter Mip Chain",
+                    {0.25f, 0.75f, 0.95f, 1.0f});
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_prefilterPipeline);
     for (uint32_t mip = 0; mip < kPrefilterMipLevels; ++mip)
     {
@@ -521,6 +547,8 @@ void VulkanRenderBackend::EnsureEnvironmentBaked(const RenderFrameData& frame)
         TransitionImage(commandBuffer, m_prefilterCube.Handle, VK_IMAGE_LAYOUT_GENERAL,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mip, 1, 6);
     }
+    EndDebugLabel(commandBuffer);
+    EndDebugLabel(commandBuffer);
     EndImmediateCommands(commandBuffer);
 
     m_environmentImagesInitialized = true;

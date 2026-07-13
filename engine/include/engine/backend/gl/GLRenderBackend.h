@@ -14,6 +14,7 @@
 #include "engine/backend/gl/GLTexture.h"
 #include "engine/render/CascadedShadows.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/profiling/GpuProfiler.h"
 #include "engine/scene/RenderSettings.h"
 
 namespace engine {
@@ -29,8 +30,13 @@ public:
     void Resize(int width, int height) override;
     void RenderFrame(const RenderFrameData& frame) override;
     void RequestScreenshot(const std::string& path) override { m_screenshotPath = path; }
+    void RequestHdrScreenshot(const std::string& path) override { m_hdrScreenshotPath = path; }
     BackendFrameStats GetFrameStats() const override { return m_frameStats; }
     BackendCapabilities GetCapabilities() const override { return m_capabilities; }
+    debug::FrameDebugSnapshot GetFrameDebugSnapshot() const override;
+    bool CaptureFrameDebugResource(uint64_t resourceId, uint32_t mipLevel,
+                                   uint32_t layer,
+                                   debug::FrameDebugPreview& preview) override;
     bool SetPresentMode(PresentMode mode) override;
     const char* Name() const override { return "OpenGL 4.6"; }
 
@@ -43,13 +49,21 @@ private:
                                    const glm::mat4& jitteredViewProjection);
     unsigned int GetOrCreateColorLut(const std::shared_ptr<ColorGradingLutData>& data);
     void SaveScreenshot();
+    void SaveHdrScreenshot(unsigned int sourceTexture);
     void InitLocalLightResources();
     void DestroyLocalLightResources();
     void RenderLocalLightShadows(const RenderFrameData& frame);
     void BindLocalLights();
     void UpdateLightCookieAtlas();
     void RenderDebugOverlay(const RenderFrameData& frame);
-    void RefreshGpuFrameTotal();
+    void CreateGpuProfilerQueries();
+    void DestroyGpuProfilerQueries();
+    void BeginGpuProfilerFrame();
+    void BeginGpuProfilerPass(uint32_t passIndex);
+    void EndGpuProfilerPass();
+    void EndGpuProfilerFrame(const Scene& scene);
+    void ReadGpuProfilerFrame(uint32_t slot);
+    profiling::GpuMemoryStatistics QueryGpuMemory() const;
 
     GLMesh& GetOrCreateMesh(const std::shared_ptr<MeshData>& data);
     GLTexture& GetOrCreateTexture(const std::shared_ptr<TextureData>& data);
@@ -80,10 +94,6 @@ private:
     unsigned int m_shadowFbo = 0;
     std::array<unsigned int, kShadowCascadeCount> m_shadowMaps{};
     std::array<int, kShadowCascadeCount> m_shadowSizes{2048, 2048, 1024, 1024};
-    unsigned int m_shadowTimeQueries[2]{};
-    int m_shadowQueryIndex = 0;
-    bool m_shadowQueryIssued = false;
-    GpuTimingAccumulator m_shadowTiming;
 
     static constexpr int kMaxPointLights = 8;
     static constexpr int kMaxSpotLights = 4;
@@ -123,21 +133,40 @@ private:
     int m_pointShadowSize = 512;
     unsigned int m_cookieAtlas = 0;
     std::unordered_map<const TextureData*, int> m_cookieSlots;
-    unsigned int m_localShadowTimeQueries[2]{};
-    int m_localShadowQueryIndex = 0;
-    bool m_localShadowQueryIssued = false;
+    enum GpuProfilerPass : uint32_t
+    {
+        DirectionalShadowPass,
+        LocalShadowPass,
+        MainHdrPass,
+        PostProcessPass,
+        DebugUiPass,
+        GpuProfilerPassCount
+    };
+    static constexpr uint32_t kGpuProfilerBufferedFrames = 4;
+    static constexpr uint32_t kGpuPipelineCounterCount = 5;
+    std::array<std::array<unsigned int, GpuProfilerPassCount>,
+               kGpuProfilerBufferedFrames> m_gpuPassQueries{};
+    std::array<std::array<unsigned int, kGpuPipelineCounterCount>,
+               kGpuProfilerBufferedFrames> m_gpuPipelineQueries{};
+    std::array<bool, kGpuProfilerBufferedFrames> m_gpuProfileFrameIssued{};
+    std::array<uint64_t, kGpuProfilerBufferedFrames> m_gpuProfileFrameIds{};
+    std::array<uint64_t, kGpuProfilerBufferedFrames> m_gpuProfileDrawCalls{};
+    std::array<uint64_t, kGpuProfilerBufferedFrames> m_gpuProfileDispatches{};
+    std::array<bool, kGpuProfilerBufferedFrames> m_gpuProfileLogShadows{};
+    std::array<bool, kGpuProfilerBufferedFrames> m_gpuProfileLogPost{};
+    std::array<AntiAliasingMode, kGpuProfilerBufferedFrames> m_gpuProfileAaModes{};
+    uint32_t m_gpuProfileWriteSlot = 0;
+    uint32_t m_gpuProfileActiveSlot = 0;
+    uint64_t m_gpuProfileFrameIndex = 0;
+    uint64_t m_gpuDrawCallsThisFrame = 0;
+    uint64_t m_gpuDispatchesThisFrame = 0;
+    bool m_gpuProfileFrameActive = false;
+    bool m_gpuPipelineStatisticsSupported = false;
+    bool m_gpuMemoryBudgetSupported = false;
+    GpuTimingAccumulator m_shadowTiming;
     GpuTimingAccumulator m_localShadowTiming;
-
-    unsigned int m_postTimeQueries[2]{};
-    int m_postQueryIndex = 0;
-    bool m_postQueryIssued = false;
     GpuTimingAccumulator m_postTiming;
-    unsigned int m_mainTimeQueries[2]{};
-    int m_mainQueryIndex = 0;
-    bool m_mainQueryIssued = false;
     BackendFrameStats m_frameStats;
-    float m_directionalShadowMilliseconds = 0.0f;
-    float m_localShadowMilliseconds = 0.0f;
 
     // Auto-exposure state
     float m_autoExposure = 1.0f;
@@ -182,12 +211,15 @@ private:
     std::vector<BloomLevel> m_bloomChain;
 
     unsigned int m_emptyVao = 0;
-    unsigned int m_debugOverlayTexture = 0;
+    std::array<unsigned int, 2> m_debugOverlayTextures{};
+    uint32_t m_debugOverlayTextureIndex = 0;
 
     std::unique_ptr<GLTexture> m_defaultWhite;
     std::unique_ptr<GLTexture> m_defaultNormal;
 
     std::string m_screenshotPath;
+    std::string m_hdrScreenshotPath;
+    bool m_hasFrameDebugFrame = false;
 
     // Keep the CPU assets alive for as long as their GPU counterparts are
     // cached. Raw-pointer keys could otherwise alias a newly allocated asset

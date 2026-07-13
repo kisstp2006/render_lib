@@ -1,4 +1,5 @@
 #include "engine/runtime/World.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include <algorithm>
 #include <limits>
@@ -56,6 +57,7 @@ const World::EntityRecord* World::TryGet(EntityId entity) const
 
 EntityId World::CreateEntity(std::string name)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Scene");
     uint32_t index = 0;
     if (!m_freeSlots.empty())
     {
@@ -294,6 +296,7 @@ uint32_t World::GetLayer(EntityId entity) const
 
 bool World::AddComponent(EntityId entity, const std::string& typeName, std::string* error)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Scene");
     EntityRecord* record = TryGet(entity);
     if (!record)
     {
@@ -413,6 +416,7 @@ void World::RefreshHierarchy()
 
 void World::Update(float deltaSeconds)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Scene");
     RefreshHierarchy();
     m_updating = true;
     for (Slot& slot : m_slots)

@@ -15,7 +15,8 @@ public:
     SandboxControls(engine::Application& app, bool flashlightOn, bool manageFlashlight, bool localLightShowcase,
                     bool dayNightShowcase, bool postShowcase, float dayNightCycleSeconds,
                     float sunAzimuthDegrees, float sunElevationDegrees,
-                    std::string screenshotPath, int screenshotFrame);
+                    std::string screenshotPath, std::string hdrScreenshotPath,
+                    int screenshotFrame);
     void Update(float deltaTime);
 
 private:
@@ -28,6 +29,7 @@ private:
     bool DayNightPaused = false;
     bool ShowcaseRightShadows = false;
     std::string ScreenshotPath;
+    std::string HdrScreenshotPath;
     int ScreenshotFrame = 10;
     int FrameCounter = 0;
     int ManualShotCounter = 0;

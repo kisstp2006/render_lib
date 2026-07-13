@@ -63,6 +63,8 @@ struct RenderFrameData
     int Height = 1;
     float AspectRatio = 1.0f;
     uint64_t FrameIndex = 0;
+    float TimeSeconds = 0.0f;
+    float DeltaSeconds = 1.0f / 60.0f;
 
     glm::mat4 View{1.0f};
     glm::mat4 BaseProjection{1.0f};
@@ -84,7 +86,9 @@ class SceneRenderer
 public:
     const RenderFrameData& PrepareFrame(const Scene& scene, const Camera& camera,
                                         int width, int height,
-                                        const debug::DebugOverlayImage* debugOverlay = nullptr);
+                                        const debug::DebugOverlayImage* debugOverlay = nullptr,
+                                        float timeSeconds = 0.0f,
+                                        float deltaSeconds = 1.0f / 60.0f);
 
 private:
     RenderFrameData m_frame;

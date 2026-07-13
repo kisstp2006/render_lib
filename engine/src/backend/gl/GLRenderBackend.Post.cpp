@@ -1,13 +1,16 @@
 #include "engine/backend/gl/GLRenderBackend.h"
+#include "engine/backend/gl/GLDebug.h"
 #include "engine/profiling/CpuProfiler.h"
 
 #include "engine/core/Camera.h"
 #include "engine/core/Log.h"
 #include "engine/scene/Scene.h"
+#include "engine/testing/VisualRegression.h"
 
 #include <glad/gl.h>
 #include <stb_image_write.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
@@ -16,6 +19,7 @@ namespace engine {
 
 void GLRenderBackend::RenderBloom(unsigned int sourceTexture, float threshold, float exposure)
 {
+    gl_debug::ScopedGroup marker("Post / Bloom Pyramid");
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Bloom", "Renderer/OpenGL/Post");
     glDisable(GL_DEPTH_TEST);
     glBindVertexArray(m_emptyVao);
@@ -34,6 +38,7 @@ void GLRenderBackend::RenderBloom(unsigned int sourceTexture, float threshold, f
         glBindTexture(GL_TEXTURE_2D, i == 0 ? sourceTexture : m_bloomChain[i - 1].Texture);
         m_bloomDownShader->SetBool("uFirstPass", i == 0);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        ++m_gpuDrawCallsThisFrame;
     }
 
     m_bloomUpShader->Use();
@@ -47,6 +52,7 @@ void GLRenderBackend::RenderBloom(unsigned int sourceTexture, float threshold, f
         glViewport(0, 0, target.Width, target.Height);
         glBindTexture(GL_TEXTURE_2D, m_bloomChain[i].Texture);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        ++m_gpuDrawCallsThisFrame;
     }
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -55,6 +61,7 @@ void GLRenderBackend::RenderBloom(unsigned int sourceTexture, float threshold, f
 unsigned int GLRenderBackend::ResolveTemporalAA(const Scene& scene, const Camera& camera,
                                                 const glm::mat4& jitteredViewProjection)
 {
+    gl_debug::ScopedGroup marker("Post / TAA Resolve");
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("TemporalAA", "Renderer/OpenGL/Post");
     const PostProcessSettings& pp = scene.PostProcess;
     const int writeIndex = (m_taaHistoryIndex + 1) % 2;
@@ -86,6 +93,7 @@ unsigned int GLRenderBackend::ResolveTemporalAA(const Scene& scene, const Camera
     m_taaShader->SetFloat("uFarPlane", camera.FarPlane);
     glBindVertexArray(m_emptyVao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    ++m_gpuDrawCallsThisFrame;
 
     m_taaHistoryIndex = writeIndex;
     m_taaHistoryValid = true;
@@ -112,6 +120,7 @@ unsigned int GLRenderBackend::GetOrCreateColorLut(const std::shared_ptr<ColorGra
     unsigned int texture = 0;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_3D, texture);
+    gl_debug::LabelObject(GL_TEXTURE, texture, "Color Grading 3D LUT");
     glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB16F, data->Size, data->Size, data->Size,
                  0, GL_RGB, GL_FLOAT, data->Values.data());
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -137,6 +146,31 @@ void GLRenderBackend::SaveScreenshot()
     else
         log::Error("Failed to save screenshot: " + m_screenshotPath);
     m_screenshotPath.clear();
+}
+
+void GLRenderBackend::SaveHdrScreenshot(unsigned int sourceTexture)
+{
+    std::vector<float> pixels(static_cast<size_t>(m_width) * m_height * 3);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glGetTextureImage(sourceTexture, 0, GL_RGB, GL_FLOAT,
+                      static_cast<GLsizei>(pixels.size() * sizeof(float)), pixels.data());
+
+    // OpenGL's texture origin is bottom-left; image files use a top-left origin.
+    const size_t rowValues = static_cast<size_t>(m_width) * 3;
+    for (int y = 0; y < m_height / 2; ++y)
+    {
+        const size_t opposite = static_cast<size_t>(m_height - 1 - y) * rowValues;
+        const size_t current = static_cast<size_t>(y) * rowValues;
+        for (size_t x = 0; x < rowValues; ++x)
+            std::swap(pixels[current + x], pixels[opposite + x]);
+    }
+
+    std::string error;
+    if (testing::WriteHdrImage(m_hdrScreenshotPath, m_width, m_height, pixels, &error))
+        log::Info("Saved linear HDR screenshot: " + m_hdrScreenshotPath);
+    else
+        log::Error("Failed to save linear HDR screenshot: " + error);
+    m_hdrScreenshotPath.clear();
 }
 
 } // namespace engine

@@ -1,5 +1,6 @@
 #include "engine/scene/Texture.h"
 #include "engine/core/Log.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include <stb_image.h>
 
@@ -26,6 +27,7 @@ std::shared_ptr<TextureData> CopyDecoded(unsigned char* pixels, int width, int h
 
 std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb, bool flipVertically)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Asset");
     int width = 0, height = 0, channels = 0;
     stbi_set_flip_vertically_on_load(flipVertically ? 1 : 0);
     unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
@@ -41,6 +43,7 @@ std::shared_ptr<TextureData> LoadFromFile(const std::string& path, bool srgb, bo
 std::shared_ptr<TextureData> LoadFromMemory(const uint8_t* bytes, size_t size, bool srgb,
                                             const std::string& debugName, bool flipVertically)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Asset");
     if (!bytes || size == 0)
     {
         log::Error("Empty texture data: " + debugName);

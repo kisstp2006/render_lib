@@ -1,4 +1,5 @@
 #include "engine/asset/ColorGrading.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include <algorithm>
 #include <cmath>
@@ -64,6 +65,7 @@ std::shared_ptr<ColorGradingLutData> Generate(int size, bool cinematic)
 
 std::shared_ptr<ColorGradingLutData> LoadCube(const std::string& path)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Asset");
     std::ifstream file(path);
     if (!file)
         Fail(path, 0, "could not open file");

@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLRenderBackend.h"
+#include "engine/backend/gl/GLDebug.h"
 
 #include <glad/gl.h>
 
@@ -18,11 +19,14 @@ void GLRenderBackend::InitShadowMap()
     glGenFramebuffers(1, &m_shadowFbo);
     glGenTextures(kShadowCascadeCount, m_shadowMaps.data());
     glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
+    gl_debug::LabelObject(GL_FRAMEBUFFER, m_shadowFbo, "Directional Shadow Cascades FBO");
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
     for (int cascade = 0; cascade < kShadowCascadeCount; ++cascade)
     {
         glBindTexture(GL_TEXTURE_2D, m_shadowMaps[cascade]);
+        gl_debug::LabelObject(GL_TEXTURE, m_shadowMaps[cascade],
+            "Directional Shadow Cascade " + std::to_string(cascade));
         glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, m_shadowSizes[cascade], m_shadowSizes[cascade],
                      0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -44,18 +48,22 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
     glGenRenderbuffers(1, &m_msaaColorRbo);
     glBindRenderbuffer(GL_RENDERBUFFER, m_msaaColorRbo);
+    gl_debug::LabelObject(GL_RENDERBUFFER, m_msaaColorRbo, "Main HDR MSAA Color");
     glRenderbufferStorageMultisample(GL_RENDERBUFFER, m_msaaSamples, GL_RGBA16F, width, height);
 
     glGenRenderbuffers(1, &m_msaaDepthRbo);
     glBindRenderbuffer(GL_RENDERBUFFER, m_msaaDepthRbo);
+    gl_debug::LabelObject(GL_RENDERBUFFER, m_msaaDepthRbo, "Main HDR MSAA Depth");
     glRenderbufferStorageMultisample(GL_RENDERBUFFER, m_msaaSamples, GL_DEPTH_COMPONENT32F, width, height);
 
     glGenRenderbuffers(1, &m_msaaVelocityRbo);
     glBindRenderbuffer(GL_RENDERBUFFER, m_msaaVelocityRbo);
+    gl_debug::LabelObject(GL_RENDERBUFFER, m_msaaVelocityRbo, "Main HDR MSAA Velocity");
     glRenderbufferStorageMultisample(GL_RENDERBUFFER, m_msaaSamples, GL_RG16F, width, height);
 
     glGenFramebuffers(1, &m_msaaFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFbo);
+    gl_debug::LabelObject(GL_FRAMEBUFFER, m_msaaFbo, "Main HDR MSAA FBO");
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, m_msaaColorRbo);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_RENDERBUFFER, m_msaaVelocityRbo);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_msaaDepthRbo);
@@ -66,6 +74,7 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
     glGenTextures(1, &m_hdrColorTex);
     glBindTexture(GL_TEXTURE_2D, m_hdrColorTex);
+    gl_debug::LabelObject(GL_TEXTURE, m_hdrColorTex, "Main HDR Resolved Color");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -74,6 +83,7 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
     glGenTextures(1, &m_velocityTex);
     glBindTexture(GL_TEXTURE_2D, m_velocityTex);
+    gl_debug::LabelObject(GL_TEXTURE, m_velocityTex, "Main HDR Resolved Velocity");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -82,6 +92,7 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
     glGenTextures(1, &m_depthTex);
     glBindTexture(GL_TEXTURE_2D, m_depthTex);
+    gl_debug::LabelObject(GL_TEXTURE, m_depthTex, "Main HDR Resolved Depth");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -90,6 +101,7 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
     glGenFramebuffers(1, &m_resolveFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, m_resolveFbo);
+    gl_debug::LabelObject(GL_FRAMEBUFFER, m_resolveFbo, "Main HDR Resolve FBO");
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_hdrColorTex, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, m_velocityTex, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_depthTex, 0);
@@ -101,6 +113,8 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
     {
         glGenTextures(1, &m_taaHistoryColor[i]);
         glBindTexture(GL_TEXTURE_2D, m_taaHistoryColor[i]);
+        gl_debug::LabelObject(GL_TEXTURE, m_taaHistoryColor[i],
+            "TAA History Color " + std::to_string(i));
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -109,6 +123,8 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
         glGenTextures(1, &m_taaHistoryDepth[i]);
         glBindTexture(GL_TEXTURE_2D, m_taaHistoryDepth[i]);
+        gl_debug::LabelObject(GL_TEXTURE, m_taaHistoryDepth[i],
+            "TAA History Depth " + std::to_string(i));
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -117,6 +133,8 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
         glGenFramebuffers(1, &m_taaFbos[i]);
         glBindFramebuffer(GL_FRAMEBUFFER, m_taaFbos[i]);
+        gl_debug::LabelObject(GL_FRAMEBUFFER, m_taaFbos[i],
+            "TAA History FBO " + std::to_string(i));
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_taaHistoryColor[i], 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, m_taaHistoryDepth[i], 0);
         glDrawBuffers(2, sceneDrawBuffers);
@@ -126,6 +144,7 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
 
     glGenTextures(1, &m_postColorTex);
     glBindTexture(GL_TEXTURE_2D, m_postColorTex);
+    gl_debug::LabelObject(GL_TEXTURE, m_postColorTex, "Post Tonemap LDR Color");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -133,6 +152,7 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glGenFramebuffers(1, &m_postFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, m_postFbo);
+    gl_debug::LabelObject(GL_FRAMEBUFFER, m_postFbo, "Post Tonemap LDR FBO");
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_postColorTex, 0);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
@@ -147,6 +167,8 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
         level.Height = h;
         glGenTextures(1, &level.Texture);
         glBindTexture(GL_TEXTURE_2D, level.Texture);
+        gl_debug::LabelObject(GL_TEXTURE, level.Texture,
+            "Bloom Level " + std::to_string(i) + " Color");
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -154,6 +176,8 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glGenFramebuffers(1, &level.Fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, level.Fbo);
+        gl_debug::LabelObject(GL_FRAMEBUFFER, level.Fbo,
+            "Bloom Level " + std::to_string(i) + " FBO");
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, level.Texture, 0);
         m_bloomChain.push_back(level);
         w = std::max(w / 2, 1);

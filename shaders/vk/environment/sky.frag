@@ -1,5 +1,6 @@
 #version 460
 #include "../../common/procedural_sky.glsl"
+#include "../../common/procedural_stars.glsl"
 
 layout(location = 0) in vec2 ndc;
 layout(location = 0) out vec4 outColor;
@@ -8,24 +9,15 @@ layout(location = 1) out vec2 outVelocity;
 #include "common/frame_uniforms.glsl"
 layout(set = 0, binding = 8) uniform samplerCube environmentMap;
 
-const float PI = 3.14159265358979323846;
-
-float StarHash(vec2 p)
-{
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
 float ValueNoise(vec2 p)
 {
     vec2 cell = floor(p);
     vec2 fraction = fract(p);
     fraction = fraction * fraction * (3.0 - 2.0 * fraction);
-    float a = StarHash(cell);
-    float b = StarHash(cell + vec2(1.0, 0.0));
-    float c = StarHash(cell + vec2(0.0, 1.0));
-    float d = StarHash(cell + vec2(1.0, 1.0));
+    float a = EngineStarHash(cell);
+    float b = EngineStarHash(cell + vec2(1.0, 0.0));
+    float c = EngineStarHash(cell + vec2(0.0, 1.0));
+    float d = EngineStarHash(cell + vec2(1.0, 1.0));
     return mix(mix(a, b, fraction.x), mix(c, d, fraction.x), fraction.y);
 }
 
@@ -79,31 +71,16 @@ void main()
                              sin(skyRotation),  cos(skyRotation));
         vec2 rotatedXZ = rotation * direction.xz;
         vec3 nightDirection = normalize(vec3(rotatedXZ.x, direction.y, rotatedXZ.y));
-        vec2 starUv = vec2(atan(nightDirection.z, nightDirection.x) / (2.0 * PI) + 0.5,
-                           asin(clamp(nightDirection.y, -1.0, 1.0)) / PI + 0.5);
-        vec2 starGrid = starUv * vec2(720.0, 360.0);
-        vec2 starCell = floor(starGrid);
-        vec2 starLocal = fract(starGrid) - 0.5;
-        float seed = StarHash(starCell);
-        float radius = mix(0.045, 0.16, StarHash(starCell + 19.7))
-                     * clamp(frame.StarCoolSize.w, 0.25, 4.0);
-        float antialias = max(length(fwidth(starGrid)) * 0.22, 0.012);
-        float core = 1.0 - smoothstep(radius, radius + antialias, length(starLocal));
-        float rareBrightness = pow(StarHash(starCell + 91.3), 8.0);
-        float horizontalRay = exp(-abs(starLocal.x) * 34.0) * exp(-abs(starLocal.y) * 5.0);
-        float verticalRay = exp(-abs(starLocal.y) * 34.0) * exp(-abs(starLocal.x) * 5.0);
-        float star = max(core, (horizontalRay + verticalRay) * rareBrightness * 0.32)
-                   * step(1.0 - clamp(frame.StarWarmDensity.w, 0.0, 0.05), seed);
+        EngineProceduralStar star = EngineEvaluateProceduralStar(
+            nightDirection, frame.StarWarmDensity.w, frame.StarCoolSize.w);
         vec3 starColor = mix(frame.StarWarmDensity.rgb, frame.StarCoolSize.rgb,
-                             StarHash(starCell + 47.2));
+                             star.Temperature);
         float horizonFade = smoothstep(-0.03, 0.14, direction.y);
-        float twinklePhase = StarHash(starCell + 73.1) * 2.0 * PI;
-        float twinkleSpeed = mix(0.7, 2.4, StarHash(starCell + 12.4));
-        float twinkle = mix(1.0, 0.72 + 0.28 * sin(animationTime * twinkleSpeed
-                          * max(frame.StarAnimation.z, 0.0) + twinklePhase),
+        float twinkle = mix(1.0, 0.72 + 0.28 * sin(animationTime * star.TwinkleSpeed
+                          * max(frame.StarAnimation.z, 0.0) + star.TwinklePhase),
                           clamp(frame.StarAnimation.y, 0.0, 1.0));
         if (frame.SkyFeatureFlags.y > 0.5)
-            color += starColor * star * frame.StarAnimation.x * twinkle * nightAmount * horizonFade;
+            color += starColor * star.Shape * frame.StarAnimation.x * twinkle * nightAmount * horizonFade;
 
         vec3 galaxyNormal = normalize(vec3(0.24, 0.96, 0.12));
         vec3 galaxyRight = normalize(cross(vec3(0.0, 1.0, 0.0), galaxyNormal));

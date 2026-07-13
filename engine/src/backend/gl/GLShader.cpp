@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLShader.h"
+#include "engine/backend/gl/GLDebug.h"
 #include "engine/core/Log.h"
 #include "engine/render/ShaderSource.h"
 
@@ -62,6 +63,11 @@ GLShader::GLShader(const std::string& vertPath, const std::string& fragPath)
 
     glDeleteShader(vert);
     glDeleteShader(frag);
+
+    const std::string programName = "Shader Program: " +
+        std::filesystem::path(vertPath).filename().string() + " + " +
+        std::filesystem::path(fragPath).filename().string();
+    gl_debug::LabelObject(GL_PROGRAM, m_program, programName);
 
     log::Info("Compiled shader program: " + vertPath + " + " + fragPath);
 }

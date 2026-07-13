@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <memory>
 
@@ -32,6 +33,8 @@ class Application
     Window& GetWindow() { return *m_window; }
     IRenderBackend& GetBackend() { return *m_backend; }
     debug::DebugOverlay& GetDebugOverlay() { return m_debugOverlay; }
+    debug::RenderDocCapture& GetFrameCapture() { return m_frameCapture; }
+    const debug::RenderDocCapture& GetFrameCapture() const { return m_frameCapture; }
     plugin::PluginManager& GetPlugins() { return m_plugins; }
     const plugin::PluginManager& GetPlugins() const { return m_plugins; }
     runtime::World& GetWorld() { return m_world; }
@@ -53,6 +56,7 @@ class Application
     bool IsPaused() const { return m_paused; }
     void SetFrameRateLimit(double framesPerSecond);
     bool SetPresentMode(PresentMode mode);
+    void SetRuntimeMonitorsEnabled(bool enabled);
 
   private:
     void EmitEvent(ApplicationEventType type, float deltaSeconds);
@@ -65,16 +69,19 @@ class Application
     Scene m_scene;
     SceneRenderer m_sceneRenderer;
     debug::DebugOverlay m_debugOverlay;
+    debug::RenderDocCapture m_frameCapture;
     runtime::ComponentRegistry m_componentRegistry;
     plugin::PluginManager m_plugins{m_componentRegistry};
     runtime::World m_world{m_componentRegistry};
     UpdateCallback m_updateCallback;
     EventCallback m_eventCallback;
     bool m_debugToggleWasDown = false;
+    std::array<bool, 10> m_frameDebuggerKeyStates{};
     bool m_paused = false;
     bool m_wasFocused = true;
     bool m_hasFrameClock = false;
     bool m_profilerOwnedByDebugOverlay = false;
+    bool m_memoryProfilerOwnedByDiagnostics = false;
     double m_lastFrameTime = 0.0;
     uint64_t m_frameCounter = 0;
 };

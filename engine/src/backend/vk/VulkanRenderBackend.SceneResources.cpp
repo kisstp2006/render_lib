@@ -2,6 +2,7 @@
 
 #include "engine/backend/vk/VulkanShaderInterop.h"
 #include "engine/core/Log.h"
+#include "engine/testing/VisualRegression.h"
 
 #include <stb_image_write.h>
 
@@ -14,6 +15,42 @@
 #include <vector>
 
 namespace engine {
+
+namespace {
+
+float HalfToFloat(uint16_t half)
+{
+    const uint32_t sign = static_cast<uint32_t>(half & 0x8000u) << 16u;
+    uint32_t exponent = (half >> 10u) & 0x1fu;
+    uint32_t mantissa = half & 0x03ffu;
+    uint32_t bits = 0;
+    if (exponent == 0)
+    {
+        if (mantissa == 0)
+            bits = sign;
+        else
+        {
+            uint32_t floatExponent = 113u;
+            while ((mantissa & 0x0400u) == 0)
+            {
+                mantissa <<= 1u;
+                --floatExponent;
+            }
+            mantissa &= 0x03ffu;
+            bits = sign | (floatExponent << 23u) | (mantissa << 13u);
+        }
+    }
+    else if (exponent == 31)
+        bits = sign | 0x7f800000u | (mantissa << 13u);
+    else
+        bits = sign | ((exponent + 112u) << 23u) | (mantissa << 13u);
+
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+} // namespace
 
 VkCommandBuffer VulkanRenderBackend::BeginImmediateCommands()
 {
@@ -70,6 +107,7 @@ const VulkanRenderBackend::GpuMesh& VulkanRenderBackend::GetOrCreateMesh(const s
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     GpuMesh gpuMesh;
+    const size_t meshId = m_meshCache.size();
     try
     {
         void* mapped = nullptr;
@@ -87,6 +125,10 @@ const VulkanRenderBackend::GpuMesh& VulkanRenderBackend::GetOrCreateMesh(const s
             indexBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         gpuMesh.IndexCount = static_cast<uint32_t>(mesh->Indices.size());
+        m_resources.SetDebugName(gpuMesh.VertexBuffer,
+            "Scene Mesh " + std::to_string(meshId) + " Vertex Buffer");
+        m_resources.SetDebugName(gpuMesh.IndexBuffer,
+            "Scene Mesh " + std::to_string(meshId) + " Index Buffer");
 
         VkCommandBuffer commandBuffer = BeginImmediateCommands();
         const VkBufferCopy vertexCopy{0, 0, vertexBytes};
@@ -127,6 +169,7 @@ const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
         byteCount, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     GpuTexture gpuTexture;
+    const size_t textureId = m_textureCache.size();
     try
     {
         void* mapped = nullptr;
@@ -142,6 +185,9 @@ const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
             static_cast<uint32_t>(source->Width), static_cast<uint32_t>(source->Height), format,
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
+        m_resources.SetDebugName(gpuTexture.Image,
+            "Material Texture " + std::to_string(textureId) +
+            (source->SRGB ? " (sRGB)" : " (Linear)"));
 
         VkCommandBuffer commandBuffer = BeginImmediateCommands();
         VkImageMemoryBarrier2 toTransfer{};
@@ -249,6 +295,8 @@ const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
         samplerInfo.maxLod = static_cast<float>(mipLevels - 1u);
         if (vkCreateSampler(m_device, &samplerInfo, nullptr, &gpuTexture.Sampler) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create material sampler");
+        SetDebugName(VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<uint64_t>(gpuTexture.Sampler),
+                     "Material Texture " + std::to_string(textureId) + " Sampler");
     }
     catch (...)
     {
@@ -397,6 +445,34 @@ void VulkanRenderBackend::SaveScreenshot(const vulkan::Buffer& readbackBuffer, c
         log::Info("Saved Vulkan screenshot: " + path);
     else
         log::Error("Failed to save Vulkan screenshot: " + path);
+}
+
+void VulkanRenderBackend::SaveHdrScreenshot(const vulkan::Buffer& readbackBuffer,
+                                            const std::string& path) const
+{
+    const size_t pixelCount = static_cast<size_t>(m_swapchainExtent.width)
+                            * m_swapchainExtent.height;
+    const size_t byteCount = pixelCount * 4 * sizeof(uint16_t);
+    void* mapped = nullptr;
+    if (vkMapMemory(m_device, readbackBuffer.Memory, 0, byteCount, 0, &mapped) != VK_SUCCESS)
+        throw std::runtime_error("Vulkan: failed to map linear HDR screenshot buffer");
+
+    const auto* source = static_cast<const uint16_t*>(mapped);
+    std::vector<float> rgb(pixelCount * 3);
+    for (size_t i = 0; i < pixelCount; ++i)
+    {
+        rgb[i * 3 + 0] = HalfToFloat(source[i * 4 + 0]);
+        rgb[i * 3 + 1] = HalfToFloat(source[i * 4 + 1]);
+        rgb[i * 3 + 2] = HalfToFloat(source[i * 4 + 2]);
+    }
+    vkUnmapMemory(m_device, readbackBuffer.Memory);
+
+    std::string error;
+    if (testing::WriteHdrImage(path, static_cast<int>(m_swapchainExtent.width),
+                               static_cast<int>(m_swapchainExtent.height), rgb, &error))
+        log::Info("Saved Vulkan linear HDR screenshot: " + path);
+    else
+        log::Error("Failed to save Vulkan linear HDR screenshot: " + error);
 }
 
 } // namespace engine

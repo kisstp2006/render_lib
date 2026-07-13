@@ -18,7 +18,7 @@
 namespace engine::plugin
 {
 
-inline constexpr uint32_t kPluginAbiVersion = 1;
+inline constexpr uint32_t kPluginAbiVersion = 2;
 inline constexpr const char* kPluginEntryPoint = "EngineQueryPlugin";
 
 using PluginId = uint64_t;
@@ -77,6 +77,8 @@ struct PluginHostApi
                                void* service) = nullptr;
     int32_t (*UnregisterService)(void* hostContext, const char* name) = nullptr;
     void* (*GetService)(void* hostContext, const char* name, uint32_t minimumVersion) = nullptr;
+    void* (*Allocate)(void* hostContext, size_t size, size_t alignment, const char* tag) = nullptr;
+    void (*Free)(void* hostContext, void* memory) = nullptr;
     int32_t (*RegisterComponentType)(void* hostContext,
                                      const PluginComponentType* componentType) = nullptr;
     int32_t (*UnregisterComponentType)(void* hostContext, const char* typeName) = nullptr;

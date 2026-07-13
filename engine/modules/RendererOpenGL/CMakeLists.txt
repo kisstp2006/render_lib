@@ -1,0 +1,32 @@
+engine_add_module(engine_renderer_opengl
+    FOLDER "Renderer/RendererOpenGL"
+    ALIAS renderer_opengl
+    SOURCES
+        ${ENGINE_ROOT}/include/engine/backend/gl/GLDebug.h
+        ${ENGINE_ROOT}/include/engine/backend/gl/GLEnvironment.h
+        ${ENGINE_ROOT}/include/engine/backend/gl/GLMesh.h
+        ${ENGINE_ROOT}/include/engine/backend/gl/GLRenderBackend.h
+        ${ENGINE_ROOT}/include/engine/backend/gl/GLShader.h
+        ${ENGINE_ROOT}/include/engine/backend/gl/GLTexture.h
+        ${ENGINE_ROOT}/src/backend/gl/GLDebug.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLEnvironment.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLMesh.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Debug.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Frame.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.FrameDebugger.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.LocalLights.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Performance.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Post.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Targets.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLShader.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLTexture.cpp
+    PUBLIC_DEPS
+        engine_foundation
+        engine_core
+        engine_scene
+        engine_renderer_core
+    PRIVATE_DEPS
+        engine_render_tools
+        engine_third_party
+        glad_gl_core46)

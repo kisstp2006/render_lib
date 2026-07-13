@@ -1,8 +1,10 @@
 #include "engine/plugin/PluginManager.h"
 
 #include "engine/core/Log.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <system_error>
 
 #if defined(_WIN32)
@@ -81,6 +83,7 @@ struct PluginManager::HostContext
     PluginManager* Manager = nullptr;
     PluginId Owner = 0;
     const PluginHostApi* Api = nullptr;
+    char AllocationTag[64] = "Plugin";
 };
 
 struct PluginManager::LoadedPlugin
@@ -131,6 +134,7 @@ void PluginManager::EndChanges()
 
 bool PluginManager::LoadPlugin(const std::filesystem::path& pathOrName, PluginLoadFlags flags)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Plugin");
     BeginChanges();
     m_lastError.clear();
     const size_t previousCount = m_loaded.size();
@@ -344,11 +348,15 @@ bool PluginManager::LoadDescriptor(const PluginDescriptor* descriptor,
     plugin->Context = std::make_unique<HostContext>();
     plugin->Context->Manager = this;
     plugin->Context->Owner = plugin->Info.Id;
+    std::snprintf(plugin->Context->AllocationTag, sizeof(plugin->Context->AllocationTag),
+                  "Plugin/%s", name.c_str());
     plugin->HostApi.HostContext = plugin->Context.get();
     plugin->HostApi.Log = &PluginManager::HostLog;
     plugin->HostApi.RegisterService = &PluginManager::HostRegisterService;
     plugin->HostApi.UnregisterService = &PluginManager::HostUnregisterService;
     plugin->HostApi.GetService = &PluginManager::HostGetService;
+    plugin->HostApi.Allocate = &PluginManager::HostAllocate;
+    plugin->HostApi.Free = &PluginManager::HostFree;
     plugin->HostApi.RegisterComponentType = &PluginManager::HostRegisterComponentType;
     plugin->HostApi.UnregisterComponentType = &PluginManager::HostUnregisterComponentType;
     plugin->Context->Api = &plugin->HostApi;
@@ -386,6 +394,7 @@ bool PluginManager::LoadDescriptor(const PluginDescriptor* descriptor,
 
 bool PluginManager::UnloadPlugin(const std::string& name)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Plugin");
     BeginChanges();
     m_lastError.clear();
     const auto it = std::find_if(m_loaded.begin(), m_loaded.end(),
@@ -473,6 +482,7 @@ bool PluginManager::UnloadAt(size_t index, bool checkDependents)
 
 bool PluginManager::UnloadAll()
 {
+    ENGINE_MEMORY_TAG_SCOPE("Plugin");
     BeginChanges();
     bool success = true;
     for (size_t index = m_loaded.size(); index > 0;)
@@ -674,6 +684,19 @@ void* PluginManager::HostGetService(void* context, const char* name, uint32_t mi
     if (!host || !host->Manager || !name)
         return nullptr;
     return host->Manager->m_services.Find(name, minimumVersion);
+}
+
+void* PluginManager::HostAllocate(void* context, size_t size, size_t alignment, const char* tag)
+{
+    HostContext* host = static_cast<HostContext*>(context);
+    const char* allocationTag = tag && tag[0] != '\0' ? tag
+                                                       : (host ? host->AllocationTag : "Plugin");
+    return profiling::MemoryProfiler::Get().Allocate(size, alignment, allocationTag);
+}
+
+void PluginManager::HostFree(void*, void* memory)
+{
+    profiling::MemoryProfiler::Get().Free(memory);
 }
 
 int32_t PluginManager::HostRegisterComponentType(void* context,

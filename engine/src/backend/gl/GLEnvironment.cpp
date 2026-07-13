@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLEnvironment.h"
+#include "engine/backend/gl/GLDebug.h"
 #include "engine/core/Log.h"
 #include "engine/profiling/CpuProfiler.h"
 
@@ -89,14 +90,24 @@ GLEnvironment::GLEnvironment(const std::string& shaderDir)
 
     glGenFramebuffers(1, &m_fbo);
     glGenVertexArrays(1, &m_emptyVao);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
+    gl_debug::LabelObject(GL_FRAMEBUFFER, m_fbo, "IBL Bake FBO");
+    glBindVertexArray(m_emptyVao);
+    gl_debug::LabelObject(GL_VERTEX_ARRAY, m_emptyVao, "IBL Fullscreen Triangle VAO");
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindVertexArray(0);
 
     m_envCubemap = CreateCubemap(kEnvSize, true);
     m_irradianceCubemap = CreateCubemap(kIrradianceSize, false);
     m_prefilterCubemap = CreateCubemap(kPrefilterSize, true);
+    gl_debug::LabelObject(GL_TEXTURE, m_envCubemap, "IBL Environment Cubemap");
+    gl_debug::LabelObject(GL_TEXTURE, m_irradianceCubemap, "IBL Irradiance Cubemap");
+    gl_debug::LabelObject(GL_TEXTURE, m_prefilterCubemap, "IBL GGX Prefilter Cubemap");
 
     // BRDF LUT is sun/sky independent: bake it once here.
     glGenTextures(1, &m_brdfLut);
     glBindTexture(GL_TEXTURE_2D, m_brdfLut);
+    gl_debug::LabelObject(GL_TEXTURE, m_brdfLut, "IBL BRDF LUT");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, kBrdfLutSize, kBrdfLutSize, 0, GL_RG, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -184,6 +195,7 @@ unsigned int GLEnvironment::GetOrCreatePanorama(const std::shared_ptr<HdrImageDa
     unsigned int texture = 0;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
+    gl_debug::LabelObject(GL_TEXTURE, texture, "HDRI Equirectangular Source");
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, image->Width, image->Height, 0, GL_RGB, GL_FLOAT, image->Pixels.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -195,6 +207,7 @@ unsigned int GLEnvironment::GetOrCreatePanorama(const std::shared_ptr<HdrImageDa
 
 void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment)
 {
+    gl_debug::ScopedGroup marker("Environment / IBL Bake");
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment.Bake", "Renderer/OpenGL/IBL");
     const auto bakeStart = std::chrono::steady_clock::now();
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);

@@ -1,4 +1,5 @@
 #include "engine/profiling/CpuProfiler.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include "engine/core/Log.h"
 
@@ -101,6 +102,7 @@ CpuProfiler::CpuProfiler()
 
 void CpuProfiler::Configure(const CpuProfilerConfig& config)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Profiling");
     std::scoped_lock lock(m_mutex);
     m_config = config;
     m_config.RetainedFrames = std::max(m_config.RetainedFrames, 1u);
@@ -115,6 +117,7 @@ void CpuProfiler::SetEnabled(bool enabled)
 
 void CpuProfiler::Reset()
 {
+    ENGINE_MEMORY_TAG_SCOPE("Profiling");
     std::scoped_lock lock(m_mutex);
     m_events.clear();
     m_threadNames.clear();
@@ -163,6 +166,7 @@ uint64_t CpuProfiler::ThreadId()
 
 void CpuProfiler::SetThreadName(std::string_view name)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Profiling");
     if (!IsEnabled())
         return;
     std::scoped_lock lock(m_mutex);
@@ -194,6 +198,7 @@ CpuProfiler::ZoneToken CpuProfiler::BeginZone()
 
 void CpuProfiler::EndZone(ZoneToken token, std::string name, std::string category)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Profiling");
     if (!token.Active)
         return;
     const double duration = std::max(NowMicroseconds() - token.StartMicroseconds, 0.0);
@@ -221,6 +226,7 @@ void CpuProfiler::EndZone(ZoneToken token, std::string name, std::string categor
 
 CpuProfileSnapshot CpuProfiler::Snapshot() const
 {
+    ENGINE_MEMORY_TAG_SCOPE("Profiling");
     CpuProfileSnapshot snapshot;
     {
         std::scoped_lock lock(m_mutex);
@@ -275,6 +281,7 @@ void CpuProfiler::LogFrameStatistics(uint64_t completedFrame)
 
 bool CpuProfiler::WriteChromeTrace(const std::string& path) const
 {
+    ENGINE_MEMORY_TAG_SCOPE("Profiling");
     const CpuProfileSnapshot snapshot = Snapshot();
     const std::filesystem::path outputPath(path);
     std::error_code error;

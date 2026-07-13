@@ -46,6 +46,7 @@ code is still normal C++.
 - before/after grouped changes, load/init/unload and failure events;
 - application lifecycle events for frame, update, render and focus changes;
 - versioned, named services for optional systems such as UI, physics or audio;
+- ABI v2 host-owned tagged allocation/free functions for measurable DLL memory;
 - automatic cleanup of registrations owned by an unloading plugin;
 - unload blocking while any component still owns callbacks in that module;
 - useful `LastError()` diagnostics.
@@ -54,6 +55,11 @@ The public ABI is in `engine/plugin/PluginApi.h`. The host owns registries and
 module handles. A plugin owns and destroys every object it allocates. Service
 pointers are opaque; plugins must declare a dependency on the provider before
 retaining one beyond the call that queried it.
+
+Plugin components created through `MakeComponentType<T>()` use the host
+allocator automatically. Other plugin allocations that should appear in the
+engine memory report must use `host->Allocate` and `host->Free`; allocator
+families must never be mixed across the DLL boundary.
 
 ## Minimal C++ plugin
 

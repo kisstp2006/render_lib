@@ -34,6 +34,11 @@ public:
     void BindPrefilterMap(int unit) const;     // roughness-indexed specular
     void BindBrdfLut(int unit) const;
 
+    unsigned int EnvironmentMapId() const { return m_envCubemap; }
+    unsigned int IrradianceMapId() const { return m_irradianceCubemap; }
+    unsigned int PrefilterMapId() const { return m_prefilterCubemap; }
+    unsigned int BrdfLutId() const { return m_brdfLut; }
+
     static constexpr int kPrefilterMips = 5;
 
 private:

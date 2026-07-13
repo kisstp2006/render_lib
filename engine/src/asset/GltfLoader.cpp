@@ -1,4 +1,5 @@
 #include "engine/asset/GltfLoader.h"
+#include "engine/profiling/MemoryProfiler.h"
 
 #include "engine/core/Log.h"
 #include "engine/scene/Mesh.h"
@@ -398,6 +399,7 @@ private:
 
 GltfLoadResult LoadGltfScene(const std::string& path, Scene& scene, const glm::mat4& rootTransform)
 {
+    ENGINE_MEMORY_TAG_SCOPE("Asset");
     cgltf_options options{};
     cgltf_data* raw = nullptr;
     cgltf_result result = cgltf_parse_file(&options, path.c_str(), &raw);

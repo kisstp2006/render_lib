@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 project(SourceLikeEngine LANGUAGES C CXX)
 
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -19,6 +21,10 @@ endif()
 option(ENGINE_BUILD_VULKAN "Build the Vulkan backend" ON)
 option(ENGINE_BUILD_SANDBOX "Build the sandbox example app" ON)
 option(ENGINE_BUILD_TESTS "Build engine unit tests" ON)
+option(ENGINE_ENABLE_GPU_VISUAL_TESTS
+       "Run OpenGL/Vulkan golden-image tests through CTest (requires a display and GPU)" OFF)
+option(ENGINE_ENABLE_RUNTIME_MONITORS
+       "Enable the always-on CPU-memory and GPU runtime monitor widgets" ON)
 
 include(FetchContent)
 
@@ -71,6 +77,13 @@ FetchContent_MakeAvailable(glfw glm glad stb cgltf)
 
 # glad2 generates loader sources at configure time via its cmake helper
 glad_add_library(glad_gl_core46 STATIC API gl:core=4.6)
+set_target_properties(glad_gl_core46 PROPERTIES FOLDER "Dependencies")
+if(TARGET glfw)
+    set_target_properties(glfw PROPERTIES FOLDER "Dependencies")
+endif()
+if(TARGET glm)
+    set_target_properties(glm PROPERTIES FOLDER "Dependencies")
+endif()
 
 add_library(stb_image INTERFACE)
 target_include_directories(stb_image INTERFACE ${stb_SOURCE_DIR})
