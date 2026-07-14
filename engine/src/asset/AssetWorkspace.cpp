@@ -1,4 +1,5 @@
 #include "engine/asset/AssetWorkspace.h"
+#include "engine/concurrency/TaskSystem.h"
 
 #include "engine/resource/BinaryIO.h"
 
@@ -451,13 +452,11 @@ std::shared_future<AssetPreviewResult> AssetPreviewService::Request(AssetGuid gu
     const auto record = m_database.Find(guid);
     if (!record)
     {
-        return std::async(std::launch::deferred,
-                          [guid] {
-                              AssetPreviewResult result;
-                              result.Error = "Cannot preview unknown asset GUID: " + guid.ToString();
-                              return result;
-                          })
-            .share();
+        auto promise = std::make_shared<std::promise<AssetPreviewResult>>();
+        AssetPreviewResult result;
+        result.Error = "Cannot preview unknown asset GUID: " + guid.ToString();
+        promise->set_value(std::move(result));
+        return promise->get_future().share();
     }
     const std::string key = BuildRequestKey(*record, maximumWidth, maximumHeight);
     std::scoped_lock lock(m_mutex);
@@ -468,7 +467,8 @@ std::shared_future<AssetPreviewResult> AssetPreviewService::Request(AssetGuid gu
     const AssetPreviewProvider provider = type ? type->Preview : AssetPreviewProvider{};
     const std::filesystem::path root = m_projectRoot;
     const AssetRecord recordCopy = *record;
-    auto future = std::async(std::launch::async, [provider, root, recordCopy, maximumWidth, maximumHeight] {
+    auto task = concurrency::TaskSystem::Global().SubmitFuture(
+        [provider, root, recordCopy, maximumWidth, maximumHeight] {
                       AssetPreviewResult result;
                       if (!provider)
                       {
@@ -482,7 +482,8 @@ std::shared_future<AssetPreviewResult> AssetPreviewService::Request(AssetGuid gu
                       request.MaximumHeight = maximumHeight;
                       result.Succeeded = provider(recordCopy.Descriptor, request, result.Preview, &result.Error);
                       return result;
-                  }).share();
+                  }, concurrency::TaskPriority::Low);
+    auto future = task.SharedFuture();
     m_requests.emplace(key, future);
     m_assetKeys.emplace(guid, key);
     return future;

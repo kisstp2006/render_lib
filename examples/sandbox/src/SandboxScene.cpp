@@ -282,6 +282,56 @@ void PopulatePostShowcase(Application& app, const SandboxSceneConfig&)
     camera.Pitch = -10.0f;
 }
 
+void PopulateVisibilityShowcase(Application& app)
+{
+    Scene& scene = app.GetScene();
+    scene.Visibility.Enabled = true;
+    scene.Visibility.FrustumCulling = true;
+    scene.Visibility.DistanceCulling = true;
+    scene.Visibility.MaxDistance = 48.0f;
+    scene.Visibility.DebugBounds = true;
+    scene.Visibility.DebugCulledBounds = true;
+    scene.Fog.Enabled = false;
+    scene.PostProcess.AutoExposure = false;
+    scene.PostProcess.Exposure = 1.5f;
+    scene.Sun.Direction = glm::normalize(glm::vec3(-0.4f, -0.85f, -0.25f));
+    scene.Sun.Intensity = 7.0f;
+
+    const auto plane = std::make_shared<MeshData>(primitives::MakePlane(100.0f, 1));
+    const auto cube = std::make_shared<MeshData>(primitives::MakeCube(0.75f));
+    Material floor;
+    floor.Albedo = {0.22f, 0.24f, 0.28f};
+    floor.Roughness = 0.82f;
+    scene.AddInstance(plane, floor, glm::translate(glm::mat4(1.0f), {0.0f, -1.0f, -30.0f}));
+    scene.Instances().back().AlwaysVisible = true;
+
+    for (int row = 0; row < 10; ++row)
+    {
+        const float z = -6.0f - row * 8.0f;
+        for (int column = -6; column <= 6; ++column)
+        {
+            Material material;
+            const float hue = static_cast<float>(column + 6) / 12.0f;
+            material.Albedo = glm::mix(glm::vec3(0.08f, 0.32f, 0.92f),
+                                       glm::vec3(0.95f, 0.20f, 0.08f), hue);
+            material.Metallic = 0.25f;
+            material.Roughness = 0.28f + 0.05f * static_cast<float>(row % 5);
+            glm::mat4 transform = glm::translate(
+                glm::mat4(1.0f), {column * 5.0f, 0.2f + (row % 3) * 0.8f, z});
+            transform = glm::rotate(transform, glm::radians(column * 7.0f + row * 11.0f),
+                                    glm::vec3(0.0f, 1.0f, 0.0f));
+            transform = glm::scale(transform, {0.8f, 1.0f + (row % 3) * 0.45f, 0.8f});
+            scene.AddInstance(cube, material, transform);
+        }
+    }
+
+    Camera& camera = app.GetCamera();
+    camera.Position = {0.0f, 6.0f, 14.0f};
+    camera.Yaw = -90.0f;
+    camera.Pitch = -8.0f;
+    camera.FarPlane = 160.0f;
+}
+
 void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config, SampleAssetPipeline& assets)
 {
     Scene& scene = app.GetScene();
@@ -346,6 +396,11 @@ void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config, Sa
     if (config.PostShowcase)
     {
         PopulatePostShowcase(app, config);
+        return;
+    }
+    if (config.VisibilityShowcase)
+    {
+        PopulateVisibilityShowcase(app);
         return;
     }
     if (config.HdriStudio)

@@ -53,6 +53,10 @@ struct FrameDebugResource
     std::string Format;
     uint64_t EstimatedBytes = 0;
     bool Previewable = true;
+    bool Transient = false;
+    uint32_t FirstUsePass = UINT32_MAX;
+    uint32_t LastUsePass = UINT32_MAX;
+    uint32_t AliasSlot = UINT32_MAX;
 };
 
 struct FrameDebugPass
@@ -62,6 +66,8 @@ struct FrameDebugPass
     std::vector<uint64_t> Outputs;
     float GpuMilliseconds = 0.0f;
     bool TimingAvailable = false;
+    uint32_t DeclarationIndex = 0;
+    uint32_t BarrierCount = 0;
 };
 
 struct FrameDebugSnapshot
@@ -70,6 +76,11 @@ struct FrameDebugSnapshot
     uint64_t FrameIndex = 0;
     std::vector<FrameDebugPass> Passes;
     std::vector<FrameDebugResource> Resources;
+    uint32_t GraphBarrierCount = 0;
+    uint64_t GraphLogicalTransientBytes = 0;
+    uint64_t GraphPhysicalTransientBytes = 0;
+    uint64_t GraphAliasedBytesSaved = 0;
+    float GraphCompileMilliseconds = 0.0f;
 };
 
 // Frozen RGBA8 visualization of one native render resource. HDR values are

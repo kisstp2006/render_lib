@@ -104,4 +104,16 @@ struct ShadowSettings
     bool LogPerformance = false;
 };
 
+struct VisibilitySettings
+{
+    bool Enabled = true;
+    bool FrustumCulling = true;
+    bool DistanceCulling = true;
+    // Zero uses the active camera far plane. Individual instances may choose
+    // a shorter distance through MeshInstance::MaxDrawDistance.
+    float MaxDistance = 0.0f;
+    bool DebugBounds = false;
+    bool DebugCulledBounds = true;
+};
+
 } // namespace engine

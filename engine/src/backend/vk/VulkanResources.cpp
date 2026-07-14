@@ -21,10 +21,13 @@ void RaisePeak(std::atomic<uint64_t>& peak, uint64_t value)
 
 } // namespace
 
-void ResourceAllocator::Init(VkPhysicalDevice physicalDevice, VkDevice device)
+void ResourceAllocator::Init(VkPhysicalDevice physicalDevice, VkDevice device,
+                             uint32_t graphicsQueueFamily, uint32_t transferQueueFamily)
 {
     m_physicalDevice = physicalDevice;
     m_device = device;
+    m_graphicsQueueFamily = graphicsQueueFamily;
+    m_transferQueueFamily = transferQueueFamily;
     m_setDebugObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
         vkGetDeviceProcAddr(device, "vkSetDebugUtilsObjectNameEXT"));
 }
@@ -94,6 +97,16 @@ Buffer ResourceAllocator::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usa
     bufferInfo.size = size;
     bufferInfo.usage = usage;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    const uint32_t queueFamilies[] = {m_graphicsQueueFamily, m_transferQueueFamily};
+    if (m_graphicsQueueFamily != VK_QUEUE_FAMILY_IGNORED &&
+        m_transferQueueFamily != VK_QUEUE_FAMILY_IGNORED &&
+        m_graphicsQueueFamily != m_transferQueueFamily &&
+        (usage & (VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT)) != 0)
+    {
+        bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        bufferInfo.queueFamilyIndexCount = 2;
+        bufferInfo.pQueueFamilyIndices = queueFamilies;
+    }
     if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &buffer.Handle) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create buffer");
 
@@ -150,6 +163,16 @@ Image ResourceAllocator::CreateImage2D(uint32_t width, uint32_t height, VkFormat
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = usage;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    const uint32_t queueFamilies[] = {m_graphicsQueueFamily, m_transferQueueFamily};
+    if (m_graphicsQueueFamily != VK_QUEUE_FAMILY_IGNORED &&
+        m_transferQueueFamily != VK_QUEUE_FAMILY_IGNORED &&
+        m_graphicsQueueFamily != m_transferQueueFamily &&
+        (usage & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) != 0)
+    {
+        imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        imageInfo.queueFamilyIndexCount = 2;
+        imageInfo.pQueueFamilyIndices = queueFamilies;
+    }
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(m_device, &imageInfo, nullptr, &image.Handle) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create image");

@@ -2,16 +2,23 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <unordered_map>
+#include <vector>
 
 #include <glm/glm.hpp>
 
 #include "engine/render/CascadedShadows.h"
+#include "engine/render/Visibility.h"
 #include "engine/scene/Environment.h"
+#include "engine/concurrency/TaskSystem.h"
 
 namespace engine {
 
 class Camera;
 class Scene;
+struct MeshInstance;
 namespace debug { struct DebugOverlayImage; }
 struct PointLight;
 struct SpotLight;
@@ -52,6 +59,41 @@ struct PreparedLocalLights
     uint32_t AreaCount = 0;
 };
 
+struct PreparedRenderCommand
+{
+    const MeshInstance* Source = nullptr;
+    uint32_t InstanceIndex = 0;
+    uint32_t IndexCount = 0;
+};
+
+enum class FrameWorkStage : uint8_t
+{
+    Animation,
+    Particles,
+    Visibility
+};
+
+struct FrameWorkContext
+{
+    const Scene& SceneData;
+    const Camera& CameraData;
+    int Width = 1;
+    int Height = 1;
+    float TimeSeconds = 0.0f;
+    float DeltaSeconds = 0.0f;
+};
+
+using FrameWorkCallback = std::function<void(const FrameWorkContext&,
+                                              const concurrency::CancellationToken&)>;
+
+struct FramePreparationStatistics
+{
+    uint32_t WorkerCount = 0;
+    uint32_t CustomTaskCount = 0;
+    uint32_t RenderCommandCount = 0;
+    uint32_t ShadowCommandCount = 0;
+};
+
 // Backend-neutral, immutable description of one scene view. SceneRenderer
 // computes this once per frame; OpenGL and Vulkan consume the same camera,
 // sun/day-night state, cascade splits/matrices and selected local lights.
@@ -75,6 +117,11 @@ struct RenderFrameData
     bool SunShadowsActive = false;
     CascadeShadowData Cascades{};
     PreparedLocalLights LocalLights{};
+    std::vector<PreparedRenderCommand> RenderCommands;
+    std::vector<PreparedRenderCommand> ShadowCommands;
+    std::vector<VisibilityDebugBounds> VisibilityDebug;
+    VisibilityStatistics Visibility{};
+    FramePreparationStatistics Preparation{};
     float TonemapWhitePointScale = 1.0f;
     const debug::DebugOverlayImage* DebugOverlay = nullptr;
 };
@@ -84,6 +131,28 @@ struct RenderFrameData
 class SceneRenderer
 {
 public:
+    explicit SceneRenderer(concurrency::TaskSystem* tasks = nullptr)
+        : m_tasks(tasks)
+    {
+    }
+
+    uint64_t AddFrameWork(FrameWorkStage stage, FrameWorkCallback callback,
+                          concurrency::TaskPriority priority = concurrency::TaskPriority::High);
+    bool RemoveFrameWork(uint64_t token);
+    void ClearFrameWork();
+    void ResetFrameHistory()
+    {
+        m_frame = {};
+    }
+    void SetTaskSystem(concurrency::TaskSystem* tasks)
+    {
+        m_tasks = tasks;
+    }
+    const VisibilityStatistics& GetVisibilityStatistics() const noexcept
+    {
+        return m_frame.Visibility;
+    }
+
     const RenderFrameData& PrepareFrame(const Scene& scene, const Camera& camera,
                                         int width, int height,
                                         const debug::DebugOverlayImage* debugOverlay = nullptr,
@@ -91,6 +160,30 @@ public:
                                         float deltaSeconds = 1.0f / 60.0f);
 
 private:
+    struct RegisteredWork
+    {
+        uint64_t Token = 0;
+        FrameWorkStage Stage = FrameWorkStage::Visibility;
+        concurrency::TaskPriority Priority = concurrency::TaskPriority::High;
+        FrameWorkCallback Callback;
+    };
+
+    struct CachedMeshBounds
+    {
+        std::weak_ptr<MeshData> Owner;
+        const void* VertexData = nullptr;
+        size_t VertexCount = 0;
+        AxisAlignedBounds Bounds;
+    };
+
+    std::vector<concurrency::TaskHandle> DispatchFrameWork(
+        const FrameWorkContext& context, FrameWorkStage first, FrameWorkStage second);
+    void WaitFor(std::vector<concurrency::TaskHandle>& handles);
+
+    concurrency::TaskSystem* m_tasks = nullptr;
+    std::vector<RegisteredWork> m_registeredWork;
+    uint64_t m_nextWorkToken = 1;
+    std::unordered_map<const MeshData*, CachedMeshBounds> m_boundsCache;
     RenderFrameData m_frame;
 };
 

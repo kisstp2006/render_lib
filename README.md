@@ -191,7 +191,7 @@ cmake --build build
 ./build/examples/sandbox/sandbox
 ```
 
-The build creates a generic command-line sandbox and seven focused sample
+The build creates a generic command-line sandbox and eight focused sample
 executables. They share the same scene/control implementation, so the samples
 stay small while each can be launched directly:
 
@@ -205,6 +205,7 @@ stay small while each can be launched directly:
 | `sample_day_night` | Animated procedural day/sunset/night sky cycle |
 | `sample_post` | Color-grading LUT, FXAA and TAA validation scene |
 | `sample_stability` | Resize/minimize/fullscreen, hot-reload and resource-lifetime stress suite |
+| `sample_visibility` | CPU frustum/distance culling and color-coded world-bounds visualization |
 
 For example, on Windows run
 `.\build\examples\sandbox\RelWithDebInfo\sample_lights.exe`. Every focused
@@ -489,20 +490,22 @@ above are not repeated here.
    - [x] Long-running resize/minimize/fullscreen, hot-reload and resource-lifetime stress tests
    - [x] GPU vendor/driver capability database with shared OpenGL/Vulkan discovery, capability tiers, software-driver rules, JSON/debug-UI diagnostics and graceful MSAA/anisotropy/present/profiler/BC/ASTC fallback paths
    - [x] Persistent OpenGL program-binary and Vulkan pipeline caches, content-addressed canonical shader permutation caching, and automated cold/warm stutter regression benchmarks
-   - [ ] Render graph/frame graph with explicit resource lifetimes and transient target aliasing
+   - [x] Configurable OpenGL/Vulkan render graph with declared inputs/outputs, deterministic dependency ordering, automatic barriers/layouts, explicit transient lifetimes and conservative target alias slots; integrated frame-debugger memory/timing diagnostics and regression tests ([guide](docs/render-graph.md))
 
 9. **Multithreaded renderer and asynchronous data path (P0)**
-   - [ ] Job system and general thread pool
-   - [ ] Multithreaded render preparation and command generation
-   - [ ] Parallel visibility, animation and particle updates
-   - [ ] Asynchronous model/texture loading with cancellation and priorities
-   - [ ] Vulkan transfer queue uploads, staging-ring allocator and synchronization2 barriers
-   - [ ] Background shader/pipeline creation with a visible fallback material
-   - [ ] Frame-safe deferred destruction and per-frame GPU memory arenas
-   - [ ] Asset streaming governed by CPU, VRAM and I/O budgets
+   - [x] Job system and general thread pool
+   - [x] Multithreaded render preparation and command generation
+   - [x] Parallel visibility, animation and particle updates
+   - [x] Asynchronous model/texture loading with cancellation and priorities
+   - [x] Vulkan transfer queue uploads, staging-ring allocator and synchronization2 barriers
+   - [x] Background shader/pipeline creation with a visible fallback material
+   - [x] Frame-safe deferred destruction and per-frame GPU memory arenas
+   - [x] Asset streaming governed by CPU, VRAM and I/O budgets
+
+   Implementation and safety contracts: [multithreaded/asynchronous rendering guide](docs/asynchronous-rendering.md).
 
 10. **Visibility, batching and GPU-driven rendering (P0)**
-    - [ ] CPU frustum and distance culling with bounds/debug visualization
+    - [x] CPU frustum and distance culling with bounds/debug visualization ([guide](docs/visibility-culling.md))
     - [ ] GPU Hi-Z occlusion culling with temporal conservatism to prevent popping
     - [ ] GPU instancing and hierarchical instancing (HISM)
     - [ ] Static batching, selective dynamic batching and offline mesh combining

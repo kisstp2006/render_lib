@@ -1,12 +1,16 @@
 #include "engine/core/Camera.h"
+#include "engine/concurrency/TaskSystem.h"
 #include "engine/core/ApplicationConfig.h"
 #include "engine/debug/DebugOverlay.h"
 #include "engine/debug/RenderDocCapture.h"
 #include "engine/render/CascadedShadows.h"
+#include "engine/render/AsyncRenderResources.h"
 #include "engine/render/Exposure.h"
 #include "engine/render/GpuTiming.h"
 #include "engine/render/GpuCapabilities.h"
 #include "engine/render/PipelineCache.h"
+#include "engine/render/RenderGraph.h"
+#include "engine/render/RendererFrameGraph.h"
 #include "engine/render/TextureFallback.h"
 #include "engine/render/SceneRenderer.h"
 #include "engine/render/ShaderSource.h"
@@ -22,10 +26,13 @@
 #include "engine/scene/Texture.h"
 #include "engine/scene/Environment.h"
 #include "engine/scene/Scene.h"
+#include "engine/resource/ResourceManager.h"
+#include "engine/resource/ResourceStreaming.h"
 #include "TestRuntimePluginShared.h"
 
 #include <cmath>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -33,10 +40,14 @@
 #include <iterator>
 #include <stdexcept>
 #include <thread>
+#include <atomic>
+#include <future>
+#include <mutex>
 
 #include <glm/gtc/epsilon.hpp>
 
 using namespace engine;
+namespace jobs = engine::concurrency;
 
 namespace {
 
@@ -342,10 +353,30 @@ void TestSharedSceneRendererFrame()
     area.Direction = {0.0f, -1.0f, 0.2f};
     area.Up = {0.0f, 1.0f, 0.0f};
     scene.AddAreaLight(area);
+    const auto cube = std::make_shared<MeshData>(primitives::MakeCube());
+    for (int index = 0; index < 96; ++index)
+        scene.AddInstance(cube, Material{}, glm::mat4(1.0f));
 
     Camera camera;
     camera.Position = {2.0f, 3.0f, 7.0f};
     SceneRenderer renderer;
+    std::atomic<uint32_t> parallelStages{0};
+    const uint64_t animation = renderer.AddFrameWork(
+        FrameWorkStage::Animation,
+        [&parallelStages](const FrameWorkContext&, const jobs::CancellationToken&) {
+            parallelStages.fetch_or(1u, std::memory_order_release);
+        });
+    renderer.AddFrameWork(
+        FrameWorkStage::Particles,
+        [&parallelStages](const FrameWorkContext&, const jobs::CancellationToken&) {
+            parallelStages.fetch_or(2u, std::memory_order_release);
+        });
+    renderer.AddFrameWork(
+        FrameWorkStage::Visibility,
+        [&parallelStages](const FrameWorkContext&, const jobs::CancellationToken&) {
+            if ((parallelStages.load(std::memory_order_acquire) & 3u) == 3u)
+                parallelStages.fetch_or(4u, std::memory_order_release);
+        });
     const RenderFrameData first = renderer.PrepareFrame(
         scene, camera, 1600, 900, nullptr, 2.5f, 1.0f / 120.0f);
     Require(first.SceneData == &scene && first.CameraData == &camera,
@@ -366,12 +397,314 @@ void TestSharedSceneRendererFrame()
     Require(std::abs(first.TimeSeconds - 2.5f) < 1.0e-6f &&
                 std::abs(first.DeltaSeconds - 1.0f / 120.0f) < 1.0e-6f,
             "shared frame must carry deterministic animation time to both backends");
+    Require(first.RenderCommands.size() == scene.Instances().size() &&
+                first.Preparation.RenderCommandCount == scene.Instances().size(),
+            "shared multithreaded preparation must emit one deterministic command per valid mesh instance");
+    Require(first.ShadowCommands.size() == scene.Instances().size() &&
+                first.Preparation.ShadowCommandCount == scene.Instances().size(),
+            "visible shadow casters must retain a deterministic directional-shadow command");
+    for (size_t index = 0; index < first.RenderCommands.size(); ++index)
+        Require(first.RenderCommands[index].InstanceIndex == index &&
+                    first.RenderCommands[index].Source == &scene.Instances()[index],
+                "parallel command generation must preserve stable scene order and identity");
+    Require(parallelStages.load(std::memory_order_acquire) == 7u &&
+                first.Preparation.CustomTaskCount == 3,
+            "animation and particle work must finish before parallel visibility preparation");
+    Require(renderer.RemoveFrameWork(animation), "registered frame work must be removable by token");
 
     const RenderFrameData second = renderer.PrepareFrame(scene, camera, 800, 800);
     Require(second.FrameIndex == first.FrameIndex + 1,
             "shared scene renderer frame index must advance exactly once per application frame");
     Require(std::abs(second.AspectRatio - 1.0f) < 1.0e-6f,
             "shared frame must react to viewport resize independently of the backend");
+}
+
+void TestVisibilityCulling()
+{
+    const MeshData cubeData = primitives::MakeCube(1.0f);
+    const AxisAlignedBounds local = ComputeMeshBounds(cubeData);
+    Require(local.Valid && glm::all(glm::epsilonEqual(local.Minimum, glm::vec3(-1.0f), 1.0e-6f)) &&
+                glm::all(glm::epsilonEqual(local.Maximum, glm::vec3(1.0f), 1.0e-6f)),
+            "visibility bounds must be derived exactly from mesh positions");
+    const glm::mat4 transformed = glm::translate(glm::mat4(1.0f), {3.0f, 2.0f, -4.0f}) *
+        glm::rotate(glm::mat4(1.0f), glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f)) *
+        glm::scale(glm::mat4(1.0f), {2.0f, 1.0f, 0.5f});
+    const AxisAlignedBounds world = TransformBounds(local, transformed);
+    Require(world.Valid && glm::all(glm::greaterThan(world.Maximum, world.Minimum)),
+            "rotated and non-uniformly scaled mesh bounds must remain conservative and finite");
+
+    Scene scene;
+    scene.Visibility.MaxDistance = 100.0f;
+    scene.Visibility.DebugBounds = true;
+    const auto cube = std::make_shared<MeshData>(cubeData);
+    scene.AddInstance(cube, Material{}, glm::translate(glm::mat4(1.0f), {0.0f, 0.0f, -5.0f}));
+    scene.AddInstance(cube, Material{}, glm::translate(glm::mat4(1.0f), {50.0f, 0.0f, -5.0f}));
+    scene.AddInstance(cube, Material{}, glm::translate(glm::mat4(1.0f), {0.0f, 0.0f, -150.0f}));
+    scene.AddInstance(cube, Material{}, glm::translate(glm::mat4(1.0f), {0.0f, 0.0f, 5.0f}));
+    scene.Instances().back().AlwaysVisible = true;
+    scene.AddInstance({}, Material{}, glm::mat4(1.0f));
+
+    Camera camera;
+    camera.Position = {0.0f, 0.0f, 0.0f};
+    camera.Yaw = -90.0f;
+    camera.Pitch = 0.0f;
+    camera.NearPlane = 0.1f;
+    camera.FarPlane = 100.0f;
+    SceneRenderer renderer;
+    const RenderFrameData frame = renderer.PrepareFrame(scene, camera, 1280, 720);
+    Require(frame.RenderCommands.size() == 2 &&
+                frame.RenderCommands[0].InstanceIndex == 0 &&
+                frame.RenderCommands[1].InstanceIndex == 3,
+            "CPU culling must keep visible/always-visible objects and preserve stable scene order");
+    Require(frame.ShadowCommands.size() == 3 &&
+                frame.ShadowCommands[1].InstanceIndex == 1,
+            "frustum-culled nearby casters must remain in the shadow list while distant ones are removed");
+    Require(frame.Visibility.Tested == 5 && frame.Visibility.Visible == 2 &&
+                frame.Visibility.FrustumCulled == 1 && frame.Visibility.DistanceCulled == 1 &&
+                frame.Visibility.InvalidBounds == 1 && frame.Visibility.ShadowCasters == 3,
+            "visibility statistics must classify every instance exactly once");
+    Require(frame.VisibilityDebug.size() == 4,
+            "bounds debug data must include visible and culled finite bounds but exclude invalid meshes");
+    Require(SquaredDistanceToBounds({0.0f, 0.0f, 0.0f}, frame.VisibilityDebug[0].Bounds) == 16.0f,
+            "distance culling must use nearest AABB distance rather than center distance");
+}
+
+void TestTaskSystemScheduling()
+{
+    jobs::TaskSystem tasks(1);
+    std::promise<void> blockerStarted;
+    std::promise<void> releaseBlocker;
+    std::shared_future<void> release = releaseBlocker.get_future().share();
+    const jobs::TaskHandle blocker = tasks.Submit([&](const jobs::CancellationToken&) {
+        blockerStarted.set_value();
+        release.wait();
+    }, jobs::TaskPriority::Critical);
+    blockerStarted.get_future().wait();
+
+    std::mutex orderMutex;
+    std::vector<int> order;
+    const jobs::TaskHandle low = tasks.Submit([&](const jobs::CancellationToken&) {
+        std::scoped_lock lock(orderMutex);
+        order.push_back(1);
+    }, jobs::TaskPriority::Low);
+    const jobs::TaskHandle high = tasks.Submit([&](const jobs::CancellationToken&) {
+        std::scoped_lock lock(orderMutex);
+        order.push_back(2);
+    }, jobs::TaskPriority::High);
+    auto cancelled = tasks.SubmitFuture([](const jobs::CancellationToken&) { return 99; }, jobs::TaskPriority::Normal);
+    cancelled.Cancel();
+    releaseBlocker.set_value();
+    tasks.Wait(blocker);
+    tasks.Wait(high);
+    tasks.Wait(low);
+    Require(order == std::vector<int>({2, 1}),
+            "single-worker task queue must dispatch higher priorities first and preserve FIFO within a priority");
+    bool cancellationObserved = false;
+    try
+    {
+        (void)cancelled.Get();
+    }
+    catch (const jobs::TaskCancelled&)
+    {
+        cancellationObserved = true;
+    }
+    Require(cancellationObserved && cancelled.Status() == jobs::TaskStatus::Cancelled,
+            "queued asynchronous tasks must surface cooperative cancellation");
+
+    std::promise<void> runningStarted;
+    auto running = tasks.SubmitFuture([&runningStarted](const jobs::CancellationToken& token) {
+        runningStarted.set_value();
+        while (!token.IsCancellationRequested())
+            std::this_thread::yield();
+        token.ThrowIfCancellationRequested();
+    }, jobs::TaskPriority::High);
+    runningStarted.get_future().wait();
+    running.Cancel();
+    try
+    {
+        running.Get();
+    }
+    catch (const jobs::TaskCancelled&)
+    {
+    }
+    tasks.Wait(running.Handle());
+    Require(running.Status() == jobs::TaskStatus::Cancelled,
+            "already-running jobs must observe cancellation without stopping a worker thread");
+
+    auto failed = tasks.SubmitFuture([]() -> int { throw std::runtime_error("expected failure"); });
+    bool failureObserved = false;
+    try
+    {
+        (void)failed.Get();
+    }
+    catch (const std::runtime_error& error)
+    {
+        failureObserved = std::string(error.what()) == "expected failure";
+    }
+    tasks.Wait(failed.Handle());
+    Require(failureObserved && failed.Status() == jobs::TaskStatus::Failed,
+            "typed asynchronous results must retain task exceptions and failed state");
+
+    std::vector<std::atomic<uint32_t>> visits(2048);
+    tasks.ParallelFor(visits.size(), 31, [&visits](size_t index) {
+        visits[index].fetch_add(1, std::memory_order_relaxed);
+    });
+    for (const auto& visit : visits)
+        Require(visit.load() == 1, "parallel-for must visit every element exactly once");
+
+    auto nested = tasks.SubmitFuture([&tasks](const jobs::CancellationToken&) {
+        auto child = tasks.SubmitFuture([] { return 17; }, jobs::TaskPriority::High);
+        tasks.Wait(child.Handle());
+        return child.Get();
+    });
+    Require(nested.Get() == 17, "worker-side waits must execute queued work instead of deadlocking");
+    const jobs::TaskSystemStatistics statistics = tasks.Statistics();
+    Require(statistics.Completed >= 3 && statistics.Cancelled >= 1 && statistics.Queued == 0,
+            "task system statistics must report completed, cancelled and pending work");
+}
+
+void TestAsyncResourceLoadingAndStreamingBudgets()
+{
+    using namespace resources;
+    jobs::TaskSystem tasks(2);
+    ResourceManager resources;
+    resources.SetTaskSystem(&tasks);
+    resources.SetDevelopmentFallback(
+        [](assets::AssetGuid, std::type_index type, std::string* error) -> std::shared_ptr<void> {
+            if (type != std::type_index(typeid(int)))
+            {
+                if (error)
+                    *error = "Unexpected test resource type";
+                return {};
+            }
+            return std::make_shared<int>(42);
+        }, true);
+    const auto loaded = resources.LoadAsync<int>(assets::AssetGuid{1, 2},
+        {jobs::TaskPriority::High, {}});
+    Require(loaded.Get() && *loaded.Get() == 42,
+            "typed model/texture resource path must support asynchronous cached loading");
+
+    StreamingBudget budget;
+    budget.MaxResidentCpuBytes = 100;
+    budget.MaxResidentVramBytes = 100;
+    budget.MaxIoBytesPerTick = 64;
+    budget.MaxConcurrentLoads = 1;
+    ResourceStreamingScheduler streaming(budget, &tasks);
+    std::mutex orderMutex;
+    std::vector<std::string> order;
+    auto makeRequest = [&](std::string key, jobs::TaskPriority priority) {
+        StreamingRequest request;
+        request.Key = key;
+        request.Priority = priority;
+        request.Cost = {60, 60, 64};
+        request.Load = [&, key](const jobs::CancellationToken& token) -> std::shared_ptr<void> {
+            token.ThrowIfCancellationRequested();
+            std::scoped_lock lock(orderMutex);
+            order.push_back(key);
+            return std::make_shared<std::string>(key);
+        };
+        return request;
+    };
+    const StreamingTicket low = streaming.Queue(makeRequest("low", jobs::TaskPriority::Low));
+    const StreamingTicket high = streaming.Queue(makeRequest("high", jobs::TaskPriority::Critical));
+    const StreamingTicket cancelled = streaming.Queue(makeRequest("cancelled", jobs::TaskPriority::Normal));
+    cancelled.Cancel();
+    streaming.Tick();
+    for (int spin = 0; spin < 10000 && high.Status() != StreamingState::Resident; ++spin)
+    {
+        std::this_thread::yield();
+        streaming.Tick();
+    }
+    Require(high.Status() == StreamingState::Resident && !order.empty() && order.front() == "high",
+            "streaming scheduler must admit the highest-priority request first");
+    Require(low.Status() == StreamingState::Queued && streaming.Statistics().BudgetBlocked >= 1,
+            "resident CPU/VRAM budgets must block an asset that does not fit");
+    Require(cancelled.Status() == StreamingState::Cancelled,
+            "streaming tickets must cancel queued model/texture requests");
+    Require(streaming.Evict("high"), "resident streamed assets must be evictable");
+    for (int spin = 0; spin < 10000 && low.Status() != StreamingState::Resident; ++spin)
+    {
+        streaming.Tick();
+        std::this_thread::yield();
+    }
+    Require(low.Status() == StreamingState::Resident && streaming.Statistics().ResidentCpuBytes == 60 &&
+                streaming.Statistics().ResidentVramBytes == 60,
+            "eviction must return CPU and VRAM budget to subsequent streaming requests");
+}
+
+void TestAsyncRenderResourceLifetime()
+{
+    using namespace render;
+    const Material fallbackMaterial = MakeVisibleFallbackMaterial();
+    Require(fallbackMaterial.Albedo.r == 1.0f && fallbackMaterial.Albedo.b == 1.0f &&
+                fallbackMaterial.AlbedoMap,
+            "asynchronous pipeline failure must have a visible magenta checker fallback material");
+    FrameGpuArena arena(1024, 2);
+    const ArenaAllocation first = arena.Allocate(1, 100, 256);
+    const ArenaAllocation second = arena.Allocate(1, 100, 256);
+    Require(first.Offset == 1024 && second.Offset == 1280 && arena.Used(1) == 356,
+            "per-frame GPU arena must apply alignment inside independent frame slots");
+    Require(!arena.Allocate(1, 800, 1), "frame arena must reject overflow without corrupting its cursor");
+    arena.Reset(1);
+    Require(arena.Allocate(1, 1024, 1).Size == 1024 && arena.Peak(1) >= 356,
+            "a fence-safe frame reset must preserve peak usage while recycling capacity");
+
+    StagingRingAllocator staging(128);
+    const StagingAllocation uploadA = staging.Allocate(64, 16, 0);
+    const StagingAllocation uploadB = staging.Allocate(64, 16, 0);
+    Require(uploadA && uploadB && !staging.Allocate(1, 1, 0),
+            "staging ring must prevent overlap with in-flight uploads");
+    staging.Retire(uploadA.Serial, 4);
+    staging.Reclaim(3);
+    Require(!staging.Allocate(32, 16, 3), "staging memory must remain live before its timeline value");
+    staging.Reclaim(4);
+    Require(staging.Allocate(32, 16, 4).Offset == 0,
+            "completed timeline ranges must become reusable deterministically");
+
+    DeferredReleaseQueue releases;
+    std::vector<int> released;
+    releases.Enqueue(5, [&] { released.push_back(2); });
+    releases.Enqueue(3, [&] { released.push_back(1); });
+    Require(releases.ReleaseCompleted(4) == 1 && released == std::vector<int>({1}) && releases.Pending() == 1,
+            "deferred GPU destruction must only run callbacks whose frame fence completed");
+    Require(releases.Flush() == 1 && released == std::vector<int>({1, 2}),
+            "deferred destruction shutdown flush must preserve safe deterministic order");
+
+    struct TestPipeline
+    {
+        int Id = 0;
+    };
+    jobs::TaskSystem tasks(1);
+    auto fallback = std::make_shared<TestPipeline>();
+    fallback->Id = -1;
+    AsyncPipelineLibrary<TestPipeline> pipelines(fallback, &tasks);
+    std::promise<void> started;
+    std::promise<void> release;
+    std::shared_future<void> releaseFuture = release.get_future().share();
+    const auto pipeline = pipelines.Request("pbr", [&](const jobs::CancellationToken& token) {
+        started.set_value();
+        releaseFuture.wait();
+        token.ThrowIfCancellationRequested();
+        auto result = std::make_shared<TestPipeline>();
+        result->Id = 7;
+        return result;
+    });
+    started.get_future().wait();
+    Require(pipeline.UsesFallback() && pipeline.Resolve()->Id == -1,
+            "background pipeline builds must expose a conspicuous fallback while compiling");
+    release.set_value();
+    pipeline.Wait();
+    Require(pipeline.State() == AsyncPipelineState::Ready && pipeline.Resolve()->Id == 7,
+            "background pipeline handle must atomically replace fallback after successful creation");
+    const auto failedPipeline = pipelines.Request(
+        "broken", [](const jobs::CancellationToken&) -> std::shared_ptr<TestPipeline> {
+            throw std::runtime_error("shader permutation failed");
+        });
+    failedPipeline.Wait();
+    Require(failedPipeline.State() == AsyncPipelineState::Failed &&
+                failedPipeline.Resolve()->Id == -1 &&
+                failedPipeline.Error().find("shader permutation failed") != std::string::npos,
+            "failed background pipelines must retain the visible fallback and diagnostic");
 }
 
 void TestRenderDocCaptureFallback()
@@ -999,6 +1332,10 @@ void TestApplicationConfigRoundTrip()
     source.Renderer.EnableDriverWorkarounds = false;
     source.Renderer.EnablePipelineCache = false;
     source.Renderer.PipelineCacheDirectory = "Cache/Test Renderer";
+    source.Renderer.EnableRenderGraph = false;
+    source.Renderer.ValidateRenderGraph = false;
+    source.Renderer.EnableTransientAliasing = false;
+    source.Renderer.RenderGraphConfigPath = "Config/test-render-graph.ini";
     source.Unfocused = UnfocusedBehavior::RenderOnly;
     source.MaximumDeltaSeconds = 0.05f;
     source.FixedDeltaSeconds = 1.0f / 60.0f;
@@ -1034,7 +1371,11 @@ void TestApplicationConfigRoundTrip()
             && loaded.Renderer.CapabilityPolicy == GpuCapabilityPolicy::Conservative
             && !loaded.Renderer.EnableDriverWorkarounds
             && !loaded.Renderer.EnablePipelineCache
-            && loaded.Renderer.PipelineCacheDirectory == "Cache/Test Renderer",
+            && loaded.Renderer.PipelineCacheDirectory == "Cache/Test Renderer"
+            && !loaded.Renderer.EnableRenderGraph
+            && !loaded.Renderer.ValidateRenderGraph
+            && !loaded.Renderer.EnableTransientAliasing
+            && loaded.Renderer.RenderGraphConfigPath == "Config/test-render-graph.ini",
             "renderer configuration must survive a complete round trip");
     Require(loaded.Unfocused == UnfocusedBehavior::RenderOnly
             && std::abs(loaded.MaximumDeltaSeconds - 0.05f) < 1.0e-6f
@@ -1295,6 +1636,137 @@ void TestRuntimePluginAndWorld()
     memoryProfiler.SetEnabled(false);
 }
 
+void TestRenderGraphCompilationAndAliasing()
+{
+    using namespace rendergraph;
+    RenderGraph graph;
+    graph.Reset();
+    ResourceDesc texture;
+    texture.Name = "test.producer";
+    texture.Format = "RGBA16F";
+    texture.Width = 128;
+    texture.Height = 128;
+    texture.BytesPerPixel = 8;
+    const ResourceHandle produced = graph.Create(texture);
+    std::vector<int> execution;
+    graph.AddPass("consumer", "Consumer")
+        .Read(produced)
+        .SetExecute([&] { execution.push_back(2); });
+    graph.AddPass("producer", "Producer")
+        .Write(produced, ResourceState::ColorAttachment, PipelineStage::ColorOutput)
+        .SetExecute([&] { execution.push_back(1); });
+    std::string error;
+    Require(graph.Compile(&error), "render graph must sort a consumer declared before its producer");
+    Require(graph.Passes().size() == 2 && graph.Passes()[0].Id == "producer" &&
+                graph.Passes()[1].Id == "consumer",
+            "render graph topological order must follow resource dependencies");
+    graph.ExecutePhase(PassPhase::Render);
+    Require(execution == std::vector<int>({1, 2}),
+            "render graph execution must use compiled dependency order");
+    Require(graph.Stats().BarrierCount >= 2,
+            "render graph must synthesize write/read resource barriers");
+
+    graph.Reset();
+    texture.Name = "temporary.a";
+    const ResourceHandle first = graph.Create(texture);
+    texture.Name = "temporary.b";
+    const ResourceHandle second = graph.Create(texture);
+    graph.AddPass("write_a", "Write A")
+        .Write(first, ResourceState::ColorAttachment, PipelineStage::ColorOutput)
+        .SetExecute([] {});
+    graph.AddPass("read_a", "Read A").Read(first).SetExecute([] {});
+    graph.AddPass("write_b", "Write B")
+        .Write(second, ResourceState::ColorAttachment, PipelineStage::ColorOutput)
+        .SetExecute([] {});
+    graph.AddPass("read_b", "Read B").Read(second).SetExecute([] {});
+    Require(graph.Compile(&error), "non-overlapping transient graph must compile");
+    Require(graph.Resources()[first.Index].AliasSlot == graph.Resources()[second.Index].AliasSlot &&
+                graph.Stats().AliasedResourceCount == 1 && graph.Stats().AliasedBytesSaved > 0,
+            "compatible non-overlapping render targets must reuse one physical alias slot");
+
+    debug::FrameDebugSnapshot snapshot;
+    snapshot.Resources.push_back({debug::FrameDebugId("temporary.a")});
+    snapshot.Resources.push_back({debug::FrameDebugId("temporary.b")});
+    graph.PopulateFrameDebugSnapshot(snapshot);
+    Require(snapshot.Passes.size() == 4 && snapshot.GraphAliasedBytesSaved > 0 &&
+                snapshot.Resources[0].Transient &&
+                snapshot.Resources[0].LastUsePass < snapshot.Resources[1].FirstUsePass,
+            "frame debugger must expose pass order, lifetimes, barriers and alias savings");
+
+    graph.Reset();
+    graph.AddPass("a", "A").After("b").SetExecute([] {});
+    graph.AddPass("b", "B").After("a").SetExecute([] {});
+    Require(!graph.Compile(&error) && error.find("cycle") != std::string::npos,
+            "render graph must reject dependency cycles with a useful error");
+
+    graph.Reset();
+    texture.Name = "uninitialized";
+    const ResourceHandle uninitialized = graph.Create(texture);
+    graph.AddPass("bad_read", "Bad read").Read(uninitialized).SetExecute([] {});
+    Require(!graph.Compile(&error) && error.find("read before") != std::string::npos,
+            "render graph must reject a transient read without a producer");
+
+    graph.Reset();
+    texture.Name = "phase_order";
+    const ResourceHandle phaseResource = graph.Create(texture);
+    graph.AddPass("render_producer", "Render producer")
+        .Write(phaseResource, ResourceState::ColorAttachment, PipelineStage::ColorOutput)
+        .SetExecute([] {});
+    graph.AddPass("late_prepare", "Late prepare")
+        .SetPhase(PassPhase::Prepare).Read(phaseResource).SetExecute([] {});
+    Require(!graph.Compile(&error) && error.find("prepare pass") != std::string::npos,
+            "render graph must reject a prepare phase that depends on rendering");
+}
+
+void TestRenderGraphConfigAndScale()
+{
+    using namespace rendergraph;
+    const std::filesystem::path path = std::filesystem::temp_directory_path() /
+        "source_like_render_graph_test.ini";
+    Config saved;
+    saved.Validation = false;
+    saved.TransientAliasing = false;
+    saved.Passes.push_back({"debug_ui", false, {"post_process"}});
+    std::string error;
+    Require(SaveConfig(path, saved, &error), "render graph config must be exportable");
+    Config loaded;
+    Require(LoadConfig(path, loaded, &error) && !loaded.Validation &&
+                !loaded.TransientAliasing && loaded.Passes.size() == 1 &&
+                loaded.Passes[0].Enabled == false && loaded.Passes[0].After.size() == 1,
+            "render graph config must round-trip pass enable and ordering overrides");
+    std::error_code removeError;
+    std::filesystem::remove(path, removeError);
+
+    RenderGraph graph;
+    graph.Reset();
+    constexpr uint32_t passCount = 512;
+    std::vector<ResourceHandle> resources;
+    resources.reserve(passCount);
+    for (uint32_t index = 0; index < passCount; ++index)
+    {
+        ResourceDesc desc;
+        desc.Name = "scale." + std::to_string(index);
+        desc.Type = ResourceType::Buffer;
+        desc.Width = 256;
+        resources.push_back(graph.Create(std::move(desc)));
+    }
+    for (uint32_t index = 0; index < passCount; ++index)
+    {
+        auto pass = graph.AddPass("scale_" + std::to_string(index),
+                                  "Scale " + std::to_string(index));
+        if (index > 0)
+            pass.Read(resources[index - 1], ResourceState::ShaderRead, PipelineStage::Compute);
+        pass.Write(resources[index], ResourceState::ShaderWrite, PipelineStage::Compute)
+            .SetExecute([] {});
+    }
+    const auto begin = std::chrono::steady_clock::now();
+    Require(graph.Compile(&error), "large render graph must compile");
+    const double milliseconds = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - begin).count();
+    Require(graph.Passes().size() == passCount && milliseconds < 1000.0,
+            "512-pass render graph compile must remain within the regression budget");
+}
+
 void TestRuntimePluginDependencies()
 {
     runtime::ComponentRegistry components;
@@ -1329,6 +1801,10 @@ int main()
     TestTemporalSamplingAndCuts();
     TestVulkanMaterialPacking();
     TestSharedSceneRendererFrame();
+    TestVisibilityCulling();
+    TestTaskSystemScheduling();
+    TestAsyncResourceLoadingAndStreamingBudgets();
+    TestAsyncRenderResourceLifetime();
     TestRenderDocCaptureFallback();
     TestSharedRendererUtilities();
     TestVisualRegressionComparison();
@@ -1343,6 +1819,8 @@ int main()
     TestGpuCapabilityDatabaseAndFallbacks();
     TestApplicationConfigRoundTrip();
     TestShaderPermutationAndPipelineReport();
+    TestRenderGraphCompilationAndAliasing();
+    TestRenderGraphConfigAndScale();
     TestRuntimePluginAndWorld();
     TestRuntimePluginDependencies();
     std::puts("Renderer tests passed");

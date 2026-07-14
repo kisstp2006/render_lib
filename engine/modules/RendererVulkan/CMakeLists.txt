@@ -32,6 +32,7 @@ engine_add_module(engine_renderer_vulkan
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Post.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.SceneResources.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Shadows.cpp
+        ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Uploads.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanResources.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanPipelineCache.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanShaderCompiler.cpp

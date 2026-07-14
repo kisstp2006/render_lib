@@ -72,6 +72,10 @@ void ApplyPreset(SandboxPreset preset, WindowDesc& window, SandboxSceneConfig& c
         config.GltfPath = assets + "/WaterBottle.glb";
         config.HdriPath = assets + "/studio_small_09_1k.hdr";
         break;
+    case SandboxPreset::Visibility:
+        window.title = "Renderer Sample - Visibility Culling";
+        config.VisibilityShowcase = true;
+        break;
     }
 }
 
@@ -86,6 +90,7 @@ const char* PresetName(SandboxPreset preset)
     case SandboxPreset::DayNight: return "DAY NIGHT";
     case SandboxPreset::PostProcessing: return "POST PROCESSING";
     case SandboxPreset::Stability: return "STABILITY STRESS";
+    case SandboxPreset::Visibility: return "VISIBILITY CULLING";
     default: return "SANDBOX";
     }
 }
@@ -173,6 +178,10 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
             renderer.PipelineCacheDirectory = argv[++i];
         else if (argument == "--no-pipeline-cache") renderer.EnablePipelineCache = false;
         else if (argument == "--clear-pipeline-cache") renderer.ClearPipelineCache = true;
+        else if (argument == "--render-graph" && i + 1 < argc)
+            renderer.RenderGraphConfigPath = argv[++i];
+        else if (argument == "--no-render-graph-validation") renderer.ValidateRenderGraph = false;
+        else if (argument == "--no-transient-aliasing") renderer.EnableTransientAliasing = false;
         else if (argument == "--pipeline-cache-benchmark" && i + 1 < argc)
             pipelineBenchmarkPath = argv[++i];
         else if (argument == "--pipeline-benchmark-frames" && i + 1 < argc)

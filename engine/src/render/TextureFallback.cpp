@@ -69,4 +69,16 @@ const TextureData* ResolveTextureForGpu(const TextureData& source,
     return &scratch;
 }
 
+Material MakeVisibleFallbackMaterial()
+{
+    Material material;
+    material.Albedo = {1.0f, 0.0f, 1.0f};
+    material.Roughness = 0.65f;
+    material.Metallic = 0.0f;
+    material.Emissive = {0.08f, 0.0f, 0.08f};
+    material.AlbedoMap = textures::MakeChecker(
+        32, 4, glm::vec3(1.0f, 0.0f, 1.0f), glm::vec3(0.05f, 0.05f, 0.05f));
+    return material;
+}
+
 } // namespace engine

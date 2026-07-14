@@ -67,7 +67,9 @@ std::unique_ptr<IRenderBackend> CreateRenderBackend(GraphicsApi api)
 
 Application::Application(const WindowDesc& desc) : Application(ApplicationDesc{desc}) {}
 
-Application::Application(const ApplicationDesc& desc) : m_desc(desc)
+Application::Application(const ApplicationDesc& desc)
+    : m_desc(desc), m_taskSystem(std::make_unique<concurrency::TaskSystem>()),
+      m_sceneRenderer(m_taskSystem.get())
 {
     ENGINE_MEMORY_TAG_SCOPE("Core");
     if (m_desc.FrameCapture.CaptureTitle.empty())
@@ -152,6 +154,11 @@ Application::~Application()
     // before unloading modules, while renderer services are still alive.
     m_world.Clear();
     m_plugins.UnloadAll();
+    if (m_taskSystem)
+    {
+        m_taskSystem->WaitIdle();
+        m_taskSystem.reset();
+    }
     if (m_backend)
     {
         profiling::MemoryTagScope tag(m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL"
@@ -401,6 +408,20 @@ bool Application::RunOneFrame()
                     std::count_if(m_scene.AreaLights().begin(), m_scene.AreaLights().end(),
                                   [](const AreaLight& light) { return light.Enabled; }));
                 metrics.Capabilities = m_backend->GetCapabilities();
+                const concurrency::TaskSystemStatistics taskStatistics = m_taskSystem->Statistics();
+                m_debugOverlay.SetValue("JOBS", "WORKERS", std::to_string(taskStatistics.WorkerCount));
+                m_debugOverlay.SetValue("JOBS", "QUEUED", std::to_string(taskStatistics.Queued));
+                m_debugOverlay.SetValue("JOBS", "ACTIVE", std::to_string(taskStatistics.Active));
+                m_debugOverlay.SetValue("JOBS", "COMPLETED", std::to_string(taskStatistics.Completed));
+                const VisibilityStatistics& visibility = m_sceneRenderer.GetVisibilityStatistics();
+                m_debugOverlay.SetValue("VISIBILITY", "TESTED", std::to_string(visibility.Tested));
+                m_debugOverlay.SetValue("VISIBILITY", "VISIBLE", std::to_string(visibility.Visible));
+                m_debugOverlay.SetValue("VISIBILITY", "FRUSTUM CULLED",
+                                        std::to_string(visibility.FrustumCulled));
+                m_debugOverlay.SetValue("VISIBILITY", "DISTANCE CULLED",
+                                        std::to_string(visibility.DistanceCulled));
+                m_debugOverlay.SetValue("VISIBILITY", "SHADOW CASTERS",
+                                        std::to_string(visibility.ShadowCasters));
                 m_debugOverlay.Update(metrics, profiler.Snapshot(), memoryProfiler.Snapshot(),
                                       gpuProfile);
             }
@@ -534,7 +555,7 @@ void Application::ReloadRenderer()
     profiling::MemoryTagScope backendTag(
         m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL" : "Vulkan");
     m_backend->Init(*m_window, m_desc.Renderer);
-    m_sceneRenderer = SceneRenderer{};
+    m_sceneRenderer.ResetFrameHistory();
 
     const BackendCapabilities capabilities = m_backend->GetCapabilities();
     m_debugOverlay.SetValue("RENDERER", "ADAPTER", capabilities.AdapterName);

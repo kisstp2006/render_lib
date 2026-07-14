@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/asset/AssetGuid.h"
+#include "engine/concurrency/TaskSystem.h"
 #include "engine/resource/CookedResource.h"
 #include "engine/resource/RuntimeAssetRegistry.h"
 
@@ -9,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <typeindex>
@@ -17,6 +19,12 @@
 
 namespace engine::resources
 {
+
+struct AsyncResourceLoadOptions
+{
+    concurrency::TaskPriority Priority = concurrency::TaskPriority::Normal;
+    concurrency::CancellationToken Cancellation;
+};
 
 struct ResourceLoadContext
 {
@@ -71,6 +79,36 @@ class ResourceManager
     }
 
     template <typename ResourceType>
+    concurrency::AsyncResult<std::shared_ptr<ResourceType>> LoadAsync(
+        assets::AssetHandle<ResourceType> handle, AsyncResourceLoadOptions options = {})
+    {
+        concurrency::TaskSystem* tasks = m_tasks ? m_tasks : &concurrency::TaskSystem::Global();
+        return tasks->SubmitFuture(
+            [this, handle](const concurrency::CancellationToken &cancellation) {
+                cancellation.ThrowIfCancellationRequested();
+                std::string error;
+                std::shared_ptr<ResourceType> resource = Load(handle, &error);
+                if (!resource)
+                    throw std::runtime_error(error.empty() ? "Asynchronous resource load failed" : error);
+                cancellation.ThrowIfCancellationRequested();
+                return resource;
+            },
+            options.Priority, std::move(options.Cancellation));
+    }
+
+    template <typename ResourceType>
+    concurrency::AsyncResult<std::shared_ptr<ResourceType>> LoadAsync(
+        assets::AssetGuid guid, AsyncResourceLoadOptions options = {})
+    {
+        return LoadAsync(assets::AssetHandle<ResourceType>{guid}, std::move(options));
+    }
+
+    void SetTaskSystem(concurrency::TaskSystem *tasks)
+    {
+        m_tasks = tasks;
+    }
+
+    template <typename ResourceType>
     std::shared_ptr<ResourceType> Load(assets::AssetGuid guid, std::string *error = nullptr)
     {
         return Load(assets::AssetHandle<ResourceType>{guid}, error);
@@ -117,6 +155,7 @@ class ResourceManager
     DevelopmentResourceFallback m_developmentFallback;
     bool m_developmentFallbackEnabled = false;
     size_t m_nextListenerToken = 1;
+    concurrency::TaskSystem *m_tasks = nullptr;
 };
 
 } // namespace engine::resources

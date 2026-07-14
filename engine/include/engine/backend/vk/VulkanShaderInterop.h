@@ -112,6 +112,13 @@ struct alignas(16) ObjectConstants
     glm::mat4 PreviousModel{1.0f};
 };
 
+struct alignas(16) BoundsDebugConstants
+{
+    glm::vec4 Minimum{0.0f};
+    glm::vec4 Maximum{0.0f};
+    glm::vec4 Color{0.1f, 3.0f, 0.25f, 1.0f};
+};
+
 struct alignas(16) EnvironmentBakeConstants
 {
     glm::vec4 SunDirectionIntensity{0.0f, -1.0f, 0.0f, 80.0f};
@@ -155,6 +162,7 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 static_assert(sizeof(ShadowUniforms) == 80);
 static_assert(sizeof(MaterialUniforms) == 64);
 static_assert(sizeof(ObjectConstants) == 128);
+static_assert(sizeof(BoundsDebugConstants) == 48);
 static_assert(sizeof(EnvironmentBakeConstants) == 128);
 static_assert(sizeof(PostUniforms) == 112);
 static_assert(sizeof(BloomConstants) == 16);

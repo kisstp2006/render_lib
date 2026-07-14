@@ -39,6 +39,7 @@ public:
     {
         return GLShader::CacheStatistics();
     }
+    rendergraph::Statistics GetRenderGraphStats() const override { return m_renderGraph.Stats(); }
     debug::FrameDebugSnapshot GetFrameDebugSnapshot() const override;
     bool CaptureFrameDebugResource(uint64_t resourceId, uint32_t mipLevel,
                                    uint32_t layer,
@@ -82,6 +83,8 @@ private:
     Window* m_window = nullptr;
     PresentMode m_presentMode = PresentMode::VSync;
     BackendCapabilities m_capabilities;
+    rendergraph::Config m_renderGraphConfig;
+    rendergraph::RenderGraph m_renderGraph;
 
     std::unique_ptr<GLShader> m_pbrShader;
     std::unique_ptr<GLShader> m_shadowShader;
@@ -93,6 +96,7 @@ private:
     std::unique_ptr<GLShader> m_fxaaShader;
     std::unique_ptr<GLShader> m_postShader;
     std::unique_ptr<GLShader> m_debugOverlayShader;
+    std::unique_ptr<GLShader> m_boundsDebugShader;
 
     std::unique_ptr<GLEnvironment> m_environment;
 
@@ -217,6 +221,8 @@ private:
     std::vector<BloomLevel> m_bloomChain;
 
     unsigned int m_emptyVao = 0;
+    unsigned int m_boundsDebugVao = 0;
+    unsigned int m_boundsDebugVbo = 0;
     std::array<unsigned int, 2> m_debugOverlayTextures{};
     uint32_t m_debugOverlayTextureIndex = 0;
 

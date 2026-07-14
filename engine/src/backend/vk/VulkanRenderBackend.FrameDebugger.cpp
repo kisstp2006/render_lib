@@ -244,23 +244,7 @@ debug::FrameDebugSnapshot VulkanRenderBackend::GetFrameDebugSnapshot() const
     resources.push_back(Resource(kPostLdr, "Post Tonemap LDR", m_ldrImages[imageIndex],
         FrameDebugVisualization::Color, m_hasFrameDebugFrame && m_lastFrameDebugFxaaActive));
 
-    snapshot.Passes.push_back({"Environment / IBL Update", {},
-        {kEnvironment, kIrradiance, kPrefilter, kBrdf}});
-    snapshot.Passes.push_back({"Shadows/Directional", {},
-        std::vector<uint64_t>(kDirectionalShadows.begin(), kDirectionalShadows.end())});
-    snapshot.Passes.push_back({"Shadows/Local lights", {kCookies},
-        {kLocalShadow, kPointShadow}});
-    std::vector<uint64_t> mainInputs(kDirectionalShadows.begin(), kDirectionalShadows.end());
-    mainInputs.insert(mainInputs.end(), {kLocalShadow, kPointShadow, kCookies,
-        kIrradiance, kPrefilter, kBrdf});
-    snapshot.Passes.push_back({"Main HDR", std::move(mainInputs), {kHdr, kVelocity, kDepth}});
-    std::vector<uint64_t> postInputs{kHdr, kVelocity, kDepth, kTaaColor[0], kTaaColor[1],
-                                     kTaaDepth[0], kTaaDepth[1]};
-    std::vector<uint64_t> postOutputs{kPostLdr, kTaaColor[0], kTaaColor[1],
-                                      kTaaDepth[0], kTaaDepth[1]};
-    postOutputs.insert(postOutputs.end(), kBloom.begin(), kBloom.end());
-    snapshot.Passes.push_back({"Post process", std::move(postInputs), std::move(postOutputs)});
-    snapshot.Passes.push_back({"Debug UI", {kPostLdr}, {}});
+    m_renderGraph.PopulateFrameDebugSnapshot(snapshot);
     return snapshot;
 }
 

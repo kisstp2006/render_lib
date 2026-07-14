@@ -119,6 +119,22 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
         config.EnablePipelineCache && programBinaryFormats > 0,
         config.ClearPipelineCache);
 
+    m_renderGraphConfig = {};
+    m_renderGraphConfig.Enabled = config.EnableRenderGraph;
+    m_renderGraphConfig.Validation = config.ValidateRenderGraph;
+    m_renderGraphConfig.TransientAliasing = config.EnableTransientAliasing;
+    if (!config.RenderGraphConfigPath.empty())
+    {
+        std::string graphError;
+        if (!rendergraph::LoadConfig(config.RenderGraphConfigPath,
+                                     m_renderGraphConfig, &graphError))
+            throw std::runtime_error(graphError);
+        m_renderGraphConfig.Enabled = m_renderGraphConfig.Enabled && config.EnableRenderGraph;
+        m_renderGraphConfig.Validation = m_renderGraphConfig.Validation && config.ValidateRenderGraph;
+        m_renderGraphConfig.TransientAliasing = m_renderGraphConfig.TransientAliasing &&
+                                                config.EnableTransientAliasing;
+    }
+
     log::Info("OpenGL GPU: " + raw.Device.DeviceName + " (" + raw.Device.VendorName +
               ", " + raw.Device.ApiVersion + ", tier " +
               GpuFeatureTierName(m_capabilities.Gpu.Tier) + ")");
@@ -149,11 +165,27 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     m_fxaaShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/post/fxaa.frag");
     m_postShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/post/post.frag");
     m_debugOverlayShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/debug/overlay.frag");
+    m_boundsDebugShader = std::make_unique<GLShader>(shaderDir + "/gl/debug/bounds.vert",
+                                                     shaderDir + "/gl/debug/bounds.frag");
     m_environment = std::make_unique<GLEnvironment>(shaderDir);
 
     glGenVertexArrays(1, &m_emptyVao);
     glBindVertexArray(m_emptyVao);
     gl_debug::LabelObject(GL_VERTEX_ARRAY, m_emptyVao, "Fullscreen Triangle VAO");
+    glBindVertexArray(0);
+    constexpr float boundsLines[] = {
+        0,0,0, 1,0,0,  1,0,0, 1,1,0,  1,1,0, 0,1,0,  0,1,0, 0,0,0,
+        0,0,1, 1,0,1,  1,0,1, 1,1,1,  1,1,1, 0,1,1,  0,1,1, 0,0,1,
+        0,0,0, 0,0,1,  1,0,0, 1,0,1,  1,1,0, 1,1,1,  0,1,0, 0,1,1};
+    glGenVertexArrays(1, &m_boundsDebugVao);
+    glGenBuffers(1, &m_boundsDebugVbo);
+    glBindVertexArray(m_boundsDebugVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_boundsDebugVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(boundsLines), boundsLines, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+    gl_debug::LabelObject(GL_VERTEX_ARRAY, m_boundsDebugVao, "Visibility Bounds Debug VAO");
+    gl_debug::LabelObject(GL_BUFFER, m_boundsDebugVbo, "Visibility Bounds Debug Vertices");
     glBindVertexArray(0);
     const auto white = textures::MakeSolidColor({1.0f, 1.0f, 1.0f, 1.0f}, false);
     const auto flatNormal = textures::MakeFlatNormal();
@@ -231,10 +263,13 @@ void GLRenderBackend::Shutdown()
     m_fxaaShader.reset();
     m_postShader.reset();
     m_debugOverlayShader.reset();
+    m_boundsDebugShader.reset();
     DestroySceneTargets();
     DestroyLocalLightResources();
 
     if (m_emptyVao) glDeleteVertexArrays(1, &m_emptyVao);
+    if (m_boundsDebugVao) glDeleteVertexArrays(1, &m_boundsDebugVao);
+    if (m_boundsDebugVbo) glDeleteBuffers(1, &m_boundsDebugVbo);
     glDeleteTextures(static_cast<GLsizei>(m_debugOverlayTextures.size()),
                      m_debugOverlayTextures.data());
     m_debugOverlayTextures.fill(0);
@@ -244,6 +279,8 @@ void GLRenderBackend::Shutdown()
     DestroyGpuProfilerQueries();
     m_exposurePbos[0] = m_exposurePbos[1] = 0;
     m_emptyVao = 0;
+    m_boundsDebugVao = 0;
+    m_boundsDebugVbo = 0;
     m_shadowMaps.fill(0);
     m_shadowFbo = 0;
     m_width = 0;

@@ -4,6 +4,7 @@
 #include "engine/core/Log.h"
 #include "engine/render/SceneRenderer.h"
 #include "engine/render/Exposure.h"
+#include "engine/render/RendererFrameGraph.h"
 #include "engine/render/TemporalAA.h"
 #include "engine/profiling/CpuProfiler.h"
 #include "engine/scene/Scene.h"
@@ -14,7 +15,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace engine {
@@ -31,6 +34,32 @@ constexpr int kUnitEmissive = 8;
 constexpr int kUnitOcclusion = 9;
 constexpr std::array<int, kShadowCascadeCount> kUnitCascades{0, 10, 11, 12};
 
+void ApplyGraphBarriers(const rendergraph::CompiledPass& pass)
+{
+    GLbitfield bits = 0;
+    for (const rendergraph::Barrier& barrier : pass.Barriers)
+    {
+        using rendergraph::ResourceState;
+        if (barrier.Before == ResourceState::ShaderWrite ||
+            barrier.After == ResourceState::ShaderWrite)
+            bits |= GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
+        if (barrier.After == ResourceState::ShaderRead ||
+            barrier.After == ResourceState::DepthRead)
+            bits |= GL_TEXTURE_FETCH_BARRIER_BIT;
+        if (barrier.Before == ResourceState::ColorAttachment ||
+            barrier.Before == ResourceState::DepthWrite ||
+            barrier.After == ResourceState::ColorAttachment ||
+            barrier.After == ResourceState::DepthWrite)
+            bits |= GL_FRAMEBUFFER_BARRIER_BIT;
+        if (barrier.Before == ResourceState::TransferDestination ||
+            barrier.After == ResourceState::TransferSource ||
+            barrier.After == ResourceState::TransferDestination)
+            bits |= GL_TEXTURE_UPDATE_BARRIER_BIT;
+    }
+    if (bits != 0)
+        glMemoryBarrier(bits);
+}
+
 } // namespace
 
 void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
@@ -39,11 +68,6 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("OpenGL.RenderFrame", "Renderer/OpenGL");
     const Scene& scene = *frame.SceneData;
     const Camera& camera = *frame.CameraData;
-    {
-        gl_debug::ScopedGroup marker("Environment / IBL Update");
-        ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment", "Renderer/OpenGL");
-        m_environment->EnsureBaked(scene.Sun, scene.Sky, scene.Environment);
-    }
     BeginGpuProfilerFrame();
 
     const PostProcessSettings& pp = scene.PostProcess;
@@ -75,7 +99,14 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     const bool sunShadowsActive = frame.SunShadowsActive;
     const CascadeShadowData& cascades = frame.Cascades;
 
+    const auto environmentPass = [&]() {
+        gl_debug::ScopedGroup marker("Environment / IBL Update");
+        ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment", "Renderer/OpenGL");
+        m_environment->EnsureBaked(scene.Sun, scene.Sky, scene.Environment);
+    };
+
     // --- Four-cascade sun shadow pass ---
+    const auto directionalShadowPass = [&]() {
     BeginGpuProfilerPass(DirectionalShadowPass);
     {
         gl_debug::ScopedGroup marker("Shadows / Directional Cascades");
@@ -93,8 +124,9 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
                 glViewport(0, 0, m_shadowSizes[cascade], m_shadowSizes[cascade]);
                 glClear(GL_DEPTH_BUFFER_BIT);
                 m_shadowShader->SetMat4("uLightSpaceMatrix", cascades.LightMatrices[cascade]);
-                for (const auto& instance : scene.Instances())
+                for (const PreparedRenderCommand& command : frame.ShadowCommands)
                 {
+                    const MeshInstance& instance = *command.Source;
                     if (!instance.CastsShadows)
                         continue;
                     m_shadowShader->SetMat4("uModel", instance.Transform);
@@ -113,15 +145,19 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         }
     }
     EndGpuProfilerPass();
+    };
 
+    const auto localShadowPass = [&]() {
     BeginGpuProfilerPass(LocalShadowPass);
     {
         gl_debug::ScopedGroup marker("Shadows / Local Lights");
         RenderLocalLightShadows(frame);
     }
     EndGpuProfilerPass();
+    };
 
     // --- Main HDR pass (MSAA) ---
+    const auto mainHdrPass = [&]() {
     {
     gl_debug::ScopedGroup marker("Main HDR / Geometry + Sky + Resolve");
     profiling::CpuProfileScope mainHdrScope("MainHDR", "Renderer/OpenGL");
@@ -178,8 +214,9 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     m_pbrShader->SetInt("uEmissiveMap", kUnitEmissive);
     m_pbrShader->SetInt("uOcclusionMap", kUnitOcclusion);
 
-    for (const auto& instance : scene.Instances())
+    for (const PreparedRenderCommand& command : frame.RenderCommands)
     {
+        const MeshInstance& instance = *command.Source;
         m_pbrShader->SetMat4("uModel", instance.Transform);
         const auto previousTransform = instance.TemporalId != 0
             ? m_previousTransforms.find(instance.TemporalId) : m_previousTransforms.end();
@@ -261,6 +298,32 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);
 
+    if (!frame.VisibilityDebug.empty())
+    {
+        gl_debug::ScopedGroup boundsMarker("Visibility / Bounds Debug");
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        m_boundsDebugShader->Use();
+        m_boundsDebugShader->SetMat4("uViewProjection", currentViewProjection);
+        glBindVertexArray(m_boundsDebugVao);
+        for (const VisibilityDebugBounds& debugBounds : frame.VisibilityDebug)
+        {
+            glm::vec3 color{0.1f, 3.0f, 0.25f};
+            if (debugBounds.Classification == VisibilityClassification::FrustumCulled)
+                color = {3.0f, 0.12f, 0.08f};
+            else if (debugBounds.Classification == VisibilityClassification::DistanceCulled)
+                color = {3.0f, 1.4f, 0.05f};
+            m_boundsDebugShader->SetVec3("uBoundsMinimum", debugBounds.Bounds.Minimum);
+            m_boundsDebugShader->SetVec3("uBoundsMaximum", debugBounds.Bounds.Maximum);
+            m_boundsDebugShader->SetVec3("uColor", color);
+            glDrawArrays(GL_LINES, 0, 24);
+            ++m_gpuDrawCallsThisFrame;
+        }
+        glBindVertexArray(0);
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+    }
+
     // --- Resolve MSAA -> HDR texture ---
     glBindFramebuffer(GL_READ_FRAMEBUFFER, m_msaaFbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_resolveFbo);
@@ -274,7 +337,9 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     EndGpuProfilerPass();
     mainHdrScope.End();
     }
+    };
 
+    const auto postProcessPass = [&]() {
     {
     gl_debug::ScopedGroup marker("Post Process");
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("PostProcessing", "Renderer/OpenGL");
@@ -413,12 +478,45 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         SaveHdrScreenshot(postSourceTexture);
     EndGpuProfilerPass();
     }
+    };
+    const auto debugUiPass = [&]() {
     BeginGpuProfilerPass(DebugUiPass);
     {
         gl_debug::ScopedGroup marker("Debug UI");
         RenderDebugOverlay(frame);
     }
     EndGpuProfilerPass();
+    };
+
+    rendergraph::RendererFrameGraphFeatures graphFeatures;
+    graphFeatures.Width = static_cast<uint32_t>(std::max(m_width, 1));
+    graphFeatures.Height = static_cast<uint32_t>(std::max(m_height, 1));
+    graphFeatures.MsaaSamples = static_cast<uint32_t>(std::max(m_msaaSamples, 1));
+    graphFeatures.BloomLevels = static_cast<uint32_t>(m_bloomChain.size());
+    graphFeatures.SunShadows = sunShadowsActive;
+    graphFeatures.LocalShadows = !scene.PointLights().empty() || !scene.SpotLights().empty() ||
+                                 !scene.AreaLights().empty();
+    graphFeatures.TemporalAA = taaActive;
+    graphFeatures.TaaReadIndex = static_cast<uint32_t>(m_taaHistoryIndex);
+    graphFeatures.TaaWriteIndex = static_cast<uint32_t>((m_taaHistoryIndex + 1) % 2);
+    graphFeatures.Bloom = pp.Enabled && !m_bloomChain.empty();
+    graphFeatures.Fxaa = pp.Enabled && pp.AntiAliasing == AntiAliasingMode::Fxaa;
+    graphFeatures.DebugUi = true;
+    rendergraph::RendererFrameGraphCallbacks graphCallbacks;
+    graphCallbacks[rendergraph::RendererPass::Environment] = environmentPass;
+    graphCallbacks[rendergraph::RendererPass::DirectionalShadows] = directionalShadowPass;
+    graphCallbacks[rendergraph::RendererPass::LocalShadows] = localShadowPass;
+    graphCallbacks[rendergraph::RendererPass::MainHdr] = mainHdrPass;
+    graphCallbacks[rendergraph::RendererPass::PostProcess] = postProcessPass;
+    graphCallbacks[rendergraph::RendererPass::DebugUi] = debugUiPass;
+    std::string graphError;
+    if (!rendergraph::BuildRendererFrameGraph(m_renderGraph, m_renderGraphConfig,
+                                               graphFeatures, std::move(graphCallbacks),
+                                               &graphError))
+        throw std::runtime_error("OpenGL render graph: " + graphError);
+    m_renderGraph.ExecutePhase(rendergraph::PassPhase::Prepare, ApplyGraphBarriers);
+    m_renderGraph.ExecutePhase(rendergraph::PassPhase::Render, ApplyGraphBarriers);
+
     EndGpuProfilerFrame(scene);
     glEnable(GL_DEPTH_TEST);
 

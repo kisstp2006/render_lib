@@ -3,6 +3,7 @@
 #include <array>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 #include "engine/scene/RenderSettings.h"
 #include "engine/scene/Texture.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/render/AsyncRenderResources.h"
 #include "engine/profiling/GpuProfiler.h"
 
 namespace engine {
@@ -46,6 +48,7 @@ public:
     BackendCapabilities GetCapabilities() const override { return m_capabilities; }
     BackendResourceStats GetResourceStats() const override;
     PipelineCacheStatistics GetPipelineCacheStats() const override { return m_pipelineCacheStats; }
+    rendergraph::Statistics GetRenderGraphStats() const override { return m_renderGraph.Stats(); }
     debug::FrameDebugSnapshot GetFrameDebugSnapshot() const override;
     bool CaptureFrameDebugResource(uint64_t resourceId, uint32_t mipLevel,
                                    uint32_t layer,
@@ -60,7 +63,8 @@ private:
     {
         std::optional<uint32_t> Graphics;
         std::optional<uint32_t> Present;
-        bool IsComplete() const { return Graphics.has_value() && Present.has_value(); }
+        std::optional<uint32_t> Transfer;
+        bool IsComplete() const { return Graphics.has_value() && Present.has_value() && Transfer.has_value(); }
     };
 
     struct GpuMesh
@@ -108,7 +112,10 @@ private:
     void CreateShaderInfrastructure();
     void DestroyShaderInfrastructure();
     VkShaderModule LoadShader(const std::filesystem::path& relativePath,
-                              const std::vector<ShaderDefine>& defines = {});
+                              const std::vector<ShaderDefine>& defines = {},
+                              PipelineCacheStatistics* statistics = nullptr);
+    std::vector<VkShaderModule> LoadShadersParallel(
+        const std::vector<std::filesystem::path>& relativePaths);
     void CreateGraphicsPipeline();
     void DestroyGraphicsPipeline();
     void CreatePostInfrastructure();
@@ -160,6 +167,13 @@ private:
     void ReadPerformanceQueries(uint32_t frameIndex);
     profiling::GpuMemoryStatistics QueryGpuMemory() const;
     void CreateCommandObjects();
+    void CreateAsyncResourceInfrastructure();
+    void DestroyAsyncResourceInfrastructure();
+    void ReclaimTransferUploads();
+    uint64_t QueueBufferUploads(const std::vector<std::pair<const void*, std::pair<VkDeviceSize, VkBuffer>>>& uploads);
+    uint64_t QueueTextureUpload(const void* pixels, VkDeviceSize byteCount,
+                                VkImage image, uint32_t mipLevels,
+                                const std::vector<VkBufferImageCopy>& copyRegions);
     void RecreateSwapchain(int width, int height);
     void DestroySwapchain();
     void LoadDebugUtils();
@@ -187,6 +201,7 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;
+    VkQueue m_transferQueue = VK_NULL_HANDLE;
     PFN_vkSetDebugUtilsObjectNameEXT m_setDebugObjectName = nullptr;
     PFN_vkCmdBeginDebugUtilsLabelEXT m_beginDebugLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT m_endDebugLabel = nullptr;
@@ -207,24 +222,51 @@ private:
     VkSampleCountFlagBits m_msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 
     vulkan::ResourceAllocator m_resources;
+    static constexpr uint64_t kStagingRingBytes = 64ull * 1024ull * 1024ull;
+    static constexpr uint64_t kFrameArenaBytes = 4ull * 1024ull * 1024ull;
+    VkCommandPool m_transferCommandPool = VK_NULL_HANDLE;
+    VkSemaphore m_transferTimeline = VK_NULL_HANDLE;
+    uint64_t m_transferTimelineValue = 0;
+    uint64_t m_pendingTransferWaitValue = 0;
+    vulkan::Buffer m_stagingRingBuffer;
+    void* m_stagingRingMapped = nullptr;
+    vulkan::Buffer m_frameArenaBuffer;
+    void* m_frameArenaMapped = nullptr;
+    std::unique_ptr<render::StagingRingAllocator> m_stagingRing;
+    std::unique_ptr<render::FrameGpuArena> m_frameGpuArena;
+    render::DeferredReleaseQueue m_deferredRelease;
+    struct PendingTransferCommand
+    {
+        VkCommandBuffer Command = VK_NULL_HANDLE;
+        uint64_t TimelineValue = 0;
+    };
+    std::vector<PendingTransferCommand> m_pendingTransferCommands;
     vulkan::PipelineCacheStore m_pipelineCache;
     PipelineCacheStatistics m_pipelineCacheStats;
+    rendergraph::Config m_renderGraphConfig;
+    rendergraph::RenderGraph m_renderGraph;
     std::filesystem::path m_shaderCacheDirectory;
+    std::unique_ptr<concurrency::TaskSystem> m_pipelineTasks;
+    std::mutex m_shaderLoadMutex;
     VkShaderModule m_pbrVertexShader = VK_NULL_HANDLE;
     VkShaderModule m_pbrFragmentShader = VK_NULL_HANDLE;
     VkShaderModule m_shadowVertexShader = VK_NULL_HANDLE;
     VkShaderModule m_shadowFragmentShader = VK_NULL_HANDLE;
     VkShaderModule m_skyVertexShader = VK_NULL_HANDLE;
     VkShaderModule m_skyFragmentShader = VK_NULL_HANDLE;
+    VkShaderModule m_boundsDebugVertexShader = VK_NULL_HANDLE;
+    VkShaderModule m_boundsDebugFragmentShader = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_frameDescriptorLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_materialDescriptorLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowDescriptorLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
     VkPipelineLayout m_pbrPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout m_shadowPipelineLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_boundsDebugPipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pbrPipeline = VK_NULL_HANDLE;
     VkPipeline m_skyPipeline = VK_NULL_HANDLE;
     VkPipeline m_shadowPipeline = VK_NULL_HANDLE;
+    VkPipeline m_boundsDebugPipeline = VK_NULL_HANDLE;
 
     VkShaderModule m_fullscreenVertexShader = VK_NULL_HANDLE;
     VkShaderModule m_postFragmentShader = VK_NULL_HANDLE;

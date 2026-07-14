@@ -210,6 +210,10 @@ bool SaveApplicationConfig(const std::filesystem::path& path, const ApplicationD
          << "renderer.driver_workarounds=" << renderer.EnableDriverWorkarounds << '\n'
          << "renderer.pipeline_cache=" << renderer.EnablePipelineCache << '\n'
          << "renderer.pipeline_cache_directory=" << std::quoted(renderer.PipelineCacheDirectory) << '\n'
+         << "renderer.render_graph=" << renderer.EnableRenderGraph << '\n'
+         << "renderer.render_graph_validation=" << renderer.ValidateRenderGraph << '\n'
+         << "renderer.transient_aliasing=" << renderer.EnableTransientAliasing << '\n'
+         << "renderer.render_graph_config=" << std::quoted(renderer.RenderGraphConfigPath) << '\n'
          << "application.unfocused=" << Name(config.Unfocused) << '\n'
          << "application.max_delta=" << config.MaximumDeltaSeconds << '\n'
          << "application.fixed_delta=" << config.FixedDeltaSeconds << '\n'
@@ -320,6 +324,14 @@ bool LoadApplicationConfig(const std::filesystem::path& path, ApplicationDesc& c
             valid = ParseBool(value, parsed.Renderer.EnablePipelineCache);
         else if (key == "renderer.pipeline_cache_directory")
             valid = ParseString(value, parsed.Renderer.PipelineCacheDirectory);
+        else if (key == "renderer.render_graph")
+            valid = ParseBool(value, parsed.Renderer.EnableRenderGraph);
+        else if (key == "renderer.render_graph_validation")
+            valid = ParseBool(value, parsed.Renderer.ValidateRenderGraph);
+        else if (key == "renderer.transient_aliasing")
+            valid = ParseBool(value, parsed.Renderer.EnableTransientAliasing);
+        else if (key == "renderer.render_graph_config")
+            valid = ParseString(value, parsed.Renderer.RenderGraphConfigPath);
         else if (key == "application.unfocused")
             valid = ParseEnum(value,
                               {{"continue", UnfocusedBehavior::Continue},

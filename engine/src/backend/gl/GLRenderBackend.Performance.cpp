@@ -103,6 +103,8 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
             ++stats.LiveNativeAllocations;
     };
     countHandle(m_emptyVao);
+    countHandle(m_boundsDebugVao);
+    countHandle(m_boundsDebugVbo);
     countHandle(m_shadowFbo);
     for (const unsigned int handle : m_shadowMaps) countHandle(handle);
     countHandle(m_localShadowAtlasFbo);
@@ -126,6 +128,7 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
         static_cast<uint64_t>(m_taaShader != nullptr) +
         static_cast<uint64_t>(m_fxaaShader != nullptr) +
         static_cast<uint64_t>(m_postShader != nullptr) +
+        static_cast<uint64_t>(m_boundsDebugShader != nullptr) +
         static_cast<uint64_t>(m_debugOverlayShader != nullptr) +
         static_cast<uint64_t>(m_environment != nullptr) +
         static_cast<uint64_t>(m_defaultWhite != nullptr) +
@@ -138,22 +141,28 @@ void GLRenderBackend::CreateGpuProfilerQueries()
     if (!m_gpuTimingEnabled)
         return;
     for (auto& frame : m_gpuPassQueries)
-        glGenQueries(static_cast<GLsizei>(frame.size()), frame.data());
+        for (GLuint& query : frame)
+            glCreateQueries(GL_TIME_ELAPSED, 1, &query);
     if (m_gpuPipelineStatisticsSupported)
         for (auto& frame : m_gpuPipelineQueries)
-            glGenQueries(static_cast<GLsizei>(frame.size()), frame.data());
+            for (uint32_t counter = 0; counter < kGpuPipelineCounterCount; ++counter)
+                glCreateQueries(kPipelineTargets[counter], 1, &frame[counter]);
 }
 
 void GLRenderBackend::DestroyGpuProfilerQueries()
 {
     for (auto& frame : m_gpuPassQueries)
     {
-        glDeleteQueries(static_cast<GLsizei>(frame.size()), frame.data());
+        for (const GLuint query : frame)
+            if (query != 0)
+                glDeleteQueries(1, &query);
         frame.fill(0);
     }
     for (auto& frame : m_gpuPipelineQueries)
     {
-        glDeleteQueries(static_cast<GLsizei>(frame.size()), frame.data());
+        for (const GLuint query : frame)
+            if (query != 0)
+                glDeleteQueries(1, &query);
         frame.fill(0);
     }
     m_gpuProfileFrameIssued.fill(false);

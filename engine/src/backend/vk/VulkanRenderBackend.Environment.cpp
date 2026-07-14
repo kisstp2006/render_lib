@@ -208,10 +208,13 @@ void VulkanRenderBackend::CreateEnvironmentInfrastructure()
                                &m_environmentBakePipelineLayout) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create environment bake pipeline layout");
 
-    m_environmentSourceShader = LoadShader("environment/environment_source.comp");
-    m_irradianceShader = LoadShader("environment/irradiance.comp");
-    m_prefilterShader = LoadShader("environment/prefilter.comp");
-    m_brdfShader = LoadShader("environment/brdf_lut.comp");
+    const std::vector<VkShaderModule> shaders = LoadShadersParallel({
+        "environment/environment_source.comp", "environment/irradiance.comp",
+        "environment/prefilter.comp", "environment/brdf_lut.comp"});
+    m_environmentSourceShader = shaders[0];
+    m_irradianceShader = shaders[1];
+    m_prefilterShader = shaders[2];
+    m_brdfShader = shaders[3];
     m_environmentSourcePipeline = CreateComputePipeline(
         m_pipelineCache, m_environmentBakePipelineLayout, m_environmentSourceShader);
     m_irradiancePipeline = CreateComputePipeline(

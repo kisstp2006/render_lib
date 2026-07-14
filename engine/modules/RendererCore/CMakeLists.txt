@@ -6,25 +6,33 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/include/engine/debug/DebugOverlay.h
         ${ENGINE_ROOT}/include/engine/debug/FrameDebugger.h
         ${ENGINE_ROOT}/include/engine/render/CascadedShadows.h
+        ${ENGINE_ROOT}/include/engine/render/AsyncRenderResources.h
         ${ENGINE_ROOT}/include/engine/render/Exposure.h
         ${ENGINE_ROOT}/include/engine/render/GpuTiming.h
         ${ENGINE_ROOT}/include/engine/render/PipelineCache.h
+        ${ENGINE_ROOT}/include/engine/render/RenderGraph.h
+        ${ENGINE_ROOT}/include/engine/render/RendererFrameGraph.h
         ${ENGINE_ROOT}/include/engine/render/GpuCapabilities.h
         ${ENGINE_ROOT}/include/engine/render/SceneRenderer.h
         ${ENGINE_ROOT}/include/engine/render/ShaderSource.h
         ${ENGINE_ROOT}/include/engine/render/TemporalAA.h
         ${ENGINE_ROOT}/include/engine/render/TextureFallback.h
+        ${ENGINE_ROOT}/include/engine/render/Visibility.h
         ${ENGINE_ROOT}/src/debug/DebugOverlay.cpp
         ${ENGINE_ROOT}/src/debug/FrameDebugger.cpp
         ${ENGINE_ROOT}/src/render/CascadedShadows.cpp
+        ${ENGINE_ROOT}/src/render/AsyncRenderResources.cpp
         ${ENGINE_ROOT}/src/render/Exposure.cpp
         ${ENGINE_ROOT}/src/render/GpuTiming.cpp
         ${ENGINE_ROOT}/src/render/PipelineCache.cpp
+        ${ENGINE_ROOT}/src/render/RenderGraph.cpp
+        ${ENGINE_ROOT}/src/render/RendererFrameGraph.cpp
         ${ENGINE_ROOT}/src/render/GpuCapabilities.cpp
         ${ENGINE_ROOT}/src/render/SceneRenderer.cpp
         ${ENGINE_ROOT}/src/render/ShaderSource.cpp
         ${ENGINE_ROOT}/src/render/TemporalAA.cpp
         ${ENGINE_ROOT}/src/render/TextureFallback.cpp
+        ${ENGINE_ROOT}/src/render/Visibility.cpp
     PUBLIC_DEPS
         engine_foundation
         engine_core

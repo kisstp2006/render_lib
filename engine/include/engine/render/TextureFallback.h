@@ -4,6 +4,7 @@
 
 #include "engine/render/GpuCapabilities.h"
 #include "engine/scene/Texture.h"
+#include "engine/scene/Material.h"
 
 namespace engine
 {
@@ -19,5 +20,9 @@ const TextureData* ResolveTextureForGpu(const TextureData& source,
                                        const GpuCapabilityProfile& capabilities,
                                        TextureData& scratch,
                                        std::string* reason = nullptr);
+
+// Conspicuous backend-neutral material used while an asynchronous shader or
+// pipeline permutation is compiling, or after that build failed.
+Material MakeVisibleFallbackMaterial();
 
 } // namespace engine

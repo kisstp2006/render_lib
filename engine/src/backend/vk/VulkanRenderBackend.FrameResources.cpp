@@ -20,8 +20,15 @@ namespace engine {
 
 VkShaderModule VulkanRenderBackend::LoadShader(
     const std::filesystem::path& relativePath,
-    const std::vector<ShaderDefine>& defines)
+    const std::vector<ShaderDefine>& defines,
+    PipelineCacheStatistics* statistics)
 {
+    // Older validation layers have mutable shader-module bookkeeping which is
+    // not reliably concurrent even though native Vulkan creation is. Keep
+    // production compilation parallel, but serialize this diagnostic fallback.
+    std::unique_lock validationLock(m_shaderLoadMutex, std::defer_lock);
+    if (m_validationEnabled)
+        validationLock.lock();
     const std::filesystem::path shaderRoot =
         std::filesystem::path(ENGINE_SHADER_DIR) / "vk";
     const std::filesystem::path cachePath =
@@ -29,22 +36,94 @@ VkShaderModule VulkanRenderBackend::LoadShader(
     VkShaderModule module = vulkan::CompileAndLoadShaderModule(
         m_device, shaderRoot / relativePath, cachePath,
         { shaderRoot, std::filesystem::path(ENGINE_SHADER_DIR) }, defines,
-        m_config.EnablePipelineCache, &m_pipelineCacheStats);
+        m_config.EnablePipelineCache, statistics ? statistics : &m_pipelineCacheStats);
     SetDebugName(VK_OBJECT_TYPE_SHADER_MODULE, reinterpret_cast<uint64_t>(module),
                  "Shader Module: " + relativePath.generic_string());
     return module;
+}
+
+std::vector<VkShaderModule> VulkanRenderBackend::LoadShadersParallel(
+    const std::vector<std::filesystem::path>& relativePaths)
+{
+    if (m_validationEnabled)
+    {
+        std::vector<VkShaderModule> modules;
+        modules.reserve(relativePaths.size());
+        try
+        {
+            for (const std::filesystem::path& path : relativePaths)
+                modules.push_back(LoadShader(path));
+        }
+        catch (...)
+        {
+            for (VkShaderModule module : modules)
+                vkDestroyShaderModule(m_device, module, nullptr);
+            throw;
+        }
+        return modules;
+    }
+
+    std::vector<PipelineCacheStatistics> statistics(relativePaths.size());
+    std::vector<concurrency::AsyncResult<VkShaderModule>> jobs;
+    jobs.reserve(relativePaths.size());
+    for (size_t index = 0; index < relativePaths.size(); ++index)
+    {
+        jobs.push_back(m_pipelineTasks->SubmitFuture(
+            [this, path = relativePaths[index], &statistics, index] {
+                return LoadShader(path, {}, &statistics[index]);
+            }, concurrency::TaskPriority::High));
+    }
+
+    std::vector<VkShaderModule> modules(relativePaths.size(), VK_NULL_HANDLE);
+    std::exception_ptr failure;
+    for (size_t index = 0; index < jobs.size(); ++index)
+    {
+        try
+        {
+            modules[index] = jobs[index].Get();
+        }
+        catch (...)
+        {
+            if (!failure)
+                failure = std::current_exception();
+        }
+    }
+    if (failure)
+    {
+        for (VkShaderModule module : modules)
+            if (module != VK_NULL_HANDLE)
+                vkDestroyShaderModule(m_device, module, nullptr);
+        std::rethrow_exception(failure);
+    }
+    for (const PipelineCacheStatistics& item : statistics)
+    {
+        m_pipelineCacheStats.PersistentCacheLoaded |= item.PersistentCacheLoaded;
+        m_pipelineCacheStats.ShaderPermutationHits += item.ShaderPermutationHits;
+        m_pipelineCacheStats.ShaderPermutationMisses += item.ShaderPermutationMisses;
+        m_pipelineCacheStats.CacheBytesLoaded += item.CacheBytesLoaded;
+        m_pipelineCacheStats.CacheBytesSaved += item.CacheBytesSaved;
+        m_pipelineCacheStats.ShaderCompileMilliseconds += item.ShaderCompileMilliseconds;
+        m_pipelineCacheStats.ShaderCacheLoadMilliseconds += item.ShaderCacheLoadMilliseconds;
+    }
+    return modules;
 }
 
 void VulkanRenderBackend::CreateShaderInfrastructure()
 {
     try
     {
-        m_pbrVertexShader = LoadShader("lighting/pbr.vert");
-        m_pbrFragmentShader = LoadShader("lighting/pbr.frag");
-        m_shadowVertexShader = LoadShader("lighting/shadow.vert");
-        m_shadowFragmentShader = LoadShader("lighting/shadow.frag");
-        m_skyVertexShader = LoadShader("environment/sky.vert");
-        m_skyFragmentShader = LoadShader("environment/sky.frag");
+        const std::vector<VkShaderModule> shaders = LoadShadersParallel({
+            "lighting/pbr.vert", "lighting/pbr.frag", "lighting/shadow.vert",
+            "lighting/shadow.frag", "environment/sky.vert", "environment/sky.frag",
+            "debug/bounds.vert", "debug/bounds.frag"});
+        m_pbrVertexShader = shaders[0];
+        m_pbrFragmentShader = shaders[1];
+        m_shadowVertexShader = shaders[2];
+        m_shadowFragmentShader = shaders[3];
+        m_skyVertexShader = shaders[4];
+        m_skyFragmentShader = shaders[5];
+        m_boundsDebugVertexShader = shaders[6];
+        m_boundsDebugFragmentShader = shaders[7];
 
         const VkShaderStageFlags frameStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         const VkDescriptorSetLayoutBinding frameBindings[] = {
@@ -138,9 +217,25 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
         SetDebugName(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                      reinterpret_cast<uint64_t>(m_pbrPipelineLayout), "PBR Pipeline Layout");
 
+        VkPushConstantRange boundsRange{};
+        boundsRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        boundsRange.offset = 0;
+        boundsRange.size = sizeof(vulkan::BoundsDebugConstants);
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &m_frameDescriptorLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &boundsRange;
+        if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr,
+                                   &m_boundsDebugPipelineLayout) != VK_SUCCESS)
+            throw std::runtime_error("Vulkan: failed to create visibility bounds pipeline layout");
+        SetDebugName(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                     reinterpret_cast<uint64_t>(m_boundsDebugPipelineLayout),
+                     "Visibility Bounds Debug Pipeline Layout");
+
         const VkDescriptorSetLayout shadowSetLayouts[] = {m_shadowDescriptorLayout, m_materialDescriptorLayout};
         pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(std::size(shadowSetLayouts));
         pipelineLayoutInfo.pSetLayouts = shadowSetLayouts;
+        pipelineLayoutInfo.pPushConstantRanges = &objectRange;
         if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_shadowPipelineLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create shadow pipeline layout");
         SetDebugName(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
@@ -159,16 +254,6 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
         if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create descriptor pool");
 
-        m_frameUniformBuffers.reserve(kFramesInFlight);
-        for (int i = 0; i < kFramesInFlight; ++i)
-        {
-            m_frameUniformBuffers.push_back(m_resources.CreateBuffer(
-                sizeof(vulkan::FrameUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
-            m_resources.SetDebugName(m_frameUniformBuffers.back(),
-                "Frame Uniforms " + std::to_string(i));
-        }
-
         std::vector<VkDescriptorSetLayout> frameLayouts(kFramesInFlight, m_frameDescriptorLayout);
         m_frameDescriptorSets.resize(kFramesInFlight);
         VkDescriptorSetAllocateInfo descriptorAllocate{};
@@ -181,7 +266,8 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
 
         for (int i = 0; i < kFramesInFlight; ++i)
         {
-            VkDescriptorBufferInfo bufferInfo{m_frameUniformBuffers[i].Handle, 0, sizeof(vulkan::FrameUniforms)};
+            VkDescriptorBufferInfo bufferInfo{m_frameArenaBuffer.Handle,
+                static_cast<VkDeviceSize>(i) * kFrameArenaBytes, sizeof(vulkan::FrameUniforms)};
             VkWriteDescriptorSet write{};
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             write.dstSet = m_frameDescriptorSets[i];
@@ -202,8 +288,6 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
 void VulkanRenderBackend::DestroyShaderInfrastructure()
 {
     m_frameDescriptorSets.clear();
-    for (vulkan::Buffer& buffer : m_frameUniformBuffers)
-        m_resources.Destroy(buffer);
     m_frameUniformBuffers.clear();
 
     if (m_descriptorPool != VK_NULL_HANDLE)
@@ -213,6 +297,8 @@ void VulkanRenderBackend::DestroyShaderInfrastructure()
         vkDestroyPipelineLayout(m_device, m_pbrPipelineLayout, nullptr);
     if (m_shadowPipelineLayout != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(m_device, m_shadowPipelineLayout, nullptr);
+    if (m_boundsDebugPipelineLayout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(m_device, m_boundsDebugPipelineLayout, nullptr);
     if (m_shadowDescriptorLayout != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(m_device, m_shadowDescriptorLayout, nullptr);
     if (m_materialDescriptorLayout != VK_NULL_HANDLE)
@@ -231,9 +317,14 @@ void VulkanRenderBackend::DestroyShaderInfrastructure()
         vkDestroyShaderModule(m_device, m_skyFragmentShader, nullptr);
     if (m_skyVertexShader != VK_NULL_HANDLE)
         vkDestroyShaderModule(m_device, m_skyVertexShader, nullptr);
+    if (m_boundsDebugFragmentShader != VK_NULL_HANDLE)
+        vkDestroyShaderModule(m_device, m_boundsDebugFragmentShader, nullptr);
+    if (m_boundsDebugVertexShader != VK_NULL_HANDLE)
+        vkDestroyShaderModule(m_device, m_boundsDebugVertexShader, nullptr);
 
     m_pbrPipelineLayout = VK_NULL_HANDLE;
     m_shadowPipelineLayout = VK_NULL_HANDLE;
+    m_boundsDebugPipelineLayout = VK_NULL_HANDLE;
     m_descriptorPool = VK_NULL_HANDLE;
     m_materialDescriptorLayout = VK_NULL_HANDLE;
     m_frameDescriptorLayout = VK_NULL_HANDLE;
@@ -244,6 +335,8 @@ void VulkanRenderBackend::DestroyShaderInfrastructure()
     m_pbrVertexShader = VK_NULL_HANDLE;
     m_skyFragmentShader = VK_NULL_HANDLE;
     m_skyVertexShader = VK_NULL_HANDLE;
+    m_boundsDebugFragmentShader = VK_NULL_HANDLE;
+    m_boundsDebugVertexShader = VK_NULL_HANDLE;
 }
 
 void VulkanRenderBackend::UpdateFrameUniforms(const RenderFrameData& frame)
@@ -380,14 +473,12 @@ void VulkanRenderBackend::UpdateFrameUniforms(const RenderFrameData& frame)
     uniforms.LightCounts = {
         frame.LocalLights.PointCount, frame.LocalLights.SpotCount, frame.LocalLights.AreaCount, 0u};
 
-    void* mapped = nullptr;
-    if (vkMapMemory(m_device, m_frameUniformBuffers[m_currentFrame].Memory, 0,
-                    sizeof(uniforms), 0, &mapped) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Vulkan: failed to map frame uniform buffer");
-    }
-    std::memcpy(mapped, &uniforms, sizeof(uniforms));
-    vkUnmapMemory(m_device, m_frameUniformBuffers[m_currentFrame].Memory);
+    const render::ArenaAllocation allocation = m_frameGpuArena->Allocate(
+        m_currentFrame, sizeof(uniforms), 256);
+    if (!allocation)
+        throw std::runtime_error("Vulkan: per-frame GPU arena exhausted by frame uniforms");
+    std::memcpy(static_cast<std::byte*>(m_frameArenaMapped) + allocation.Offset,
+                &uniforms, sizeof(uniforms));
 }
 
 } // namespace engine

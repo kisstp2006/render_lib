@@ -18,6 +18,11 @@ atlas, HDR color, depth, velocity, TAA histories, bloom pyramid, post LDR and
 IBL cubemaps/LUT. Native multisampled renderbuffers/images are listed as
 metadata-only; their resolved textures are previewable.
 
+Pass order and input/output links now come directly from the compiled render
+graph. The view also reports per-pass barrier counts, transient first/last-use
+intervals and alias slots, plus logical/physical transient memory, bytes saved
+by aliasing and graph compile time. See the [render-graph guide](render-graph.md).
+
 Preview capture is intentionally not live. OpenGL performs an explicit texture
 readback; Vulkan transitions only the selected subresource, copies it to a
 retained host-visible diagnostic buffer, and restores the original layout.

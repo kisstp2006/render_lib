@@ -62,14 +62,18 @@ void EmitBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrier2& bar
 
 void VulkanRenderBackend::CreatePostInfrastructure()
 {
-    m_fullscreenVertexShader = LoadShader("post/fullscreen.vert");
-    m_postFragmentShader = LoadShader("post/post.frag");
-    m_fxaaFragmentShader = LoadShader("post/fxaa.frag");
-    m_bloomDownsampleShader = LoadShader("post/bloom_downsample.comp");
-    m_bloomUpsampleShader = LoadShader("post/bloom_upsample.comp");
-    m_taaFragmentShader = LoadShader("post/taa_resolve.frag");
-    m_exposureShader = LoadShader("post/auto_exposure.comp");
-    m_debugOverlayFragmentShader = LoadShader("debug/overlay.frag");
+    const std::vector<VkShaderModule> shaders = LoadShadersParallel({
+        "post/fullscreen.vert", "post/post.frag", "post/fxaa.frag",
+        "post/bloom_downsample.comp", "post/bloom_upsample.comp",
+        "post/taa_resolve.frag", "post/auto_exposure.comp", "debug/overlay.frag"});
+    m_fullscreenVertexShader = shaders[0];
+    m_postFragmentShader = shaders[1];
+    m_fxaaFragmentShader = shaders[2];
+    m_bloomDownsampleShader = shaders[3];
+    m_bloomUpsampleShader = shaders[4];
+    m_taaFragmentShader = shaders[5];
+    m_exposureShader = shaders[6];
+    m_debugOverlayFragmentShader = shaders[7];
 
     const VkDescriptorSetLayoutBinding postBindings[] = {
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1007,41 +1011,6 @@ const vulkan::Image& VulkanRenderBackend::RecordTemporalAA(
     const PostProcessSettings& settings = frame.SceneData->PostProcess;
     const Camera& camera = *frame.CameraData;
 
-    const VkImageMemoryBarrier2 inputBarriers[] = {
-        ImageBarrier(m_velocityImages[imageIndex].Handle,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
-        ImageBarrier(m_depthImages[imageIndex].Handle,
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT),
-        ImageBarrier(m_taaHistoryColor[writeHistory].Handle,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
-        ImageBarrier(m_taaHistoryDepth[writeHistory].Handle,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
-    };
-    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(std::size(inputBarriers));
-    dependency.pImageMemoryBarriers = inputBarriers;
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
-
     VkRenderingAttachmentInfo attachments[2]{};
     for (VkRenderingAttachmentInfo& attachment : attachments)
     {
@@ -1098,6 +1067,7 @@ const vulkan::Image& VulkanRenderBackend::RecordTemporalAA(
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
     };
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dependency.imageMemoryBarrierCount = static_cast<uint32_t>(std::size(outputBarriers));
     dependency.pImageMemoryBarriers = outputBarriers;
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
@@ -1184,12 +1154,6 @@ void VulkanRenderBackend::RecordPost(VkCommandBuffer commandBuffer,
     BeginDebugLabel(commandBuffer, fxaa ? "Post / Tonemap + Color Grade + FXAA"
                                        : "Post / Tonemap + Color Grade",
                     {0.90f, 0.55f, 0.15f, 1.0f});
-    EmitBarrier(commandBuffer, ImageBarrier(
-        m_swapchainImages[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT));
-
     VkViewport viewport{};
     viewport.width = static_cast<float>(m_swapchainExtent.width);
     viewport.height = static_cast<float>(m_swapchainExtent.height);

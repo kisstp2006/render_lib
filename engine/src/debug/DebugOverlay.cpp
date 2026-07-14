@@ -525,6 +525,13 @@ void DebugOverlay::DrawFrameDebuggerPanel(
     Text(188, 14, Shorten(m_frameDebugSnapshot.BackendName, 28), heading, 1);
     Text(700, 14, "F4 HIDE  R CAPTURE", dim, 1);
     Text(14, 32, "LEFT/RIGHT PASS  UP/DOWN RESOURCE  ,/. MIP  [/] LAYER", dim, 1);
+    constexpr double megabyte = 1024.0 * 1024.0;
+    Text(570, 32, "GRAPH L/P " +
+                       Number(static_cast<double>(m_frameDebugSnapshot.GraphLogicalTransientBytes) / megabyte, 1) + "/" +
+                       Number(static_cast<double>(m_frameDebugSnapshot.GraphPhysicalTransientBytes) / megabyte, 1) +
+                       "M S " + Number(static_cast<double>(m_frameDebugSnapshot.GraphAliasedBytesSaved) / megabyte, 1) +
+                       "M B " + std::to_string(m_frameDebugSnapshot.GraphBarrierCount) + " " +
+                       Number(m_frameDebugSnapshot.GraphCompileMilliseconds, 2) + "MS", dim, 1);
 
     Rectangle(10, 50, 326, 478, panel);
     Rectangle(344, 50, 606, 184, panel);
@@ -561,7 +568,9 @@ void DebugOverlay::DrawFrameDebuggerPanel(
         Text(22, 322, Shorten(selectedPass->Name, 42), text, 1);
         Text(22, 340, "INPUTS " + std::to_string(selectedPass->Inputs.size()) +
                       "  OUTPUTS " + std::to_string(selectedPass->Outputs.size()), dim, 1);
-        int y = 360;
+        Text(22, 354, "DECL " + std::to_string(selectedPass->DeclarationIndex) +
+                      "  BARRIERS " + std::to_string(selectedPass->BarrierCount), dim, 1);
+        int y = 372;
         for (const uint64_t id : selectedPass->Inputs)
         {
             const FrameDebugResource* resource = FindFrameDebugResource(m_frameDebugSnapshot, id);
@@ -621,6 +630,10 @@ void DebugOverlay::DrawFrameDebuggerPanel(
                            std::to_string(m_frameDebugLayer) + "/" +
                            std::to_string(resource.Layers - 1) + "  SAMPLES " +
                            std::to_string(resource.Samples), text, 1);
+        if (resource.Transient)
+            Text(356, 224, "TRANSIENT  LIFE " + std::to_string(resource.FirstUsePass) + "-" +
+                               std::to_string(resource.LastUsePass) + "  ALIAS " +
+                               std::to_string(resource.AliasSlot), dim, 1);
         Text(356, 250, Shorten(resource.Name, 48), heading, 1);
         Text(720, 250, "FROZEN CAPTURE", dim, 1);
     }

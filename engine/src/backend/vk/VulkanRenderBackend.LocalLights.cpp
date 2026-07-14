@@ -182,8 +182,10 @@ VkPipeline CreatePointShadowPipeline(vulkan::PipelineCacheStore& cache,
 
 void VulkanRenderBackend::CreateLocalLightResources()
 {
-    m_pointShadowVertexShader = LoadShader("lighting/point_shadow.vert");
-    m_pointShadowFragmentShader = LoadShader("lighting/point_shadow.frag");
+    const std::vector<VkShaderModule> shaders = LoadShadersParallel({
+        "lighting/point_shadow.vert", "lighting/point_shadow.frag"});
+    m_pointShadowVertexShader = shaders[0];
+    m_pointShadowFragmentShader = shaders[1];
     m_pointShadowPipeline = CreatePointShadowPipeline(
         m_pipelineCache, m_shadowPipelineLayout, m_depthFormat,
         m_pointShadowVertexShader, m_pointShadowFragmentShader);

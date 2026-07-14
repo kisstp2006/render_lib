@@ -175,6 +175,45 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_skyPipeline),
                  "Main HDR Sky Pipeline");
 
+    VkPipelineShaderStageCreateInfo boundsVertexStage = vertexStage;
+    boundsVertexStage.module = m_boundsDebugVertexShader;
+    VkPipelineShaderStageCreateInfo boundsFragmentStage = fragmentStage;
+    boundsFragmentStage.module = m_boundsDebugFragmentShader;
+    const VkPipelineShaderStageCreateInfo boundsStages[] = {boundsVertexStage, boundsFragmentStage};
+    VkPipelineVertexInputStateCreateInfo boundsVertexInput{};
+    boundsVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo boundsAssembly = inputAssembly;
+    boundsAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    VkPipelineRasterizationStateCreateInfo boundsRasterization = rasterization;
+    boundsRasterization.cullMode = VK_CULL_MODE_NONE;
+    VkPipelineDepthStencilStateCreateInfo boundsDepth{};
+    boundsDepth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    std::array<VkPipelineColorBlendAttachmentState, 2> boundsBlendAttachments{};
+    for (VkPipelineColorBlendAttachmentState& attachment : boundsBlendAttachments)
+        attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo boundsBlending{};
+    boundsBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    boundsBlending.attachmentCount = static_cast<uint32_t>(boundsBlendAttachments.size());
+    boundsBlending.pAttachments = boundsBlendAttachments.data();
+    pipelineInfo.pNext = &rendering;
+    pipelineInfo.stageCount = static_cast<uint32_t>(std::size(boundsStages));
+    pipelineInfo.pStages = boundsStages;
+    pipelineInfo.pVertexInputState = &boundsVertexInput;
+    pipelineInfo.pInputAssemblyState = &boundsAssembly;
+    pipelineInfo.pRasterizationState = &boundsRasterization;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &boundsDepth;
+    pipelineInfo.pColorBlendState = &boundsBlending;
+    pipelineInfo.layout = m_boundsDebugPipelineLayout;
+    if (m_pipelineCache.CreateGraphics(1, &pipelineInfo, &m_boundsDebugPipeline) != VK_SUCCESS)
+    {
+        DestroyGraphicsPipeline();
+        throw std::runtime_error("Vulkan: failed to create visibility bounds debug pipeline");
+    }
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_boundsDebugPipeline),
+                 "Visibility Bounds Debug Pipeline");
+
     CreatePostPipelines();
 }
 
@@ -187,9 +226,12 @@ void VulkanRenderBackend::DestroyGraphicsPipeline()
         vkDestroyPipeline(m_device, m_skyPipeline, nullptr);
     if (m_pbrPipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(m_device, m_pbrPipeline, nullptr);
+    if (m_boundsDebugPipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(m_device, m_boundsDebugPipeline, nullptr);
     m_skyPipeline = VK_NULL_HANDLE;
     m_pbrPipeline = VK_NULL_HANDLE;
     m_shadowPipeline = VK_NULL_HANDLE;
+    m_boundsDebugPipeline = VK_NULL_HANDLE;
 }
 
 } // namespace engine

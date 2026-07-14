@@ -5,6 +5,7 @@
 #include "engine/profiling/CpuProfiler.h"
 #include "engine/core/Window.h"
 #include "engine/render/SceneRenderer.h"
+#include "engine/render/RendererFrameGraph.h"
 #include "engine/scene/Scene.h"
 
 #define GLFW_INCLUDE_VULKAN
@@ -130,6 +131,62 @@ bool SupportsSampledFormat(VkPhysicalDevice device, VkFormat format)
     return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
 }
 
+VkPipelineStageFlags2 GraphStage(rendergraph::PipelineStage stage)
+{
+    using rendergraph::PipelineStage;
+    switch (stage)
+    {
+    case PipelineStage::Vertex: return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    case PipelineStage::Fragment: return VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    case PipelineStage::EarlyDepth:
+    case PipelineStage::LateDepth: return VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    case PipelineStage::ColorOutput: return VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    case PipelineStage::Compute: return VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    case PipelineStage::AllShaders: return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    case PipelineStage::Transfer: return VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    case PipelineStage::Present: return VK_PIPELINE_STAGE_2_NONE;
+    default: return VK_PIPELINE_STAGE_2_NONE;
+    }
+}
+
+VkAccessFlags2 GraphAccess(rendergraph::ResourceState state)
+{
+    using rendergraph::ResourceState;
+    switch (state)
+    {
+    case ResourceState::ShaderRead: return VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    case ResourceState::ShaderWrite: return VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    case ResourceState::ColorAttachment: return VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                                                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    case ResourceState::DepthWrite: return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    case ResourceState::DepthRead: return VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    case ResourceState::TransferSource: return VK_ACCESS_2_TRANSFER_READ_BIT;
+    case ResourceState::TransferDestination: return VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    default: return 0;
+    }
+}
+
+VkImageLayout GraphLayout(rendergraph::ResourceState state)
+{
+    using rendergraph::ResourceState;
+    switch (state)
+    {
+    case ResourceState::ShaderRead: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    case ResourceState::ShaderWrite: return VK_IMAGE_LAYOUT_GENERAL;
+    case ResourceState::ColorAttachment: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    case ResourceState::DepthWrite: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    case ResourceState::DepthRead: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    case ResourceState::TransferSource: return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    case ResourceState::TransferDestination: return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    case ResourceState::Present: return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    default: return VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+}
+
 } // namespace
 
 void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config)
@@ -138,6 +195,21 @@ void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config
     m_config = config;
     m_presentMode = config.Presentation;
     m_validationEnabled = config.EnableValidation;
+    m_renderGraphConfig = {};
+    m_renderGraphConfig.Enabled = config.EnableRenderGraph;
+    m_renderGraphConfig.Validation = config.ValidateRenderGraph;
+    m_renderGraphConfig.TransientAliasing = config.EnableTransientAliasing;
+    if (!config.RenderGraphConfigPath.empty())
+    {
+        std::string graphError;
+        if (!rendergraph::LoadConfig(config.RenderGraphConfigPath,
+                                     m_renderGraphConfig, &graphError))
+            throw std::runtime_error(graphError);
+        m_renderGraphConfig.Enabled = m_renderGraphConfig.Enabled && config.EnableRenderGraph;
+        m_renderGraphConfig.Validation = m_renderGraphConfig.Validation && config.ValidateRenderGraph;
+        m_renderGraphConfig.TransientAliasing = m_renderGraphConfig.TransientAliasing &&
+                                                config.EnableTransientAliasing;
+    }
 
     CreateInstance();
     SetupDebugMessenger();
@@ -168,7 +240,10 @@ void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config
         SetDebugName(VK_OBJECT_TYPE_PIPELINE_CACHE,
                      reinterpret_cast<uint64_t>(m_pipelineCache.Handle()),
                      "Renderer Persistent Pipeline Cache");
-    m_resources.Init(m_physicalDevice, m_device);
+    const QueueFamilyIndices resourceQueues = FindQueueFamilies(m_physicalDevice);
+    m_resources.Init(m_physicalDevice, m_device, *resourceQueues.Graphics, *resourceQueues.Transfer);
+    CreateAsyncResourceInfrastructure();
+    m_pipelineTasks = std::make_unique<concurrency::TaskSystem>(4);
     CreateShaderInfrastructure();
     CreatePostInfrastructure();
     CreateEnvironmentInfrastructure();
@@ -268,18 +343,25 @@ VulkanRenderBackend::QueueFamilyIndices VulkanRenderBackend::FindQueueFamilies(V
 
     for (uint32_t i = 0; i < count; ++i)
     {
-        if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && !indices.Graphics)
             indices.Graphics = i;
+
+        if (families[i].queueFlags & VK_QUEUE_TRANSFER_BIT)
+        {
+            const bool dedicated = (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0;
+            if (!indices.Transfer || dedicated)
+                indices.Transfer = i;
+        }
 
         VkBool32 presentSupport = VK_FALSE;
         vkGetPhysicalDeviceSurfaceSupportKHR(device, i, m_surface, &presentSupport);
         if (presentSupport)
             indices.Present = i;
 
-        if (indices.IsComplete())
-            break;
     }
 
+    if (!indices.Transfer)
+        indices.Transfer = indices.Graphics;
     return indices;
 }
 
@@ -292,12 +374,15 @@ bool VulkanRenderBackend::IsDeviceSuitable(VkPhysicalDevice device) const
 
     VkPhysicalDeviceVulkan13Features vulkan13Features{};
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    VkPhysicalDeviceVulkan12Features vulkan12Features{};
+    vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vulkan12Features.pNext = &vulkan13Features;
     VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features.pNext = &vulkan13Features;
+    features.pNext = &vulkan12Features;
     vkGetPhysicalDeviceFeatures2(device, &features);
     if (!vulkan13Features.dynamicRendering || !vulkan13Features.synchronization2
-        || !features.features.imageCubeArray)
+        || !vulkan12Features.timelineSemaphore || !features.features.imageCubeArray)
         return false;
 
     QueueFamilyIndices indices = FindQueueFamilies(device);
@@ -472,7 +557,7 @@ void VulkanRenderBackend::PickPhysicalDevice()
 void VulkanRenderBackend::CreateLogicalDevice()
 {
     QueueFamilyIndices indices = FindQueueFamilies(m_physicalDevice);
-    std::set<uint32_t> uniqueFamilies = {*indices.Graphics, *indices.Present};
+    std::set<uint32_t> uniqueFamilies = {*indices.Graphics, *indices.Present, *indices.Transfer};
 
     float priority = 1.0f;
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
@@ -514,10 +599,14 @@ void VulkanRenderBackend::CreateLogicalDevice()
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     vulkan13Features.dynamicRendering = VK_TRUE;
     vulkan13Features.synchronization2 = VK_TRUE;
+    VkPhysicalDeviceVulkan12Features vulkan12Features{};
+    vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vulkan12Features.timelineSemaphore = VK_TRUE;
+    vulkan12Features.pNext = &vulkan13Features;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = &vulkan13Features;
+    createInfo.pNext = &vulkan12Features;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
@@ -534,6 +623,7 @@ void VulkanRenderBackend::CreateLogicalDevice()
 
     vkGetDeviceQueue(m_device, *indices.Graphics, 0, &m_graphicsQueue);
     vkGetDeviceQueue(m_device, *indices.Present, 0, &m_presentQueue);
+    vkGetDeviceQueue(m_device, *indices.Transfer, 0, &m_transferQueue);
 }
 
 void VulkanRenderBackend::CreateSwapchain(int width, int height)
@@ -834,6 +924,9 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         ENGINE_CPU_PROFILE_SCOPE_CATEGORY("WaitFrameFence", "Renderer/Vulkan/Sync");
         vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
     }
+    ReclaimTransferUploads();
+    m_frameGpuArena->Reset(m_currentFrame);
+    m_deferredRelease.ReleaseCompleted(frame.FrameIndex);
     ReadPerformanceQueries(m_currentFrame);
     UpdateAutoExposure(frame);
     {
@@ -871,13 +964,14 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         bool CastsShadows = true;
     };
     profiling::CpuProfileScope drawPreparationScope("PrepareDraws", "Renderer/Vulkan");
-    std::vector<PreparedDraw> draws;
-    draws.reserve(scene.Instances().size());
-    for (const MeshInstance& instance : scene.Instances())
-    {
-        if (!instance.Mesh)
-            continue;
-        PreparedDraw draw;
+    std::vector<PreparedDraw> preparedDraws(frame.SceneData->Instances().size());
+    std::vector<uint8_t> preparedFlags(preparedDraws.size(), 0);
+    const auto prepareDraw = [&](const PreparedRenderCommand& command) -> PreparedDraw* {
+        PreparedDraw& draw = preparedDraws[command.InstanceIndex];
+        if (preparedFlags[command.InstanceIndex] != 0)
+            return &draw;
+        preparedFlags[command.InstanceIndex] = 1;
+        const MeshInstance& instance = *command.Source;
         draw.Mesh = &GetOrCreateMesh(instance.Mesh);
         draw.Material = &GetOrCreateMaterial(instance.Mat);
         draw.Object.Model = instance.Transform;
@@ -886,8 +980,22 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         draw.Object.PreviousModel = m_taaActive && m_taaHistoryValid
             && previous != m_previousTransforms.end() ? previous->second : instance.Transform;
         draw.CastsShadows = instance.CastsShadows;
-        draws.push_back(draw);
-    }
+        const render::ArenaAllocation objectAllocation = m_frameGpuArena->Allocate(
+            m_currentFrame, sizeof(draw.Object), 16);
+        if (!objectAllocation)
+            throw std::runtime_error("Vulkan: per-frame GPU arena exhausted by object commands");
+        std::memcpy(static_cast<std::byte*>(m_frameArenaMapped) + objectAllocation.Offset,
+                    &draw.Object, sizeof(draw.Object));
+        return &draw;
+    };
+    std::vector<PreparedDraw*> draws;
+    draws.reserve(frame.RenderCommands.size());
+    for (const PreparedRenderCommand& command : frame.RenderCommands)
+        draws.push_back(prepareDraw(command));
+    std::vector<PreparedDraw*> shadowDraws;
+    shadowDraws.reserve(frame.ShadowCommands.size());
+    for (const PreparedRenderCommand& command : frame.ShadowCommands)
+        shadowDraws.push_back(prepareDraw(command));
     drawPreparationScope.End();
 
     vulkan::Buffer screenshotBuffer;
@@ -942,32 +1050,10 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         vkCmdBeginQuery(cmd, m_pipelineStatisticsQueryPool, m_currentFrame, 0);
     }
 
+    const auto directionalShadowPass = [&]() {
     BeginDebugLabel(cmd, "Shadows / Directional Cascades", {0.55f, 0.35f, 0.85f, 1.0f});
     if (frame.SunShadowsActive)
     {
-        std::array<VkImageMemoryBarrier2, 4> toDepth{};
-        for (int cascade = 0; cascade < 4; ++cascade)
-        {
-            toDepth[cascade].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            toDepth[cascade].srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            toDepth[cascade].srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            toDepth[cascade].dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
-                                          | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-            toDepth[cascade].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                                           | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            toDepth[cascade].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            toDepth[cascade].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            toDepth[cascade].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toDepth[cascade].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toDepth[cascade].image = m_shadowMaps[m_currentFrame][cascade].Handle;
-            toDepth[cascade].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-        }
-        VkDependencyInfo shadowDependency{};
-        shadowDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        shadowDependency.imageMemoryBarrierCount = static_cast<uint32_t>(toDepth.size());
-        shadowDependency.pImageMemoryBarriers = toDepth.data();
-        vkCmdPipelineBarrier2(cmd, &shadowDependency);
-
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
         for (int cascade = 0; cascade < 4; ++cascade)
         {
@@ -997,37 +1083,24 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
             vkCmdSetScissor(cmd, 0, 1, &shadowScissor);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
                                     0, 1, &m_shadowDescriptorSets[m_currentFrame][cascade], 0, nullptr);
-            for (const PreparedDraw& draw : draws)
+            for (const PreparedDraw* draw : shadowDraws)
             {
-                if (!draw.CastsShadows)
+                if (!draw->CastsShadows)
                     continue;
                 const VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &draw.Mesh->VertexBuffer.Handle, &offset);
-                vkCmdBindIndexBuffer(cmd, draw.Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdBindVertexBuffers(cmd, 0, 1, &draw->Mesh->VertexBuffer.Handle, &offset);
+                vkCmdBindIndexBuffer(cmd, draw->Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
-                                        1, 1, &draw.Material->DescriptorSets[m_currentFrame], 0, nullptr);
+                                        1, 1, &draw->Material->DescriptorSets[m_currentFrame], 0, nullptr);
                 vkCmdPushConstants(cmd, m_shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                                   0, sizeof(draw.Object), &draw.Object);
-                vkCmdDrawIndexed(cmd, draw.Mesh->IndexCount, 1, 0, 0, 0);
+                                   0, sizeof(draw->Object), &draw->Object);
+                vkCmdDrawIndexed(cmd, draw->Mesh->IndexCount, 1, 0, 0, 0);
                 ++m_gpuDrawCallsThisFrame;
             }
             vkCmdEndRendering(cmd);
             EndDebugLabel(cmd);
         }
 
-        std::array<VkImageMemoryBarrier2, 4> toSample{};
-        for (int cascade = 0; cascade < 4; ++cascade)
-        {
-            toSample[cascade] = toDepth[cascade];
-            toSample[cascade].srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-            toSample[cascade].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            toSample[cascade].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            toSample[cascade].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            toSample[cascade].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            toSample[cascade].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        }
-        shadowDependency.pImageMemoryBarriers = toSample.data();
-        vkCmdPipelineBarrier2(cmd, &shadowDependency);
     }
     EndDebugLabel(cmd);
 
@@ -1035,6 +1108,12 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                               m_timestampQueryPool, timestampBase + 1);
+    }
+    };
+
+    const auto localShadowPass = [&]() {
+    if (recordGpuTiming)
+    {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                               m_timestampQueryPool, timestampBase + 2);
     }
@@ -1045,54 +1124,18 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                              m_timestampQueryPool, timestampBase + 3);
+    }
+    };
+
+    const auto mainHdrPass = [&]() {
+    if (recordGpuTiming)
+    {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                              m_timestampQueryPool, timestampBase + 4);
     }
 
     BeginDebugLabel(cmd, "Main HDR / Geometry + Sky + Resolve",
                     {0.20f, 0.70f, 0.35f, 1.0f});
-    VkImageMemoryBarrier2 beginBarriers[6]{};
-    beginBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    beginBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_NONE;
-    beginBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    beginBarriers[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    beginBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    beginBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    beginBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beginBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beginBarriers[0].image = m_hdrImages[imageIndex].Handle;
-    beginBarriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    beginBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    beginBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_NONE;
-    beginBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
-                                  | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    beginBarriers[1].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                                   | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    beginBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    beginBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    beginBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beginBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beginBarriers[1].image = m_depthImages[imageIndex].Handle;
-    beginBarriers[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-    beginBarriers[2] = beginBarriers[0];
-    beginBarriers[2].image = m_velocityImages[imageIndex].Handle;
-    uint32_t beginBarrierCount = 3;
-    if (m_msaaSamples != VK_SAMPLE_COUNT_1_BIT)
-    {
-        beginBarriers[3] = beginBarriers[0];
-        beginBarriers[3].image = m_msaaHdrImages[m_currentFrame].Handle;
-        beginBarriers[4] = beginBarriers[0];
-        beginBarriers[4].image = m_msaaVelocityImages[m_currentFrame].Handle;
-        beginBarriers[5] = beginBarriers[1];
-        beginBarriers[5].image = m_msaaDepthImages[m_currentFrame].Handle;
-        beginBarrierCount = 6;
-    }
-    VkDependencyInfo beginDependency{};
-    beginDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    beginDependency.imageMemoryBarrierCount = beginBarrierCount;
-    beginDependency.pImageMemoryBarriers = beginBarriers;
-    vkCmdPipelineBarrier2(cmd, &beginDependency);
-
     const glm::vec3 background = scene.Sky.HorizonColor * scene.Sky.SkyIntensity * 0.35f;
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -1160,17 +1203,41 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     vkCmdDraw(cmd, 3, 1, 0, 0);
     ++m_gpuDrawCallsThisFrame;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbrPipeline);
-    for (const PreparedDraw& draw : draws)
+    for (const PreparedDraw* draw : draws)
     {
         const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &draw.Mesh->VertexBuffer.Handle, &offset);
-        vkCmdBindIndexBuffer(cmd, draw.Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &draw->Mesh->VertexBuffer.Handle, &offset);
+        vkCmdBindIndexBuffer(cmd, draw->Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbrPipelineLayout,
-                                1, 1, &draw.Material->DescriptorSets[m_currentFrame], 0, nullptr);
+                                1, 1, &draw->Material->DescriptorSets[m_currentFrame], 0, nullptr);
         vkCmdPushConstants(cmd, m_pbrPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(draw.Object), &draw.Object);
-        vkCmdDrawIndexed(cmd, draw.Mesh->IndexCount, 1, 0, 0, 0);
+                           0, sizeof(draw->Object), &draw->Object);
+        vkCmdDrawIndexed(cmd, draw->Mesh->IndexCount, 1, 0, 0, 0);
         ++m_gpuDrawCallsThisFrame;
+    }
+    if (!frame.VisibilityDebug.empty())
+    {
+        BeginDebugLabel(cmd, "Visibility / Bounds Debug", {0.20f, 0.90f, 0.30f, 1.0f});
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_boundsDebugPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_boundsDebugPipelineLayout, 0, 1,
+                                &m_frameDescriptorSets[m_currentFrame], 0, nullptr);
+        for (const VisibilityDebugBounds& debugBounds : frame.VisibilityDebug)
+        {
+            vulkan::BoundsDebugConstants constants;
+            constants.Minimum = glm::vec4(debugBounds.Bounds.Minimum, 0.0f);
+            constants.Maximum = glm::vec4(debugBounds.Bounds.Maximum, 0.0f);
+            if (debugBounds.Classification == VisibilityClassification::FrustumCulled)
+                constants.Color = {3.0f, 0.12f, 0.08f, 1.0f};
+            else if (debugBounds.Classification == VisibilityClassification::DistanceCulled)
+                constants.Color = {3.0f, 1.4f, 0.05f, 1.0f};
+            vkCmdPushConstants(cmd, m_boundsDebugPipelineLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(constants), &constants);
+            vkCmdDraw(cmd, 24, 1, 0, 0);
+            ++m_gpuDrawCallsThisFrame;
+        }
+        EndDebugLabel(cmd);
     }
     vkCmdEndRendering(cmd);
     EndDebugLabel(cmd);
@@ -1179,25 +1246,9 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                               m_timestampQueryPool, timestampBase + 5);
 
-    VkImageMemoryBarrier2 hdrToSample{};
-    hdrToSample.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    hdrToSample.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    hdrToSample.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    hdrToSample.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
-                             | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    hdrToSample.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    hdrToSample.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    hdrToSample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    hdrToSample.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    hdrToSample.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    hdrToSample.image = m_hdrImages[imageIndex].Handle;
-    hdrToSample.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkDependencyInfo hdrDependency{};
-    hdrDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    hdrDependency.imageMemoryBarrierCount = 1;
-    hdrDependency.pImageMemoryBarriers = &hdrToSample;
-    vkCmdPipelineBarrier2(cmd, &hdrDependency);
+    };
 
+    const auto postProcessPass = [&]() {
     if (recordGpuTiming)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                               m_timestampQueryPool, timestampBase + 6);
@@ -1211,6 +1262,12 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                              m_timestampQueryPool, timestampBase + 7);
+    }
+    };
+
+    const auto debugUiPass = [&]() {
+    if (recordGpuTiming)
+    {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                              m_timestampQueryPool, timestampBase + 8);
     }
@@ -1220,6 +1277,107 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (recordGpuTiming)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                              m_timestampQueryPool, timestampBase + 9);
+    };
+
+    rendergraph::RendererFrameGraphFeatures graphFeatures;
+    graphFeatures.Width = m_swapchainExtent.width;
+    graphFeatures.Height = m_swapchainExtent.height;
+    graphFeatures.MsaaSamples = SampleCountValue(m_msaaSamples);
+    graphFeatures.BloomLevels = 6;
+    graphFeatures.SunShadows = frame.SunShadowsActive;
+    graphFeatures.LocalShadows = !scene.PointLights().empty() || !scene.SpotLights().empty() ||
+                                 !scene.AreaLights().empty();
+    graphFeatures.TemporalAA = m_taaActive;
+    graphFeatures.TaaReadIndex = static_cast<uint32_t>(m_taaHistoryIndex);
+    graphFeatures.TaaWriteIndex = static_cast<uint32_t>((m_taaHistoryIndex + 1) % 2);
+    graphFeatures.Bloom = scene.PostProcess.Enabled;
+    graphFeatures.Fxaa = scene.PostProcess.Enabled &&
+                         scene.PostProcess.AntiAliasing == AntiAliasingMode::Fxaa;
+    graphFeatures.DebugUi = true;
+    rendergraph::RendererFrameGraphCallbacks graphCallbacks;
+    graphCallbacks[rendergraph::RendererPass::Environment] = [] {};
+    graphCallbacks[rendergraph::RendererPass::DirectionalShadows] = directionalShadowPass;
+    graphCallbacks[rendergraph::RendererPass::LocalShadows] = localShadowPass;
+    graphCallbacks[rendergraph::RendererPass::MainHdr] = mainHdrPass;
+    graphCallbacks[rendergraph::RendererPass::PostProcess] = postProcessPass;
+    graphCallbacks[rendergraph::RendererPass::DebugUi] = debugUiPass;
+    std::string graphError;
+    if (!rendergraph::BuildRendererFrameGraph(m_renderGraph, m_renderGraphConfig,
+                                               graphFeatures, std::move(graphCallbacks),
+                                               &graphError))
+        throw std::runtime_error("Vulkan render graph: " + graphError);
+    const auto applyGraphBarriers = [&](const rendergraph::CompiledPass& pass) {
+        std::vector<VkImageMemoryBarrier2> nativeBarriers;
+        nativeBarriers.reserve(pass.Barriers.size());
+        for (const rendergraph::Barrier& barrier : pass.Barriers)
+        {
+            const rendergraph::CompiledResource& resource =
+                m_renderGraph.Resources()[barrier.Resource.Index];
+            const std::string& name = resource.Description.Name;
+            VkImage image = VK_NULL_HANDLE;
+            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+            if (name.rfind("shadow.directional.", 0) == 0)
+            {
+                const uint32_t cascade = static_cast<uint32_t>(name.back() - '0');
+                if (cascade < m_shadowMaps[m_currentFrame].size())
+                    image = m_shadowMaps[m_currentFrame][cascade].Handle;
+                aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            }
+            else if (name == "scene.hdr") image = m_hdrImages[imageIndex].Handle;
+            else if (name == "scene.velocity") image = m_velocityImages[imageIndex].Handle;
+            else if (name == "scene.depth")
+            {
+                image = m_depthImages[imageIndex].Handle;
+                aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            }
+            else if (name == "scene.msaa.hdr") image = m_msaaHdrImages[m_currentFrame].Handle;
+            else if (name == "scene.msaa.velocity") image = m_msaaVelocityImages[m_currentFrame].Handle;
+            else if (name == "scene.msaa.depth")
+            {
+                image = m_msaaDepthImages[m_currentFrame].Handle;
+                aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            }
+            else if (name.rfind("taa.color.", 0) == 0)
+            {
+                const uint32_t history = static_cast<uint32_t>(name.back() - '0');
+                if (history < m_taaHistoryColor.size()) image = m_taaHistoryColor[history].Handle;
+            }
+            else if (name.rfind("taa.depth.", 0) == 0)
+            {
+                const uint32_t history = static_cast<uint32_t>(name.back() - '0');
+                if (history < m_taaHistoryDepth.size()) image = m_taaHistoryDepth[history].Handle;
+            }
+            else if (name == "output.backbuffer") image = m_swapchainImages[imageIndex];
+
+            // Local-light shadows, the IBL bake and bloom pyramid contain
+            // multiple native subpasses. Their internal transitions remain
+            // local until those operations are split into graph nodes.
+            if (image == VK_NULL_HANDLE)
+                continue;
+            VkImageMemoryBarrier2 native{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+            native.srcStageMask = GraphStage(barrier.SourceStage);
+            native.srcAccessMask = GraphAccess(barrier.Before);
+            native.dstStageMask = GraphStage(barrier.DestinationStage);
+            native.dstAccessMask = GraphAccess(barrier.After);
+            native.oldLayout = GraphLayout(barrier.Before);
+            native.newLayout = GraphLayout(barrier.After);
+            native.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            native.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            native.image = image;
+            native.subresourceRange = {aspect, 0, 1, 0, 1};
+            nativeBarriers.push_back(native);
+        }
+        if (!nativeBarriers.empty())
+        {
+            VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            dependency.imageMemoryBarrierCount = static_cast<uint32_t>(nativeBarriers.size());
+            dependency.pImageMemoryBarriers = nativeBarriers.data();
+            vkCmdPipelineBarrier2(cmd, &dependency);
+        }
+    };
+    m_renderGraph.ExecutePhase(rendergraph::PassPhase::Prepare);
+    m_renderGraph.ExecutePhase(rendergraph::PassPhase::Render, applyGraphBarriers);
+
     if (recordPipelineStatistics)
         vkCmdEndQuery(cmd, m_pipelineStatisticsQueryPool, m_currentFrame);
     if (recordGpuTiming || recordPipelineStatistics)
@@ -1320,19 +1478,35 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     commandRecordingScope.End();
 
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("SubmitAndPresent", "Renderer/Vulkan/Sync");
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = &m_imageAvailable[m_currentFrame];
-    submitInfo.pWaitDstStageMask = &waitStage;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &m_renderFinished[m_currentFrame];
+    std::array<VkSemaphoreSubmitInfo, 2> waitInfos{};
+    waitInfos[0] = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    waitInfos[0].semaphore = m_imageAvailable[m_currentFrame];
+    waitInfos[0].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    uint32_t waitCount = 1;
+    if (m_pendingTransferWaitValue != 0)
+    {
+        waitInfos[1] = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        waitInfos[1].semaphore = m_transferTimeline;
+        waitInfos[1].value = m_pendingTransferWaitValue;
+        waitInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+        waitCount = 2;
+    }
+    VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    commandInfo.commandBuffer = cmd;
+    VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    signalInfo.semaphore = m_renderFinished[m_currentFrame];
+    signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSubmitInfo2 submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submitInfo.waitSemaphoreInfoCount = waitCount;
+    submitInfo.pWaitSemaphoreInfos = waitInfos.data();
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &commandInfo;
+    submitInfo.signalSemaphoreInfoCount = 1;
+    submitInfo.pSignalSemaphoreInfos = &signalInfo;
 
-    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS)
+    if (vkQueueSubmit2(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to submit rendered frame");
+    m_pendingTransferWaitValue = 0;
 
     if (takeScreenshot || takeHdrScreenshot)
         vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
@@ -1369,9 +1543,12 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     m_previousCameraFov = camera.FovDegrees;
     m_previousScene = &scene;
     m_previousTransforms.clear();
-    for (const MeshInstance& instance : scene.Instances())
+    for (const PreparedRenderCommand& command : frame.RenderCommands)
+    {
+        const MeshInstance& instance = *command.Source;
         if (instance.TemporalId != 0)
             m_previousTransforms[instance.TemporalId] = instance.Transform;
+    }
 
     m_lastFrameDebugFrameSlot = m_currentFrame;
     m_lastFrameDebugImageIndex = imageIndex;
@@ -1385,6 +1562,23 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
 
 void VulkanRenderBackend::Shutdown()
 {
+    if (m_pipelineTasks)
+    {
+        m_pipelineTasks->WaitIdle();
+        m_pipelineTasks.reset();
+    }
+    if (m_device != VK_NULL_HANDLE && !m_inFlightFences.empty())
+        vkWaitForFences(m_device, static_cast<uint32_t>(m_inFlightFences.size()),
+                        m_inFlightFences.data(), VK_TRUE, UINT64_MAX);
+    if (m_device != VK_NULL_HANDLE && m_transferTimeline != VK_NULL_HANDLE &&
+        m_transferTimelineValue != 0)
+    {
+        VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+        waitInfo.semaphoreCount = 1;
+        waitInfo.pSemaphores = &m_transferTimeline;
+        waitInfo.pValues = &m_transferTimelineValue;
+        vkWaitSemaphores(m_device, &waitInfo, UINT64_MAX);
+    }
     if (m_device != VK_NULL_HANDLE)
         vkDeviceWaitIdle(m_device);
 
@@ -1414,6 +1608,7 @@ void VulkanRenderBackend::Shutdown()
     DestroyEnvironmentInfrastructure();
     DestroyPostInfrastructure();
     DestroyShaderInfrastructure();
+    DestroyAsyncResourceInfrastructure();
     m_pipelineCache.Shutdown();
 
     if (m_device != VK_NULL_HANDLE)

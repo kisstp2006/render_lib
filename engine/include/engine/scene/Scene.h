@@ -21,6 +21,8 @@ struct MeshInstance
     Material Mat;
     glm::mat4 Transform{1.0f};
     bool CastsShadows = true;
+    bool AlwaysVisible = false;
+    float MaxDrawDistance = 0.0f;
 };
 
 // A minimal scene container: no ECS, just flat lists. Enough for the sandbox
@@ -46,6 +48,7 @@ public:
     PostProcessSettings PostProcess;
     FogSettings Fog;
     ShadowSettings Shadows;
+    VisibilitySettings Visibility;
 
     void AddInstance(std::shared_ptr<MeshData> mesh, const Material& mat, const glm::mat4& transform);
     void AddPointLight(const PointLight& light);

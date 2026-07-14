@@ -50,7 +50,9 @@ struct ResourceMemoryStats
 class ResourceAllocator
 {
 public:
-    void Init(VkPhysicalDevice physicalDevice, VkDevice device);
+    void Init(VkPhysicalDevice physicalDevice, VkDevice device,
+              uint32_t graphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED,
+              uint32_t transferQueueFamily = VK_QUEUE_FAMILY_IGNORED);
 
     Buffer CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                         VkMemoryPropertyFlags memoryProperties) const;
@@ -82,6 +84,8 @@ private:
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     PFN_vkSetDebugUtilsObjectNameEXT m_setDebugObjectName = nullptr;
+    uint32_t m_graphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t m_transferQueueFamily = VK_QUEUE_FAMILY_IGNORED;
     mutable std::atomic<uint64_t> m_deviceLocalBytes{0};
     mutable std::atomic<uint64_t> m_peakDeviceLocalBytes{0};
     mutable std::atomic<uint64_t> m_hostVisibleBytes{0};

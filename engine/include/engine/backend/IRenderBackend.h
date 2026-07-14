@@ -6,6 +6,7 @@
 #include "engine/debug/FrameDebugger.h"
 #include "engine/render/GpuCapabilities.h"
 #include "engine/render/PipelineCache.h"
+#include "engine/render/RenderGraph.h"
 
 namespace engine
 {
@@ -43,6 +44,11 @@ struct RenderBackendConfig
     // Empty selects the build/runtime default. A fixed engine-owned subtree
     // and device hash are always appended before any files are touched.
     std::string PipelineCacheDirectory;
+    bool EnableRenderGraph = true;
+    bool ValidateRenderGraph = true;
+    bool EnableTransientAliasing = true;
+    // Optional runtime pipeline asset. Empty uses the built-in renderer graph.
+    std::string RenderGraphConfigPath;
 };
 
 struct BackendCapabilities
@@ -119,6 +125,7 @@ class IRenderBackend
     virtual BackendCapabilities GetCapabilities() const { return {}; }
     virtual BackendResourceStats GetResourceStats() const { return {}; }
     virtual PipelineCacheStatistics GetPipelineCacheStats() const { return {}; }
+    virtual rendergraph::Statistics GetRenderGraphStats() const { return {}; }
 
     // API-neutral frame graph/resource metadata plus an explicit frozen
     // preview capture. Capture may synchronize the GPU and is therefore only

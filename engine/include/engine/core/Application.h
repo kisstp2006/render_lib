@@ -40,6 +40,9 @@ class Application
     runtime::World& GetWorld() { return m_world; }
     const runtime::World& GetWorld() const { return m_world; }
     const ApplicationDesc& GetDescription() const { return m_desc; }
+    SceneRenderer& GetSceneRenderer() { return m_sceneRenderer; }
+    const SceneRenderer& GetSceneRenderer() const { return m_sceneRenderer; }
+    concurrency::TaskSystem& GetTaskSystem() { return *m_taskSystem; }
 
     // Called once per frame after input polling, before rendering. Use for
     // animation, sun changes, screenshot triggers, etc.
@@ -73,6 +76,7 @@ class Application
     Input m_input;
     Camera m_camera;
     Scene m_scene;
+    std::unique_ptr<concurrency::TaskSystem> m_taskSystem;
     SceneRenderer m_sceneRenderer;
     debug::DebugOverlay m_debugOverlay;
     debug::RenderDocCapture m_frameCapture;
