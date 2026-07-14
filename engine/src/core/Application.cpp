@@ -133,6 +133,14 @@ Application::Application(const ApplicationDesc& desc) : m_desc(desc)
         m_debugOverlay.SetValue("RENDERER", "DEDICATED VRAM",
                                 std::to_string(capabilities.DedicatedVideoMemoryBytes / (1024 * 1024)) +
                                     " MB");
+    const PipelineCacheStatistics pipelineCache = m_backend->GetPipelineCacheStats();
+    m_debugOverlay.SetValue("RENDERER", "PIPELINE CACHE",
+                            pipelineCache.Enabled
+                                ? (pipelineCache.PersistentCacheLoaded ? "WARM" : "COLD")
+                                : "DISABLED");
+    m_debugOverlay.SetValue("RENDERER", "SHADER CACHE",
+                            std::to_string(pipelineCache.ShaderPermutationHits) + " HIT / " +
+                            std::to_string(pipelineCache.ShaderPermutationMisses) + " MISS");
 
     log::Info(std::string("Using render backend: ") + m_backend->Name());
 }
@@ -461,6 +469,7 @@ bool Application::RunOneFrame()
     }
     profiler.EndFrame();
     memoryProfiler.EndFrame();
+    m_lastFrameCpuMilliseconds = (glfwGetTime() - frameStart) * 1000.0;
     if (pauseCompletely)
     {
         m_window->WaitEvents(0.05);
@@ -543,6 +552,14 @@ void Application::ReloadRenderer()
                             std::to_string(capabilities.ActiveMsaaSamples) + "X");
     m_debugOverlay.SetValue("RENDERER", "ANISOTROPY",
                             std::to_string(static_cast<int>(capabilities.ActiveAnisotropy)) + "X");
+    const PipelineCacheStatistics pipelineCache = m_backend->GetPipelineCacheStats();
+    m_debugOverlay.SetValue("RENDERER", "PIPELINE CACHE",
+                            pipelineCache.Enabled
+                                ? (pipelineCache.PersistentCacheLoaded ? "WARM" : "COLD")
+                                : "DISABLED");
+    m_debugOverlay.SetValue("RENDERER", "SHADER CACHE",
+                            std::to_string(pipelineCache.ShaderPermutationHits) + " HIT / " +
+                            std::to_string(pipelineCache.ShaderPermutationMisses) + " MISS");
     if (leakedResources)
         throw std::runtime_error("Renderer hot reload detected unreleased backend resources");
     log::Info(std::string("Render backend hot reload complete: ") + m_backend->Name());

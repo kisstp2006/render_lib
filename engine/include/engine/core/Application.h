@@ -62,6 +62,7 @@ class Application
     // resources must be released before the new backend is initialized.
     void ReloadRenderer();
     void SetRuntimeMonitorsEnabled(bool enabled);
+    double LastFrameCpuMilliseconds() const { return m_lastFrameCpuMilliseconds; }
 
   private:
     void EmitEvent(ApplicationEventType type, float deltaSeconds);
@@ -89,6 +90,7 @@ class Application
     bool m_memoryProfilerOwnedByDiagnostics = false;
     double m_lastFrameTime = 0.0;
     uint64_t m_frameCounter = 0;
+    double m_lastFrameCpuMilliseconds = 0.0;
 };
 
 } // namespace engine

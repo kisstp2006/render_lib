@@ -10,6 +10,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
@@ -106,6 +107,18 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     m_gpuTimingEnabled = m_capabilities.Gpu.Uses(GpuFeature::GpuTimestamps);
     SetPresentMode(config.Presentation);
 
+    GLint programBinaryFormats = 0;
+    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &programBinaryFormats);
+    const std::filesystem::path cacheRoot = config.PipelineCacheDirectory.empty()
+        ? std::filesystem::path(ENGINE_RENDERER_CACHE_DIR)
+        : std::filesystem::path(config.PipelineCacheDirectory);
+    GLShader::ConfigureCache(
+        cacheRoot,
+        raw.Device.VendorName + "|" + raw.Device.DeviceName + "|" +
+            raw.Device.ApiVersion + "|" + raw.Device.DriverInfo,
+        config.EnablePipelineCache && programBinaryFormats > 0,
+        config.ClearPipelineCache);
+
     log::Info("OpenGL GPU: " + raw.Device.DeviceName + " (" + raw.Device.VendorName +
               ", " + raw.Device.ApiVersion + ", tier " +
               GpuFeatureTierName(m_capabilities.Gpu.Tier) + ")");
@@ -175,6 +188,11 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     CreateGpuProfilerQueries();
+    const PipelineCacheStatistics cacheStats = GLShader::CacheStatistics();
+    log::Info("OpenGL program cache: " +
+              std::to_string(cacheStats.NativePipelineCacheHits) + " hit(s), " +
+              std::to_string(cacheStats.NativePipelineCacheMisses) + " miss(es), " +
+              std::to_string(cacheStats.PipelineCreateMilliseconds) + " ms");
     log::Info("GL renderer initialized (HDR + MSAA + IBL + bloom)");
 }
 

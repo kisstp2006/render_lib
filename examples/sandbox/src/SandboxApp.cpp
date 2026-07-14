@@ -13,6 +13,7 @@
 #include "engine/profiling/MemoryProfiler.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -21,6 +22,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace engine;
 
@@ -100,6 +102,8 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
                        std::string& gpuCapabilitiesPath,
                        bool& debugUi, bool& frameDebugger,
                       std::string& saveConfigPath,
+                      std::string& pipelineBenchmarkPath,
+                      uint32_t& pipelineBenchmarkFrames,
                       bool& stabilityStress,
                       diagnostics::StabilityStressConfig& stabilityConfig,
                       std::string& stabilityReportPath)
@@ -165,6 +169,14 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
         }
         else if (argument == "--no-driver-workarounds") renderer.EnableDriverWorkarounds = false;
         else if (argument == "--gpu-capabilities" && i + 1 < argc) gpuCapabilitiesPath = argv[++i];
+        else if (argument == "--pipeline-cache-dir" && i + 1 < argc)
+            renderer.PipelineCacheDirectory = argv[++i];
+        else if (argument == "--no-pipeline-cache") renderer.EnablePipelineCache = false;
+        else if (argument == "--clear-pipeline-cache") renderer.ClearPipelineCache = true;
+        else if (argument == "--pipeline-cache-benchmark" && i + 1 < argc)
+            pipelineBenchmarkPath = argv[++i];
+        else if (argument == "--pipeline-benchmark-frames" && i + 1 < argc)
+            pipelineBenchmarkFrames = static_cast<uint32_t>(std::max(std::atoi(argv[++i]), 1));
         else if (argument == "--no-runtime-monitors") application.EnableRuntimeMonitors = false;
         else if (argument == "--renderdoc-capture" && i + 1 < argc)
         {
@@ -309,6 +321,8 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     diagnostics::StabilityStressConfig stabilityConfig;
     std::string stabilityReportPath;
     std::string saveConfigPath;
+    std::string pipelineBenchmarkPath;
+    uint32_t pipelineBenchmarkFrames = 120;
     int screenshotFrame = 10;
     try
     {
@@ -318,7 +332,8 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
                          memoryProfilePath, memoryLeakReport, memoryProfileRetainedFrames,
                          gpuProfilePath, gpuProfileRetainedFrames, gpuCapabilitiesPath,
                          debugUi, frameDebugger,
-                         saveConfigPath, stabilityStress, stabilityConfig, stabilityReportPath);
+                         saveConfigPath, pipelineBenchmarkPath, pipelineBenchmarkFrames,
+                         stabilityStress, stabilityConfig, stabilityReportPath);
         if (stabilityStress)
         {
             application.Unfocused = UnfocusedBehavior::Continue;
@@ -372,7 +387,12 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     {
         {
             ENGINE_MEMORY_TAG_SCOPE("Core");
+            const auto startupBegin = std::chrono::steady_clock::now();
             Application app(application);
+            const double startupMilliseconds = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - startupBegin).count();
+            std::vector<double> benchmarkFrameTimes;
+            benchmarkFrameTimes.reserve(pipelineBenchmarkFrames);
             SampleAssetPipeline sampleAssets;
             app.GetDebugOverlay().SetVisible(debugUi);
             app.GetDebugOverlay().SetFrameDebuggerVisible(frameDebugger);
@@ -404,13 +424,35 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
                             std::to_string(sampleAssets.LoadedResourceCount()));
                     });
             }
-            app.SetUpdateCallback([&controls, &stabilityRunner](float deltaTime)
+            app.SetUpdateCallback([&app, &controls, &stabilityRunner,
+                                   &pipelineBenchmarkPath, pipelineBenchmarkFrames,
+                                   &benchmarkFrameTimes](float deltaTime)
             {
                 controls.Update(deltaTime);
                 if (stabilityRunner)
                     stabilityRunner->Update(deltaTime);
+                if (!pipelineBenchmarkPath.empty() && app.LastFrameCpuMilliseconds() > 0.0)
+                {
+                    benchmarkFrameTimes.push_back(app.LastFrameCpuMilliseconds());
+                    if (benchmarkFrameTimes.size() >= pipelineBenchmarkFrames)
+                        app.RequestQuit();
+                }
             });
             app.Run();
+            if (!pipelineBenchmarkPath.empty())
+            {
+                PipelineStutterReport report;
+                report.Backend = app.GetBackend().Name();
+                report.Adapter = app.GetBackend().GetCapabilities().AdapterName;
+                report.ColdCacheRun = application.Renderer.ClearPipelineCache;
+                report.ApplicationStartupMilliseconds = startupMilliseconds;
+                report.Cache = app.GetBackend().GetPipelineCacheStats();
+                report.FrameCpuMilliseconds = benchmarkFrameTimes;
+                std::string benchmarkError;
+                if (!WritePipelineStutterReport(pipelineBenchmarkPath, report, &benchmarkError))
+                    throw std::runtime_error(benchmarkError);
+                log::Info("Saved pipeline-cache benchmark: " + pipelineBenchmarkPath);
+            }
             if (!gpuCapabilitiesPath.empty())
             {
                 std::string capabilityError;

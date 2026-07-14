@@ -737,7 +737,7 @@ void VulkanRenderBackend::CreatePostPipelines()
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = layout;
-        if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &info, nullptr, &output) != VK_SUCCESS)
+        if (m_pipelineCache.CreateGraphics(1, &info, &output) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create fullscreen post pipeline");
     };
 
@@ -804,8 +804,7 @@ void VulkanRenderBackend::CreatePostPipelines()
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = m_taaPipelineLayout;
-        if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &info, nullptr,
-                                      &m_taaPipeline) != VK_SUCCESS)
+        if (m_pipelineCache.CreateGraphics(1, &info, &m_taaPipeline) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create TAA pipeline");
     }
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_taaPipeline),
@@ -819,7 +818,7 @@ void VulkanRenderBackend::CreatePostPipelines()
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         info.stage = stage;
         info.layout = m_bloomPipelineLayout;
-        if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS)
+        if (m_pipelineCache.CreateCompute(1, &info, &pipeline) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create bloom compute pipeline");
     };
     createComputePipeline(m_bloomDownsampleShader, m_bloomDownsamplePipeline);
@@ -838,8 +837,7 @@ void VulkanRenderBackend::CreatePostPipelines()
     VkComputePipelineCreateInfo exposureInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     exposureInfo.stage = exposureStage;
     exposureInfo.layout = m_exposurePipelineLayout;
-    if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &exposureInfo,
-                                 nullptr, &m_exposurePipeline) != VK_SUCCESS)
+    if (m_pipelineCache.CreateCompute(1, &exposureInfo, &m_exposurePipeline) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create auto-exposure pipeline");
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_exposurePipeline),
                  "Post Auto Exposure Pipeline");

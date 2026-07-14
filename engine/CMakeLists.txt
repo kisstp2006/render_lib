@@ -10,6 +10,7 @@ target_include_directories(engine_build_config INTERFACE
 target_link_libraries(engine_build_config INTERFACE glm::glm)
 target_compile_definitions(engine_build_config INTERFACE
     ENGINE_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"
+    ENGINE_RENDERER_CACHE_DIR="${CMAKE_BINARY_DIR}/renderer_cache/$<CONFIG>"
     ENGINE_ENABLE_RUNTIME_MONITORS=$<BOOL:${ENGINE_ENABLE_RUNTIME_MONITORS}>
     ENGINE_HAS_VULKAN=$<BOOL:${ENGINE_BUILD_VULKAN}>)
 set_target_properties(engine_build_config PROPERTIES FOLDER "Engine/Build")

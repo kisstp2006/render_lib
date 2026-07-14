@@ -106,7 +106,8 @@ glm::vec4 AtlasRect(int slot)
             static_cast<float>(slot / columns) * scale, scale, scale};
 }
 
-VkPipeline CreatePointShadowPipeline(VkDevice device, VkPipelineLayout layout, VkFormat depthFormat,
+VkPipeline CreatePointShadowPipeline(vulkan::PipelineCacheStore& cache,
+                                     VkPipelineLayout layout, VkFormat depthFormat,
                                      VkShaderModule vertexShader, VkShaderModule fragmentShader)
 {
     const VkPipelineShaderStageCreateInfo stages[] = {
@@ -172,7 +173,7 @@ VkPipeline CreatePointShadowPipeline(VkDevice device, VkPipelineLayout layout, V
     info.pDynamicState = &dynamic;
     info.layout = layout;
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS)
+    if (cache.CreateGraphics(1, &info, &pipeline) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create point shadow pipeline");
     return pipeline;
 }
@@ -184,7 +185,7 @@ void VulkanRenderBackend::CreateLocalLightResources()
     m_pointShadowVertexShader = LoadShader("lighting/point_shadow.vert");
     m_pointShadowFragmentShader = LoadShader("lighting/point_shadow.frag");
     m_pointShadowPipeline = CreatePointShadowPipeline(
-        m_device, m_shadowPipelineLayout, m_depthFormat,
+        m_pipelineCache, m_shadowPipelineLayout, m_depthFormat,
         m_pointShadowVertexShader, m_pointShadowFragmentShader);
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_pointShadowPipeline),
                  "Point Light Shadow Pipeline");

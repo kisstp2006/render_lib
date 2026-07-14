@@ -18,6 +18,7 @@ engine_add_module(engine_renderer_vulkan
     SOURCES
         ${ENGINE_ROOT}/include/engine/backend/vk/VulkanRenderBackend.h
         ${ENGINE_ROOT}/include/engine/backend/vk/VulkanResources.h
+        ${ENGINE_ROOT}/include/engine/backend/vk/VulkanPipelineCache.h
         ${ENGINE_ROOT}/include/engine/backend/vk/VulkanShaderCompiler.h
         ${ENGINE_ROOT}/include/engine/backend/vk/VulkanShaderInterop.h
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.cpp
@@ -32,6 +33,7 @@ engine_add_module(engine_renderer_vulkan
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.SceneResources.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Shadows.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanResources.cpp
+        ${ENGINE_ROOT}/src/backend/vk/VulkanPipelineCache.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanShaderCompiler.cpp
     PUBLIC_DEPS
         engine_foundation
@@ -45,6 +47,4 @@ engine_add_module(engine_renderer_vulkan
         optimized ${ENGINE_SHADERC_LIBRARY_RELEASE}
         debug ${ENGINE_SHADERC_LIBRARY_DEBUG}
     PRIVATE_INCLUDE_DIRS
-        ${ENGINE_SHADERC_INCLUDE_DIR}
-    PRIVATE_DEFINITIONS
-        ENGINE_VULKAN_SHADER_CACHE_DIR="${CMAKE_BINARY_DIR}/runtime_shaders/vk/$<CONFIG>")
+        ${ENGINE_SHADERC_INCLUDE_DIR})

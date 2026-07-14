@@ -161,7 +161,8 @@ uint64_t EnvironmentDirectionSignature(const Scene& scene)
     return result;
 }
 
-VkPipeline CreateComputePipeline(VkDevice device, VkPipelineLayout layout, VkShaderModule shader)
+VkPipeline CreateComputePipeline(vulkan::PipelineCacheStore& cache,
+                                 VkPipelineLayout layout, VkShaderModule shader)
 {
     VkPipelineShaderStageCreateInfo stage{};
     stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -173,7 +174,7 @@ VkPipeline CreateComputePipeline(VkDevice device, VkPipelineLayout layout, VkSha
     info.stage = stage;
     info.layout = layout;
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS)
+    if (cache.CreateCompute(1, &info, &pipeline) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create environment compute pipeline");
     return pipeline;
 }
@@ -212,13 +213,13 @@ void VulkanRenderBackend::CreateEnvironmentInfrastructure()
     m_prefilterShader = LoadShader("environment/prefilter.comp");
     m_brdfShader = LoadShader("environment/brdf_lut.comp");
     m_environmentSourcePipeline = CreateComputePipeline(
-        m_device, m_environmentBakePipelineLayout, m_environmentSourceShader);
+        m_pipelineCache, m_environmentBakePipelineLayout, m_environmentSourceShader);
     m_irradiancePipeline = CreateComputePipeline(
-        m_device, m_environmentBakePipelineLayout, m_irradianceShader);
+        m_pipelineCache, m_environmentBakePipelineLayout, m_irradianceShader);
     m_prefilterPipeline = CreateComputePipeline(
-        m_device, m_environmentBakePipelineLayout, m_prefilterShader);
+        m_pipelineCache, m_environmentBakePipelineLayout, m_prefilterShader);
     m_brdfPipeline = CreateComputePipeline(
-        m_device, m_environmentBakePipelineLayout, m_brdfShader);
+        m_pipelineCache, m_environmentBakePipelineLayout, m_brdfShader);
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_environmentSourcePipeline),
                  "IBL Environment Source Pipeline");
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_irradiancePipeline),

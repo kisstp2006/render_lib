@@ -5,6 +5,7 @@
 
 #include "engine/debug/FrameDebugger.h"
 #include "engine/render/GpuCapabilities.h"
+#include "engine/render/PipelineCache.h"
 
 namespace engine
 {
@@ -37,6 +38,11 @@ struct RenderBackendConfig
     bool EnableGpuTiming = true;
     GpuCapabilityPolicy CapabilityPolicy = GpuCapabilityPolicy::Default;
     bool EnableDriverWorkarounds = true;
+    bool EnablePipelineCache = true;
+    bool ClearPipelineCache = false;
+    // Empty selects the build/runtime default. A fixed engine-owned subtree
+    // and device hash are always appended before any files are touched.
+    std::string PipelineCacheDirectory;
 };
 
 struct BackendCapabilities
@@ -112,6 +118,7 @@ class IRenderBackend
     virtual BackendFrameStats GetFrameStats() const { return {}; }
     virtual BackendCapabilities GetCapabilities() const { return {}; }
     virtual BackendResourceStats GetResourceStats() const { return {}; }
+    virtual PipelineCacheStatistics GetPipelineCacheStats() const { return {}; }
 
     // API-neutral frame graph/resource metadata plus an explicit frozen
     // preview capture. Capture may synchronize the GPU and is therefore only

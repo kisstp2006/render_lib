@@ -13,6 +13,7 @@
 
 #include "engine/backend/IRenderBackend.h"
 #include "engine/backend/vk/VulkanResources.h"
+#include "engine/backend/vk/VulkanPipelineCache.h"
 #include "engine/asset/ColorGrading.h"
 #include "engine/scene/Material.h"
 #include "engine/scene/Mesh.h"
@@ -44,6 +45,7 @@ public:
     BackendFrameStats GetFrameStats() const override { return m_frameStats; }
     BackendCapabilities GetCapabilities() const override { return m_capabilities; }
     BackendResourceStats GetResourceStats() const override;
+    PipelineCacheStatistics GetPipelineCacheStats() const override { return m_pipelineCacheStats; }
     debug::FrameDebugSnapshot GetFrameDebugSnapshot() const override;
     bool CaptureFrameDebugResource(uint64_t resourceId, uint32_t mipLevel,
                                    uint32_t layer,
@@ -105,7 +107,8 @@ private:
     void DestroyShadowResources();
     void CreateShaderInfrastructure();
     void DestroyShaderInfrastructure();
-    VkShaderModule LoadShader(const std::filesystem::path& relativePath) const;
+    VkShaderModule LoadShader(const std::filesystem::path& relativePath,
+                              const std::vector<ShaderDefine>& defines = {});
     void CreateGraphicsPipeline();
     void DestroyGraphicsPipeline();
     void CreatePostInfrastructure();
@@ -190,6 +193,7 @@ private:
     bool m_samplerAnisotropySupported = false;
     bool m_pipelineStatisticsSupported = false;
     bool m_memoryBudgetSupported = false;
+    bool m_pipelineCreationFeedbackSupported = false;
     float m_maxSamplerAnisotropy = 1.0f;
 
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
@@ -203,6 +207,9 @@ private:
     VkSampleCountFlagBits m_msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 
     vulkan::ResourceAllocator m_resources;
+    vulkan::PipelineCacheStore m_pipelineCache;
+    PipelineCacheStatistics m_pipelineCacheStats;
+    std::filesystem::path m_shaderCacheDirectory;
     VkShaderModule m_pbrVertexShader = VK_NULL_HANDLE;
     VkShaderModule m_pbrFragmentShader = VK_NULL_HANDLE;
     VkShaderModule m_shadowVertexShader = VK_NULL_HANDLE;

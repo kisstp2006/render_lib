@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <set>
 #include <stdexcept>
@@ -144,6 +145,29 @@ void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config
     PickPhysicalDevice();
     CreateLogicalDevice();
     LoadDebugUtils();
+    m_pipelineCacheStats = {};
+    const GpuDeviceInfo& gpu = m_capabilities.Gpu.Device;
+    const std::filesystem::path cacheRoot = config.PipelineCacheDirectory.empty()
+        ? std::filesystem::path(ENGINE_RENDERER_CACHE_DIR)
+        : std::filesystem::path(config.PipelineCacheDirectory);
+    const std::string cacheIdentity = gpu.VendorName + "|" + gpu.DeviceName + "|" +
+        gpu.ApiVersion + "|" + gpu.DriverName + "|" +
+        std::to_string(gpu.DriverVersion);
+    const std::filesystem::path cacheDirectory =
+        RendererCacheDirectory(cacheRoot, "vulkan", cacheIdentity);
+    if (config.ClearPipelineCache)
+        ClearRendererCacheFiles(cacheDirectory);
+    m_shaderCacheDirectory = cacheDirectory / "shaders";
+    m_pipelineCache.Init(m_physicalDevice, m_device,
+                         cacheDirectory / "pipelines.vkc",
+                         config.EnablePipelineCache,
+                         config.ClearPipelineCache,
+                         m_pipelineCreationFeedbackSupported,
+                         m_pipelineCacheStats);
+    if (m_pipelineCache.Handle() != VK_NULL_HANDLE)
+        SetDebugName(VK_OBJECT_TYPE_PIPELINE_CACHE,
+                     reinterpret_cast<uint64_t>(m_pipelineCache.Handle()),
+                     "Renderer Persistent Pipeline Cache");
     m_resources.Init(m_physicalDevice, m_device);
     CreateShaderInfrastructure();
     CreatePostInfrastructure();
@@ -161,6 +185,11 @@ void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config
     CreatePerformanceQueries();
     CreateSyncObjects();
 
+    log::Info("Vulkan cache: " +
+              std::to_string(m_pipelineCacheStats.ShaderPermutationHits) + " shader hit(s), " +
+              std::to_string(m_pipelineCacheStats.ShaderPermutationMisses) + " shader miss(es), " +
+              std::to_string(m_pipelineCacheStats.PipelineCreateCalls) + " pipeline create(s), " +
+              std::to_string(m_pipelineCacheStats.PipelineCreateMilliseconds) + " ms");
     log::Info("Vulkan PBR renderer ready (indexed meshes + material textures + dynamic rendering)");
 }
 
@@ -424,6 +453,8 @@ void VulkanRenderBackend::PickPhysicalDevice()
     m_capabilities.AdaptivePresent = raw.AdaptivePresent;
     m_capabilities.HardwareAccelerated = !raw.Device.SoftwareRenderer;
     m_memoryBudgetSupported = raw.MemoryBudget;
+    m_pipelineCreationFeedbackSupported =
+        DeviceHasExtension(m_physicalDevice, VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
     m_capabilities.GpuMemoryBudget = m_memoryBudgetSupported;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memoryProperties);
@@ -493,6 +524,8 @@ void VulkanRenderBackend::CreateLogicalDevice()
     std::vector<const char*> enabledExtensions = kRequiredDeviceExtensions;
     if (m_memoryBudgetSupported)
         enabledExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (m_pipelineCreationFeedbackSupported)
+        enabledExtensions.push_back(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
     createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
     createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
@@ -1381,6 +1414,7 @@ void VulkanRenderBackend::Shutdown()
     DestroyEnvironmentInfrastructure();
     DestroyPostInfrastructure();
     DestroyShaderInfrastructure();
+    m_pipelineCache.Shutdown();
 
     if (m_device != VK_NULL_HANDLE)
         vkDestroyDevice(m_device, nullptr);

@@ -105,7 +105,7 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = m_pbrPipelineLayout;
 
-    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_pbrPipeline) != VK_SUCCESS)
+    if (m_pipelineCache.CreateGraphics(1, &pipelineInfo, &m_pbrPipeline) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to create PBR graphics pipeline");
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_pbrPipeline),
                  "Main HDR PBR Pipeline");
@@ -139,7 +139,7 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
     pipelineInfo.pColorBlendState = &shadowBlending;
     pipelineInfo.pMultisampleState = &shadowMultisampling;
     pipelineInfo.layout = m_shadowPipelineLayout;
-    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_shadowPipeline) != VK_SUCCESS)
+    if (m_pipelineCache.CreateGraphics(1, &pipelineInfo, &m_shadowPipeline) != VK_SUCCESS)
     {
         DestroyGraphicsPipeline();
         throw std::runtime_error("Vulkan: failed to create cascade shadow pipeline");
@@ -167,7 +167,7 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pNext = &rendering;
     pipelineInfo.layout = m_pbrPipelineLayout;
-    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_skyPipeline) != VK_SUCCESS)
+    if (m_pipelineCache.CreateGraphics(1, &pipelineInfo, &m_skyPipeline) != VK_SUCCESS)
     {
         DestroyGraphicsPipeline();
         throw std::runtime_error("Vulkan: failed to create sky graphics pipeline");

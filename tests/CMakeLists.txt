@@ -40,6 +40,31 @@ else()
 endif()
 
 if(ENGINE_BUILD_SANDBOX)
+    set(PIPELINE_CACHE_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunPipelineCacheBenchmark.cmake)
+    set(PIPELINE_CACHE_OUTPUT ${CMAKE_BINARY_DIR}/pipeline-cache-benchmark)
+    set(PIPELINE_CACHE_COMMAND
+        ${CMAKE_COMMAND}
+        -DBENCHMARK_EXECUTABLE=$<TARGET_FILE:sample_materials>
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DOUTPUT_DIR=${PIPELINE_CACHE_OUTPUT}
+        -DRUN_VULKAN=$<BOOL:${ENGINE_BUILD_VULKAN}>)
+    add_custom_target(pipeline_cache_benchmark
+        COMMAND ${PIPELINE_CACHE_COMMAND} -P ${PIPELINE_CACHE_SCRIPT}
+        DEPENDS sample_materials
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        USES_TERMINAL
+        COMMENT "Running OpenGL/Vulkan cold-warm pipeline cache stutter benchmarks")
+    set_target_properties(pipeline_cache_benchmark PROPERTIES FOLDER "Tests/GPU")
+
+    if(ENGINE_ENABLE_GPU_PIPELINE_CACHE_TESTS)
+        add_test(NAME engine_pipeline_cache_benchmark
+            COMMAND ${PIPELINE_CACHE_COMMAND} -P ${PIPELINE_CACHE_SCRIPT})
+        set_tests_properties(engine_pipeline_cache_benchmark PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            LABELS "gpu;pipeline-cache;performance"
+            TIMEOUT 600)
+    endif()
+
     set(STABILITY_STRESS_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunStabilityStress.cmake)
     set(STABILITY_STRESS_OUTPUT ${CMAKE_BINARY_DIR}/stability)
     set(STABILITY_STRESS_COMMAND

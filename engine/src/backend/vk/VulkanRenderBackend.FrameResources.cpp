@@ -19,15 +19,17 @@
 namespace engine {
 
 VkShaderModule VulkanRenderBackend::LoadShader(
-    const std::filesystem::path& relativePath) const
+    const std::filesystem::path& relativePath,
+    const std::vector<ShaderDefine>& defines)
 {
     const std::filesystem::path shaderRoot =
         std::filesystem::path(ENGINE_SHADER_DIR) / "vk";
     const std::filesystem::path cachePath =
-        std::filesystem::path(ENGINE_VULKAN_SHADER_CACHE_DIR) / (relativePath.string() + ".spv");
+        m_shaderCacheDirectory / (relativePath.string() + ".spv");
     VkShaderModule module = vulkan::CompileAndLoadShaderModule(
         m_device, shaderRoot / relativePath, cachePath,
-        { shaderRoot, std::filesystem::path(ENGINE_SHADER_DIR) });
+        { shaderRoot, std::filesystem::path(ENGINE_SHADER_DIR) }, defines,
+        m_config.EnablePipelineCache, &m_pipelineCacheStats);
     SetDebugName(VK_OBJECT_TYPE_SHADER_MODULE, reinterpret_cast<uint64_t>(module),
                  "Shader Module: " + relativePath.generic_string());
     return module;

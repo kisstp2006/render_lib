@@ -317,6 +317,13 @@ profile, `--gpu-policy conservative` enables defensive caps and
 `--no-driver-workarounds` is available for diagnosis. See the
 [GPU capability and fallback guide](docs/gpu-capabilities.md).
 
+Shader permutations and native pipelines have persistent, driver-safe caches:
+OpenGL restores linked program binaries, while Vulkan caches content-addressed
+SPIR-V and validates/persists one native pipeline cache. The
+`pipeline_cache_benchmark` target runs isolated cold/warm passes on both APIs
+and exports startup, cache and frame-time/p95 JSON metrics. See the
+[pipeline cache and stutter benchmark guide](docs/pipeline-cache.md).
+
 RenderDoc capture is deterministic and backend-neutral. `--renderdoc-capture
 <path-template> --renderdoc-frame N` captures the same fixed-step frame from
 OpenGL or Vulkan and exits after saving; `--renderdoc-library <path>` supports
@@ -481,7 +488,7 @@ above are not repeated here.
    - [x] Golden-image visual regression tests with deterministic OpenGL/Vulkan LDR+HDR capture, mixed absolute/relative tolerance, diff images, heatmaps and JSON reports
    - [x] Long-running resize/minimize/fullscreen, hot-reload and resource-lifetime stress tests
    - [x] GPU vendor/driver capability database with shared OpenGL/Vulkan discovery, capability tiers, software-driver rules, JSON/debug-UI diagnostics and graceful MSAA/anisotropy/present/profiler/BC/ASTC fallback paths
-   - [ ] Pipeline cache, shader permutation cache and stutter regression benchmarks
+   - [x] Persistent OpenGL program-binary and Vulkan pipeline caches, content-addressed canonical shader permutation caching, and automated cold/warm stutter regression benchmarks
    - [ ] Render graph/frame graph with explicit resource lifetimes and transient target aliasing
 
 9. **Multithreaded renderer and asynchronous data path (P0)**

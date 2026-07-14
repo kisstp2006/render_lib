@@ -6,6 +6,7 @@
 #include "engine/render/Exposure.h"
 #include "engine/render/GpuTiming.h"
 #include "engine/render/GpuCapabilities.h"
+#include "engine/render/PipelineCache.h"
 #include "engine/render/TextureFallback.h"
 #include "engine/render/SceneRenderer.h"
 #include "engine/render/ShaderSource.h"
@@ -996,6 +997,8 @@ void TestApplicationConfigRoundTrip()
     source.Renderer.EnableGpuTiming = false;
     source.Renderer.CapabilityPolicy = GpuCapabilityPolicy::Conservative;
     source.Renderer.EnableDriverWorkarounds = false;
+    source.Renderer.EnablePipelineCache = false;
+    source.Renderer.PipelineCacheDirectory = "Cache/Test Renderer";
     source.Unfocused = UnfocusedBehavior::RenderOnly;
     source.MaximumDeltaSeconds = 0.05f;
     source.FixedDeltaSeconds = 1.0f / 60.0f;
@@ -1029,7 +1032,9 @@ void TestApplicationConfigRoundTrip()
             && loaded.Renderer.PreferredAdapter == "RTX test"
             && !loaded.Renderer.EnableValidation && !loaded.Renderer.EnableGpuTiming
             && loaded.Renderer.CapabilityPolicy == GpuCapabilityPolicy::Conservative
-            && !loaded.Renderer.EnableDriverWorkarounds,
+            && !loaded.Renderer.EnableDriverWorkarounds
+            && !loaded.Renderer.EnablePipelineCache
+            && loaded.Renderer.PipelineCacheDirectory == "Cache/Test Renderer",
             "renderer configuration must survive a complete round trip");
     Require(loaded.Unfocused == UnfocusedBehavior::RenderOnly
             && std::abs(loaded.MaximumDeltaSeconds - 0.05f) < 1.0e-6f
@@ -1049,6 +1054,71 @@ void TestApplicationConfigRoundTrip()
             "invalid configs must report a useful error without partially mutating state");
     std::error_code removeError;
     std::filesystem::remove(path, removeError);
+}
+
+void TestShaderPermutationAndPipelineReport()
+{
+    const std::vector<ShaderDefine> first = {{"USE_FOG", "1"}, {"LIGHT_COUNT", "4"}};
+    const std::vector<ShaderDefine> reordered = {{"LIGHT_COUNT", "4"}, {"USE_FOG", "1"}};
+    const std::string source = "#version 460\nvoid main() {}\n";
+    const std::string key = BuildShaderPermutationKey(source, first, "test-target");
+    Require(key == BuildShaderPermutationKey(source, reordered, "test-target"),
+            "shader permutation keys must be independent of define order");
+    Require(key != BuildShaderPermutationKey(source, {{"LIGHT_COUNT", "8"}}, "test-target"),
+            "shader permutation keys must change with define values");
+    bool conflictingDefineRejected = false;
+    try
+    {
+        CanonicalizeShaderDefines({{"USE_FOG", "0"}, {"USE_FOG", "1"}});
+    }
+    catch (const std::runtime_error&)
+    {
+        conflictingDefineRejected = true;
+    }
+    Require(conflictingDefineRejected,
+            "conflicting shader permutation defines must be rejected");
+    const std::string injected = ApplyShaderDefines(source, first);
+    Require(injected.rfind("#version 460\n#define LIGHT_COUNT 4\n#define USE_FOG 1\n", 0) == 0,
+            "shader defines must be canonical and injected after #version");
+
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() / "source_like_pipeline_cache_test";
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    std::filesystem::create_directories(directory);
+    const uint8_t bytes[] = {1, 2, 3, 4};
+    Require(WriteBinaryFileAtomically(directory / "shader.spv", bytes, sizeof(bytes)),
+            "atomic shader-cache write must succeed");
+    {
+        std::ofstream keep(directory / "keep.txt");
+        keep << "do not delete";
+    }
+    std::vector<uint8_t> loaded;
+    Require(ReadBinaryFile(directory / "shader.spv", loaded) && loaded.size() == sizeof(bytes),
+            "shader-cache binary must round-trip");
+    Require(ClearRendererCacheFiles(directory),
+            "cache cleanup must remove only known renderer-cache files");
+    Require(std::filesystem::exists(directory / "keep.txt"),
+            "cache cleanup must preserve unrelated files");
+
+    PipelineStutterReport report;
+    report.Backend = "Unit Test";
+    report.Adapter = "Deterministic Adapter";
+    report.ColdCacheRun = true;
+    report.ApplicationStartupMilliseconds = 12.5;
+    report.Cache.ShaderPermutationMisses = 2;
+    report.FrameCpuMilliseconds = {1.0, 3.0, 2.0, 8.0};
+    const std::filesystem::path reportPath = directory / "report.json";
+    std::string error;
+    Require(WritePipelineStutterReport(reportPath, report, &error),
+            "pipeline stutter report export must succeed");
+    std::ifstream reportFile(reportPath);
+    const std::string json((std::istreambuf_iterator<char>(reportFile)),
+                           std::istreambuf_iterator<char>());
+    Require(json.find("\"frame_p95_ms\": 8") != std::string::npos &&
+                json.find("\"shader_misses\": 2") != std::string::npos,
+            "pipeline stutter report must contain percentile and cache statistics");
+    std::filesystem::remove_all(directory, ignored);
 }
 
 void TestGpuCapabilityDatabaseAndFallbacks()
@@ -1272,6 +1342,7 @@ int main()
     TestMemoryProfilerMultithreaded();
     TestGpuCapabilityDatabaseAndFallbacks();
     TestApplicationConfigRoundTrip();
+    TestShaderPermutationAndPipelineReport();
     TestRuntimePluginAndWorld();
     TestRuntimePluginDependencies();
     std::puts("Renderer tests passed");

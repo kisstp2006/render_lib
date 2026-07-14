@@ -2,8 +2,11 @@
 
 #include <string>
 #include <unordered_map>
+#include <filesystem>
+#include <vector>
 
 #include <glm/glm.hpp>
+#include "engine/render/PipelineCache.h"
 
 namespace engine {
 
@@ -12,7 +15,8 @@ namespace engine {
 class GLShader
 {
 public:
-    GLShader(const std::string& vertPath, const std::string& fragPath);
+    GLShader(const std::string& vertPath, const std::string& fragPath,
+             const std::vector<ShaderDefine>& defines = {});
     ~GLShader();
 
     GLShader(const GLShader&) = delete;
@@ -28,6 +32,11 @@ public:
     void SetVec4(const std::string& name, const glm::vec4& value);
     void SetMat3(const std::string& name, const glm::mat3& value);
     void SetMat4(const std::string& name, const glm::mat4& value);
+
+    static void ConfigureCache(const std::filesystem::path& root,
+                               std::string deviceIdentity,
+                               bool enabled, bool clear);
+    static PipelineCacheStatistics CacheStatistics();
 
 private:
     int GetUniformLocation(const std::string& name);

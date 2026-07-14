@@ -8,6 +8,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/include/engine/render/CascadedShadows.h
         ${ENGINE_ROOT}/include/engine/render/Exposure.h
         ${ENGINE_ROOT}/include/engine/render/GpuTiming.h
+        ${ENGINE_ROOT}/include/engine/render/PipelineCache.h
         ${ENGINE_ROOT}/include/engine/render/GpuCapabilities.h
         ${ENGINE_ROOT}/include/engine/render/SceneRenderer.h
         ${ENGINE_ROOT}/include/engine/render/ShaderSource.h
@@ -18,6 +19,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/src/render/CascadedShadows.cpp
         ${ENGINE_ROOT}/src/render/Exposure.cpp
         ${ENGINE_ROOT}/src/render/GpuTiming.cpp
+        ${ENGINE_ROOT}/src/render/PipelineCache.cpp
         ${ENGINE_ROOT}/src/render/GpuCapabilities.cpp
         ${ENGINE_ROOT}/src/render/SceneRenderer.cpp
         ${ENGINE_ROOT}/src/render/ShaderSource.cpp

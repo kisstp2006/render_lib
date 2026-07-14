@@ -26,6 +26,8 @@ option(ENGINE_ENABLE_GPU_VISUAL_TESTS
        "Run OpenGL/Vulkan golden-image tests through CTest (requires a display and GPU)" OFF)
 option(ENGINE_ENABLE_GPU_STABILITY_TESTS
        "Run long-lived OpenGL/Vulkan window and resource stress tests through CTest" OFF)
+option(ENGINE_ENABLE_GPU_PIPELINE_CACHE_TESTS
+       "Run cold/warm pipeline-cache stutter benchmarks through CTest" OFF)
 option(ENGINE_ENABLE_RUNTIME_MONITORS
        "Enable the always-on CPU-memory and GPU runtime monitor widgets" ON)
 

@@ -208,6 +208,8 @@ bool SaveApplicationConfig(const std::filesystem::path& path, const ApplicationD
          << "renderer.gpu_timing=" << renderer.EnableGpuTiming << '\n'
          << "renderer.gpu_policy=" << Name(renderer.CapabilityPolicy) << '\n'
          << "renderer.driver_workarounds=" << renderer.EnableDriverWorkarounds << '\n'
+         << "renderer.pipeline_cache=" << renderer.EnablePipelineCache << '\n'
+         << "renderer.pipeline_cache_directory=" << std::quoted(renderer.PipelineCacheDirectory) << '\n'
          << "application.unfocused=" << Name(config.Unfocused) << '\n'
          << "application.max_delta=" << config.MaximumDeltaSeconds << '\n'
          << "application.fixed_delta=" << config.FixedDeltaSeconds << '\n'
@@ -314,6 +316,10 @@ bool LoadApplicationConfig(const std::filesystem::path& path, ApplicationDesc& c
                               parsed.Renderer.CapabilityPolicy);
         else if (key == "renderer.driver_workarounds")
             valid = ParseBool(value, parsed.Renderer.EnableDriverWorkarounds);
+        else if (key == "renderer.pipeline_cache")
+            valid = ParseBool(value, parsed.Renderer.EnablePipelineCache);
+        else if (key == "renderer.pipeline_cache_directory")
+            valid = ParseString(value, parsed.Renderer.PipelineCacheDirectory);
         else if (key == "application.unfocused")
             valid = ParseEnum(value,
                               {{"continue", UnfocusedBehavior::Continue},

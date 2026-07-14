@@ -7,6 +7,7 @@
 #include <shaderc/shaderc.hpp>
 
 #include <fstream>
+#include <chrono>
 #include <stdexcept>
 
 namespace engine::vulkan {
@@ -24,8 +25,7 @@ shaderc_shader_kind ShaderKind(const std::filesystem::path& path)
     throw std::runtime_error("Vulkan: unsupported runtime shader stage: " + path.string());
 }
 
-bool CacheIsCurrent(const std::filesystem::path& cachePath,
-                    const std::vector<std::filesystem::path>& dependencies)
+bool CacheIsValid(const std::filesystem::path& cachePath)
 {
     std::error_code error;
     if (!std::filesystem::is_regular_file(cachePath, error))
@@ -42,15 +42,6 @@ bool CacheIsCurrent(const std::filesystem::path& cachePath,
         return false;
     }
 
-    const auto cacheTime = std::filesystem::last_write_time(cachePath, error);
-    if (error)
-        return false;
-    for (const auto& dependency : dependencies)
-    {
-        const auto sourceTime = std::filesystem::last_write_time(dependency, error);
-        if (error || sourceTime > cacheTime)
-            return false;
-    }
     return true;
 }
 
@@ -80,11 +71,46 @@ VkShaderModule CompileAndLoadShaderModule(
     VkDevice device,
     const std::filesystem::path& sourcePath,
     const std::filesystem::path& cachePath,
-    const std::vector<std::filesystem::path>& includeRoots)
+    const std::vector<std::filesystem::path>& includeRoots,
+    const std::vector<ShaderDefine>& defines,
+    bool cacheEnabled,
+    PipelineCacheStatistics* statistics)
 {
     const ShaderSourceDocument source = LoadShaderSource(sourcePath, includeRoots);
-    if (!CacheIsCurrent(cachePath, source.Dependencies))
+    const std::vector<ShaderDefine> canonicalDefines = CanonicalizeShaderDefines(defines);
+#ifdef NDEBUG
+    constexpr std::string_view buildMode = "release";
+#else
+    constexpr std::string_view buildMode = "debug";
+#endif
+    const std::string target = "vulkan-1.3-spirv-1.6-performance-" + std::string(buildMode) +
+        "-" + sourcePath.extension().string();
+    const std::string permutationKey = BuildShaderPermutationKey(
+        source.Source, canonicalDefines, target);
+    const std::filesystem::path keyedCachePath = cachePath.parent_path() /
+        (cachePath.stem().string() + "." + permutationKey + ".spv");
+    const auto loadBegin = std::chrono::steady_clock::now();
+    const bool cacheHit = cacheEnabled && CacheIsValid(keyedCachePath);
+    if (statistics)
     {
+        if (cacheHit)
+        {
+            ++statistics->ShaderPermutationHits;
+            statistics->PersistentCacheLoaded = true;
+            std::error_code sizeError;
+            const uintmax_t size = std::filesystem::file_size(keyedCachePath, sizeError);
+            if (!sizeError)
+                statistics->CacheBytesLoaded += size;
+            statistics->ShaderCacheLoadMilliseconds +=
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - loadBegin).count();
+        }
+        else
+            ++statistics->ShaderPermutationMisses;
+    }
+    if (!cacheHit)
+    {
+        const auto compileBegin = std::chrono::steady_clock::now();
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
         options.SetSourceLanguage(shaderc_source_language_glsl);
@@ -96,19 +122,36 @@ VkShaderModule CompileAndLoadShaderModule(
 #endif
 
         const std::string sourceName = sourcePath.string();
+        const std::string permutationSource = ApplyShaderDefines(source.Source, canonicalDefines);
         const shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
-            source.Source, ShaderKind(sourcePath), sourceName.c_str(), "main", options);
+            permutationSource, ShaderKind(sourcePath), sourceName.c_str(), "main", options);
         if (result.GetCompilationStatus() != shaderc_compilation_status_success)
         {
             throw std::runtime_error("Vulkan runtime shader compile error ("
                                      + sourceName + "):\n" + result.GetErrorMessage());
         }
 
-        WriteSpirv(cachePath, result);
+        WriteSpirv(keyedCachePath, result);
+        if (statistics)
+        {
+            statistics->ShaderCompileMilliseconds +=
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - compileBegin).count();
+            std::error_code sizeError;
+            const uintmax_t size = std::filesystem::file_size(keyedCachePath, sizeError);
+            if (!sizeError)
+                statistics->CacheBytesSaved += size;
+        }
         log::Info("Runtime-compiled Vulkan shader: " + sourceName);
     }
 
-    return LoadShaderModule(device, cachePath);
+    VkShaderModule module = LoadShaderModule(device, keyedCachePath);
+    if (!cacheEnabled)
+    {
+        std::error_code ignored;
+        std::filesystem::remove(keyedCachePath, ignored);
+    }
+    return module;
 }
 
 } // namespace engine::vulkan
