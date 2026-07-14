@@ -21,8 +21,11 @@ endif()
 option(ENGINE_BUILD_VULKAN "Build the Vulkan backend" ON)
 option(ENGINE_BUILD_SANDBOX "Build the sandbox example app" ON)
 option(ENGINE_BUILD_TESTS "Build engine unit tests" ON)
+option(ENGINE_BUILD_ASSET_TOOLS "Build the asset pipeline command-line tools" ON)
 option(ENGINE_ENABLE_GPU_VISUAL_TESTS
        "Run OpenGL/Vulkan golden-image tests through CTest (requires a display and GPU)" OFF)
+option(ENGINE_ENABLE_GPU_STABILITY_TESTS
+       "Run long-lived OpenGL/Vulkan window and resource stress tests through CTest" OFF)
 option(ENGINE_ENABLE_RUNTIME_MONITORS
        "Enable the always-on CPU-memory and GPU runtime monitor widgets" ON)
 
@@ -73,7 +76,52 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
-FetchContent_MakeAvailable(glfw glm glad stb cgltf)
+FetchContent_Declare(
+    meshoptimizer
+    GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+    GIT_TAG        73583c335e541c139821d0de2bf5f12960a04941 # v1.0
+    GIT_SHALLOW    TRUE
+)
+
+set(ASTCENC_CLI OFF CACHE BOOL "" FORCE)
+set(ASTCENC_UNITTEST OFF CACHE BOOL "" FORCE)
+set(ASTCENC_WERROR OFF CACHE BOOL "" FORCE)
+set(ASTCENC_ISA_NATIVE ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    astc_encoder
+    GIT_REPOSITORY https://github.com/ARM-software/astc-encoder.git
+    GIT_TAG        30aabb3f42406df45a910d8496f9bee17eeba9bb # 5.3.0
+    GIT_SHALLOW    TRUE
+)
+
+# These two dependencies are source/header packages rather than reusable CMake
+# projects. SOURCE_SUBDIR keeps FetchContent from importing their sample apps;
+# small engine-owned targets are declared below instead.
+FetchContent_Declare(
+    bc7enc_rdo
+    GIT_REPOSITORY https://github.com/richgel999/bc7enc_rdo.git
+    GIT_TAG        dbe416d28a5530b4e8cc45b14bf034dc6b96bbde
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  engine_no_cmake_project
+)
+FetchContent_Declare(
+    vhacd
+    GIT_REPOSITORY https://github.com/kmammou/v-hacd.git
+    GIT_TAG        22ec20a7f8ea221ab600df869369b9c6a258cb10 # 4.1.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  engine_no_cmake_project
+)
+
+FetchContent_MakeAvailable(glfw glm glad stb cgltf meshoptimizer astc_encoder bc7enc_rdo vhacd)
+
+add_library(engine_bc_encoder STATIC
+    ${bc7enc_rdo_SOURCE_DIR}/bc7enc.cpp
+    ${bc7enc_rdo_SOURCE_DIR}/rgbcx.cpp)
+target_include_directories(engine_bc_encoder PUBLIC ${bc7enc_rdo_SOURCE_DIR})
+set_target_properties(engine_bc_encoder PROPERTIES FOLDER "Dependencies")
+
+add_library(engine_vhacd INTERFACE)
+target_include_directories(engine_vhacd INTERFACE ${vhacd_SOURCE_DIR}/include)
 
 # glad2 generates loader sources at configure time via its cmake helper
 glad_add_library(glad_gl_core46 STATIC API gl:core=4.6)
@@ -83,6 +131,12 @@ if(TARGET glfw)
 endif()
 if(TARGET glm)
     set_target_properties(glm PROPERTIES FOLDER "Dependencies")
+endif()
+if(TARGET meshoptimizer)
+    set_target_properties(meshoptimizer PROPERTIES FOLDER "Dependencies")
+endif()
+if(TARGET astcenc-native-static)
+    set_target_properties(astcenc-native-static PROPERTIES FOLDER "Dependencies")
 endif()
 
 add_library(stb_image INTERFACE)
@@ -97,6 +151,10 @@ if(ENGINE_BUILD_VULKAN)
 endif()
 
 add_subdirectory(engine)
+
+if(ENGINE_BUILD_ASSET_TOOLS)
+    add_subdirectory(tools/assetc)
+endif()
 
 if(ENGINE_BUILD_SANDBOX)
     add_subdirectory(examples/sandbox)

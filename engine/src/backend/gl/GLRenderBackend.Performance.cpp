@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <string>
 
 namespace engine {
@@ -31,6 +32,106 @@ constexpr GLenum kGpuMemoryInfoTotalAvailableMemoryNvx = 0x9048;
 constexpr GLenum kGpuMemoryInfoCurrentAvailableVidmemNvx = 0x9049;
 
 } // namespace
+
+BackendResourceStats GLRenderBackend::GetResourceStats() const
+{
+    BackendResourceStats stats;
+    size_t frameResourceCount = 0;
+    if (m_width > 0 && m_height > 0)
+    {
+        const debug::FrameDebugSnapshot snapshot = GetFrameDebugSnapshot();
+        frameResourceCount = snapshot.Resources.size();
+        for (const debug::FrameDebugResource& resource : snapshot.Resources)
+            stats.DeviceLocalBytes += resource.EstimatedBytes;
+    }
+
+    for (const auto& [mesh, gpu] : m_meshCache)
+    {
+        (void)gpu;
+        if (mesh)
+            stats.DeviceLocalBytes += mesh->Vertices.size() * sizeof(Vertex) +
+                                      mesh->Indices.size() * sizeof(uint32_t);
+    }
+    const auto textureBytes = [](const TextureData& texture)
+    {
+        uint64_t bytes = 0;
+        if (!texture.MipLevels.empty())
+        {
+            for (const TextureMipData& mip : texture.MipLevels)
+                bytes += TextureMipByteSize(texture.Storage,
+                    static_cast<uint32_t>(std::max(mip.Width, 1)),
+                    static_cast<uint32_t>(std::max(mip.Height, 1)));
+            return bytes;
+        }
+        uint32_t width = static_cast<uint32_t>(std::max(texture.Width, 1));
+        uint32_t height = static_cast<uint32_t>(std::max(texture.Height, 1));
+        do
+        {
+            bytes += TextureMipByteSize(texture.Storage, width, height);
+            width = std::max(width / 2u, 1u);
+            height = std::max(height / 2u, 1u);
+        } while (width > 1u || height > 1u);
+        return bytes;
+    };
+    for (const auto& [texture, gpu] : m_textureCache)
+    {
+        (void)gpu;
+        if (texture)
+            stats.DeviceLocalBytes += textureBytes(*texture);
+    }
+    for (const auto& [lut, texture] : m_colorLutCache)
+    {
+        (void)texture;
+        if (lut && lut->Size > 0)
+        {
+            const uint64_t side = static_cast<uint64_t>(lut->Size);
+            stats.DeviceLocalBytes += side * side * side * 3u * sizeof(uint16_t);
+        }
+    }
+
+    stats.PeakDeviceLocalBytes = stats.DeviceLocalBytes;
+    stats.MeshResources = m_meshCache.size();
+    stats.TextureResources = m_textureCache.size() + m_colorLutCache.size();
+    // Frame-debug resources and asset caches are stable logical allocations;
+    // this lets resize/reload tests catch growth without relying on a vendor
+    // memory extension.
+    stats.LiveNativeAllocations = frameResourceCount +
+        m_meshCache.size() * 3u + m_textureCache.size() + m_colorLutCache.size();
+    const auto countHandle = [&stats](unsigned int handle)
+    {
+        if (handle != 0)
+            ++stats.LiveNativeAllocations;
+    };
+    countHandle(m_emptyVao);
+    countHandle(m_shadowFbo);
+    for (const unsigned int handle : m_shadowMaps) countHandle(handle);
+    countHandle(m_localShadowAtlasFbo);
+    countHandle(m_localShadowAtlas);
+    countHandle(m_pointShadowFbo);
+    countHandle(m_pointShadowArray);
+    countHandle(m_cookieAtlas);
+    for (const unsigned int handle : m_debugOverlayTextures) countHandle(handle);
+    for (const unsigned int handle : m_exposurePbos) countHandle(handle);
+    for (const auto& frame : m_gpuPassQueries)
+        for (const unsigned int handle : frame) countHandle(handle);
+    for (const auto& frame : m_gpuPipelineQueries)
+        for (const unsigned int handle : frame) countHandle(handle);
+    stats.LiveNativeAllocations +=
+        static_cast<uint64_t>(m_pbrShader != nullptr) +
+        static_cast<uint64_t>(m_shadowShader != nullptr) +
+        static_cast<uint64_t>(m_pointShadowShader != nullptr) +
+        static_cast<uint64_t>(m_skyShader != nullptr) +
+        static_cast<uint64_t>(m_bloomDownShader != nullptr) +
+        static_cast<uint64_t>(m_bloomUpShader != nullptr) +
+        static_cast<uint64_t>(m_taaShader != nullptr) +
+        static_cast<uint64_t>(m_fxaaShader != nullptr) +
+        static_cast<uint64_t>(m_postShader != nullptr) +
+        static_cast<uint64_t>(m_debugOverlayShader != nullptr) +
+        static_cast<uint64_t>(m_environment != nullptr) +
+        static_cast<uint64_t>(m_defaultWhite != nullptr) +
+        static_cast<uint64_t>(m_defaultNormal != nullptr);
+    return stats;
+}
 
 void GLRenderBackend::CreateGpuProfilerQueries()
 {

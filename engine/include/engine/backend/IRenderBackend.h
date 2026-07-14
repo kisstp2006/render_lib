@@ -61,6 +61,22 @@ struct BackendFrameStats
     float GpuPostMilliseconds = 0.0f;
 };
 
+// Backend-neutral lifetime counters used by the runtime diagnostics and the
+// long-running stability suite. Vulkan reports allocator-exact bytes and
+// allocation counts. OpenGL reports deterministic estimates for engine-owned
+// objects because the API does not expose portable allocation sizes.
+struct BackendResourceStats
+{
+    uint64_t DeviceLocalBytes = 0;
+    uint64_t PeakDeviceLocalBytes = 0;
+    uint64_t HostVisibleBytes = 0;
+    uint64_t PeakHostVisibleBytes = 0;
+    uint64_t LiveNativeAllocations = 0;
+    uint64_t MeshResources = 0;
+    uint64_t TextureResources = 0;
+    uint64_t MaterialResources = 0;
+};
+
 // Shared contract between the OpenGL and Vulkan backends. Kept intentionally
 // small (immediate-mode-ish per-frame calls) rather than a full generic RHI
 // (command buffers, pipeline objects, descriptor abstractions, ...) because
@@ -91,6 +107,7 @@ class IRenderBackend
 
     virtual BackendFrameStats GetFrameStats() const { return {}; }
     virtual BackendCapabilities GetCapabilities() const { return {}; }
+    virtual BackendResourceStats GetResourceStats() const { return {}; }
 
     // API-neutral frame graph/resource metadata plus an explicit frozen
     // preview capture. Capture may synchronize the GPU and is therefore only

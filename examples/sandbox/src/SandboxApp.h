@@ -8,7 +8,8 @@ enum class SandboxPreset
     Lights,
     HdriStudio,
     DayNight,
-    PostProcessing
+    PostProcessing,
+    Stability
 };
 
 // Shared application entry point used by the generic sandbox and every

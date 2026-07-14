@@ -277,7 +277,8 @@ void main()
     {
         vec3 T = normalize(vTangent.xyz - dot(vTangent.xyz, geoNormal) * geoNormal);
         vec3 B = cross(geoNormal, T) * vTangent.w;
-        vec3 texNormal = texture(uNormalMap, vUV).rgb * 2.0 - 1.0;
+        vec2 normalXY = texture(uNormalMap, vUV).rg * 2.0 - 1.0;
+        vec3 texNormal = vec3(normalXY, sqrt(max(1.0 - dot(normalXY, normalXY), 0.0)));
         N = normalize(mat3(T, B, geoNormal) * texNormal);
     }
 

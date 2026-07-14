@@ -1,8 +1,8 @@
 #include "SandboxScene.h"
 
+#include "SampleAssetPipeline.h"
+
 #include "engine/core/Application.h"
-#include "engine/asset/ColorGrading.h"
-#include "engine/asset/GltfLoader.h"
 #include "engine/scene/Mesh.h"
 #include "engine/scene/Scene.h"
 #include "engine/scene/Texture.h"
@@ -17,7 +17,7 @@ using namespace engine;
 
 namespace {
 
-void ApplyPostConfig(Scene& scene, const SandboxSceneConfig& config)
+void ApplyPostConfig(Scene& scene, const SandboxSceneConfig& config, SampleAssetPipeline& assets)
 {
     if (config.AntiAliasing == "none")
         scene.PostProcess.AntiAliasing = AntiAliasingMode::None;
@@ -30,7 +30,7 @@ void ApplyPostConfig(Scene& scene, const SandboxSceneConfig& config)
                                  + "' (expected none, fxaa or taa)");
 
     if (!config.ColorLutPath.empty())
-        scene.PostProcess.ColorLut = color_grading::LoadCube(config.ColorLutPath);
+        scene.PostProcess.ColorLut = assets.LoadColorGrading(config.ColorLutPath);
     else if (config.CinematicLut || config.PostShowcase)
         scene.PostProcess.ColorLut = color_grading::MakeCinematic();
     scene.PostProcess.ColorLutWeight = scene.PostProcess.ColorLut
@@ -282,10 +282,10 @@ void PopulatePostShowcase(Application& app, const SandboxSceneConfig&)
     camera.Pitch = -10.0f;
 }
 
-void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config)
+void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config, SampleAssetPipeline& assets)
 {
     Scene& scene = app.GetScene();
-    scene.Environment.Hdri = environments::LoadHdrFromFile(config.HdriPath);
+    scene.Environment.Hdri = assets.LoadEnvironment(config.HdriPath);
     scene.Environment.Source = EnvironmentSource::EquirectangularHdr;
     scene.Environment.ExposureEV = -0.5f;
     scene.Environment.BackgroundExposureEV = -0.75f;
@@ -330,7 +330,7 @@ void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config)
 
     glm::mat4 bottleTransform = glm::translate(glm::mat4(1.0f), {0.0f, 0.48f, 0.2f});
     bottleTransform = glm::scale(bottleTransform, glm::vec3(13.0f));
-    LoadGltfScene(std::string(ENGINE_ASSET_DIR) + "/WaterBottle.glb", scene, bottleTransform);
+    assets.AddStaticMesh(scene, std::string(ENGINE_ASSET_DIR) + "/WaterBottle.glb", bottleTransform);
 
     Camera& camera = app.GetCamera();
     camera.Position = {0.0f, 1.7f, 8.0f};
@@ -340,9 +340,9 @@ void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config)
 
 } // namespace
 
-void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config)
+void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config, SampleAssetPipeline& assets)
 {
-    ApplyPostConfig(app.GetScene(), config);
+    ApplyPostConfig(app.GetScene(), config, assets);
     if (config.PostShowcase)
     {
         PopulatePostShowcase(app, config);
@@ -350,7 +350,7 @@ void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config)
     }
     if (config.HdriStudio)
     {
-        PopulateHdriStudio(app, config);
+        PopulateHdriStudio(app, config, assets);
         return;
     }
     if (config.LocalLightShowcase)
@@ -388,7 +388,7 @@ void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config)
     scene.Shadows.LogPerformance = config.ShadowBenchmark;
     if (!config.HdriPath.empty())
     {
-        scene.Environment.Hdri = environments::LoadHdrFromFile(config.HdriPath);
+        scene.Environment.Hdri = assets.LoadEnvironment(config.HdriPath);
         scene.Environment.Source = EnvironmentSource::EquirectangularHdr;
     }
 
@@ -413,7 +413,7 @@ void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config)
         glm::mat4 importTransform = glm::translate(glm::mat4(1.0f), {0.0f, 0.15f, 0.0f});
         if (config.SampleGltf)
             importTransform = glm::scale(importTransform, glm::vec3(6.0f));
-        LoadGltfScene(config.GltfPath, scene, importTransform);
+        assets.AddStaticMesh(scene, config.GltfPath, importTransform);
     }
 
     scene.AddPointLight({{-6.0f, 5.0f, 6.0f}, {0.4f, 0.55f, 1.0f}, 40.0f, 20.0f});

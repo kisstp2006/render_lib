@@ -52,6 +52,17 @@ const char* WindowModeName(WindowMode mode)
     }
 }
 
+std::unique_ptr<IRenderBackend> CreateRenderBackend(GraphicsApi api)
+{
+    if (api == GraphicsApi::OpenGL)
+        return std::make_unique<GLRenderBackend>();
+#if ENGINE_HAS_VULKAN
+    return std::make_unique<VulkanRenderBackend>();
+#else
+    throw std::runtime_error("Engine was built without Vulkan support (ENGINE_BUILD_VULKAN=OFF)");
+#endif
+}
+
 } // namespace
 
 Application::Application(const WindowDesc& desc) : Application(ApplicationDesc{desc}) {}
@@ -79,18 +90,7 @@ Application::Application(const ApplicationDesc& desc) : m_desc(desc)
     m_window = std::make_unique<Window>(m_desc.Window);
     m_input.Attach(m_window->Handle());
 
-    if (m_desc.Window.api == GraphicsApi::OpenGL)
-    {
-        m_backend = std::make_unique<GLRenderBackend>();
-    }
-    else
-    {
-#if ENGINE_HAS_VULKAN
-        m_backend = std::make_unique<VulkanRenderBackend>();
-#else
-        throw std::runtime_error("Engine was built without Vulkan support (ENGINE_BUILD_VULKAN=OFF)");
-#endif
-    }
+    m_backend = CreateRenderBackend(m_desc.Window.api);
 
     {
         profiling::MemoryTagScope tag(m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL"
@@ -235,6 +235,7 @@ bool Application::RunOneFrame()
     m_lastFrameTime = frameStart;
 
     bool pauseCompletely = false;
+    bool surfaceUnavailable = false;
     bool frameDebugCapturePending = false;
     uint64_t frameDebugResourceId = 0;
     uint32_t frameDebugMipLevel = 0;
@@ -329,6 +330,13 @@ bool Application::RunOneFrame()
                 EmitEvent(ApplicationEventType::AfterUpdate, deltaTime);
             }
 
+            // GLFW reports a zero-sized framebuffer while a window is
+            // minimized. Keep simulation and stress-control callbacks alive,
+            // but never ask either backend to create or render 0x0 targets.
+            surfaceUnavailable = m_window->IsMinimized() ||
+                                 m_window->Width() <= 0 || m_window->Height() <= 0;
+            if (!surfaceUnavailable)
+            {
             if (m_debugOverlay.HasVisibleContent())
             {
                 ENGINE_MEMORY_TAG_SCOPE("Debug");
@@ -433,6 +441,7 @@ bool Application::RunOneFrame()
                     RequestQuit();
             }
             EmitEvent(ApplicationEventType::AfterRender, deltaTime);
+            }
             EmitEvent(ApplicationEventType::EndFrame, deltaTime);
         }
         else
@@ -448,6 +457,9 @@ bool Application::RunOneFrame()
         return !m_window->ShouldClose();
     }
     ++m_frameCounter;
+
+    if (surfaceUnavailable)
+        m_window->WaitEvents(0.01);
 
     if (m_desc.FrameRateLimit > 0.0)
     {
@@ -475,6 +487,45 @@ bool Application::SetPresentMode(PresentMode mode)
                               "selected a safe fallback: ") +
                   PresentModeName(mode));
     return exact;
+}
+
+void Application::SetWindowMode(WindowMode mode, int monitor, int width, int height)
+{
+    m_window->SetMode(mode, monitor, width, height);
+    m_desc.Window.mode = mode;
+    m_desc.Window.monitor = monitor;
+    m_debugOverlay.SetValue("APPLICATION", "WINDOW", WindowModeName(mode));
+}
+
+void Application::ReloadRenderer()
+{
+    ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Renderer.HotReload", "Renderer");
+    ENGINE_MEMORY_TAG_SCOPE("Renderer");
+    log::Info(std::string("Reloading render backend: ") + m_backend->Name());
+
+    std::unique_ptr<IRenderBackend> previous = std::move(m_backend);
+    previous->Shutdown();
+    const BackendResourceStats released = previous->GetResourceStats();
+    previous.reset();
+    const bool leakedResources = released.LiveNativeAllocations != 0 ||
+        released.MeshResources != 0 || released.TextureResources != 0 ||
+        released.MaterialResources != 0;
+
+    m_backend = CreateRenderBackend(m_desc.Window.api);
+    profiling::MemoryTagScope backendTag(
+        m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL" : "Vulkan");
+    m_backend->Init(*m_window, m_desc.Renderer);
+    m_sceneRenderer = SceneRenderer{};
+
+    const BackendCapabilities capabilities = m_backend->GetCapabilities();
+    m_debugOverlay.SetValue("RENDERER", "ADAPTER", capabilities.AdapterName);
+    m_debugOverlay.SetValue("RENDERER", "MSAA",
+                            std::to_string(capabilities.ActiveMsaaSamples) + "X");
+    m_debugOverlay.SetValue("RENDERER", "ANISOTROPY",
+                            std::to_string(static_cast<int>(capabilities.ActiveAnisotropy)) + "X");
+    if (leakedResources)
+        throw std::runtime_error("Renderer hot reload detected unreleased backend resources");
+    log::Info(std::string("Render backend hot reload complete: ") + m_backend->Name());
 }
 
 void Application::EmitEvent(ApplicationEventType type, float deltaSeconds)

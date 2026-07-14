@@ -219,7 +219,8 @@ void main()
     {
         vec3 tangent = normalize(worldTangent.xyz);
         vec3 bitangent = normalize(cross(normal, tangent)) * worldTangent.w;
-        vec3 mapped = texture(normalMap, uv).xyz * 2.0 - 1.0;
+        vec2 normalXY = texture(normalMap, uv).rg * 2.0 - 1.0;
+        vec3 mapped = vec3(normalXY, sqrt(max(1.0 - dot(normalXY, normalXY), 0.0)));
         normal = normalize(mat3(tangent, bitangent, normal) * mapped);
     }
 

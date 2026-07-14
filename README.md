@@ -111,9 +111,13 @@ engine/                  Modular engine libraries plus compatibility facade
   cmake/                  Shared target policy and module helper
   modules/                One CMake/IDE project per architectural module
     Foundation/           Logging and CPU/GPU/memory profiling
+    AssetCore/            GUIDs, descriptors, migration and dependency database
+    Resources/            Validated cooked files and typed runtime resource cache
+    AssetPipeline/        Import, fingerprint, validation and transform orchestration
+    AssetTools/           Inspector/browser/drag/preview models without a GUI
     Core/                 Window, input, camera and RenderDoc host integration
     Scene/                Backend-neutral render scene data
-    Assets/               glTF and color-grading asset loaders
+    Assets/               Concrete texture/environment/material/model/scene asset types
     Runtime/              Components, world hierarchy and C++ plugins
     RendererCore/         Shared frame preparation and renderer algorithms
     RendererOpenGL/       Native OpenGL backend
@@ -147,6 +151,7 @@ examples/samples/          One small entry point per standalone renderer sample
 examples/assets/           Bundled CC0 test assets
 
 tests/src/                 Renderer CPU/regression test entry point
+tools/assetc/              Headless asset import/transform/validation utility
 ```
 
 The historical `engine` static target remains as a tiny compatibility facade,
@@ -168,6 +173,10 @@ OpenGL backend is built. Vulkan GLSL is compiled when the application starts.
 SPIR-V is cached under `build/runtime_shaders/vk/<config>` and automatically
 rebuilt when its source or a transitive include changes.
 
+The engine also builds `assetc`, a headless source-to-cooked asset tool. See
+the [asset pipeline guide](docs/asset-pipeline.md) for descriptor formats,
+runtime handles, supported asset types and command examples.
+
 ```powershell
 cmake -B build -S . -G "Visual Studio 18 2026"
 cmake --build build --config RelWithDebInfo
@@ -182,7 +191,7 @@ cmake --build build
 ./build/examples/sandbox/sandbox
 ```
 
-The build creates a generic command-line sandbox and six focused sample
+The build creates a generic command-line sandbox and seven focused sample
 executables. They share the same scene/control implementation, so the samples
 stay small while each can be launched directly:
 
@@ -195,6 +204,7 @@ stay small while each can be launched directly:
 | `sample_hdri` | HDRI studio/product-lighting scene |
 | `sample_day_night` | Animated procedural day/sunset/night sky cycle |
 | `sample_post` | Color-grading LUT, FXAA and TAA validation scene |
+| `sample_stability` | Resize/minimize/fullscreen, hot-reload and resource-lifetime stress suite |
 
 For example, on Windows run
 `.\build\examples\sandbox\RelWithDebInfo\sample_lights.exe`. Every focused
@@ -203,6 +213,11 @@ sample still accepts the common options below, including `--screenshot` and
 
 Every sample is one executable backed by one scene implementation. Use
 `--vulkan` or `--opengl` to select the backend (default is OpenGL).
+`sample_stability` runs the shared stability suite automatically. The same
+suite can be enabled on any sample with `--stability-stress`; configure it with
+`--stress-cycles`, `--stress-stage-frames`, `--stress-report`,
+`--stress-max-cpu-growth-mb` and optionally `--stress-no-exclusive`. See the
+[stability stress-test guide](docs/stability-stress-tests.md).
 Run with `--sample-gltf` for the bundled Khronos Water Bottle, or with
 `--gltf path/to/scene.glb` to load another static glTF 2.0 scene.
 Use `--hdri path/to/environment.hdr` with any scene, or `--hdri-studio` for
@@ -452,7 +467,7 @@ above are not repeated here.
    - [x] RenderDoc integration with named OpenGL/Vulkan resources, matching pass markers, fixed-step automatic capture and backend-neutral CLI validation mode
    - [x] In-engine frame debugger with unified pass order/timing, input/output resource links, texture metadata/memory and frozen mip/layer previews for OpenGL and Vulkan
    - [x] Golden-image visual regression tests with deterministic OpenGL/Vulkan LDR+HDR capture, mixed absolute/relative tolerance, diff images, heatmaps and JSON reports
-   - [ ] Long-running resize/minimize/fullscreen, hot-reload and resource-lifetime stress tests
+   - [x] Long-running resize/minimize/fullscreen, hot-reload and resource-lifetime stress tests
    - [ ] GPU vendor/driver capability database and graceful feature fallback paths
    - [ ] Pipeline cache, shader permutation cache and stutter regression benchmarks
    - [ ] Render graph/frame graph with explicit resource lifetimes and transient target aliasing

@@ -154,6 +154,26 @@ void Window::SetTitle(const std::string& title) { glfwSetWindowTitle(m_handle, t
 
 void Window::SetCursorMode(CursorMode mode) { glfwSetInputMode(m_handle, GLFW_CURSOR, CursorValue(mode)); }
 
+void Window::SetSize(int width, int height)
+{
+    if (width <= 0 || height <= 0)
+        return;
+    if (m_mode != WindowMode::WindowedFixed && m_mode != WindowMode::WindowedResizable)
+        SetMode(WindowMode::WindowedResizable, -1, width, height);
+    else
+        glfwSetWindowSize(m_handle, width, height);
+}
+
+void Window::Minimize()
+{
+    glfwIconifyWindow(m_handle);
+}
+
+void Window::Restore()
+{
+    glfwRestoreWindow(m_handle);
+}
+
 void Window::RememberWindowedPlacement()
 {
     if (m_mode != WindowMode::WindowedFixed && m_mode != WindowMode::WindowedResizable)

@@ -1,11 +1,13 @@
 #include "SandboxApp.h"
 
+#include "SampleAssetPipeline.h"
 #include "SandboxControls.h"
 #include "SandboxScene.h"
 
 #include "engine/core/Application.h"
 #include "engine/core/ApplicationConfig.h"
 #include "engine/core/Log.h"
+#include "engine/diagnostics/StabilityStress.h"
 #include "engine/profiling/CpuProfiler.h"
 #include "engine/profiling/GpuProfiler.h"
 #include "engine/profiling/MemoryProfiler.h"
@@ -15,6 +17,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -58,6 +62,14 @@ void ApplyPreset(SandboxPreset preset, WindowDesc& window, SandboxSceneConfig& c
         config.PostShowcase = true;
         config.CinematicLut = true;
         break;
+    case SandboxPreset::Stability:
+        window.title = "Renderer Sample - Stability Stress";
+        window.width = 1280;
+        window.height = 720;
+        config.SampleGltf = true;
+        config.GltfPath = assets + "/WaterBottle.glb";
+        config.HdriPath = assets + "/studio_small_09_1k.hdr";
+        break;
     }
 }
 
@@ -71,6 +83,7 @@ const char* PresetName(SandboxPreset preset)
     case SandboxPreset::HdriStudio: return "HDRI STUDIO";
     case SandboxPreset::DayNight: return "DAY NIGHT";
     case SandboxPreset::PostProcessing: return "POST PROCESSING";
+    case SandboxPreset::Stability: return "STABILITY STRESS";
     default: return "SANDBOX";
     }
 }
@@ -85,7 +98,10 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
                        uint32_t& memoryProfileRetainedFrames,
                        std::string& gpuProfilePath, uint32_t& gpuProfileRetainedFrames,
                        bool& debugUi, bool& frameDebugger,
-                      std::string& saveConfigPath)
+                      std::string& saveConfigPath,
+                      bool& stabilityStress,
+                      diagnostics::StabilityStressConfig& stabilityConfig,
+                      std::string& stabilityReportPath)
 {
     WindowDesc& window = application.Window;
     RenderBackendConfig& renderer = application.Renderer;
@@ -188,6 +204,18 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
             gpuProfileRetainedFrames = static_cast<uint32_t>(std::max(std::atoi(argv[++i]), 1));
         else if (argument == "--debug-ui") debugUi = true;
         else if (argument == "--frame-debugger") frameDebugger = true;
+        else if (argument == "--stability-stress") stabilityStress = true;
+        else if (argument == "--stress-cycles" && i + 1 < argc)
+            stabilityConfig.Cycles = static_cast<uint32_t>(std::max(std::atoi(argv[++i]), 1));
+        else if (argument == "--stress-stage-frames" && i + 1 < argc)
+            stabilityConfig.FramesPerStage = static_cast<uint32_t>(std::max(std::atoi(argv[++i]), 2));
+        else if (argument == "--stress-report" && i + 1 < argc)
+            stabilityReportPath = argv[++i];
+        else if (argument == "--stress-no-exclusive")
+            stabilityConfig.ExerciseExclusiveFullscreen = false;
+        else if (argument == "--stress-max-cpu-growth-mb" && i + 1 < argc)
+            stabilityConfig.MaximumCpuGrowthBytes = static_cast<uint64_t>(
+                std::max(std::strtoll(argv[++i], nullptr, 10), 0ll)) * 1024ull * 1024ull;
         else if (argument == "--flashlight") sceneConfig.FlashlightOn = true;
         else if (argument == "--shadow-debug") sceneConfig.ShadowDebug = true;
         else if (argument == "--shadow-stress") sceneConfig.ShadowStress = true;
@@ -266,6 +294,9 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     uint32_t gpuProfileRetainedFrames = 240;
     bool debugUi = false;
     bool frameDebugger = false;
+    bool stabilityStress = preset == SandboxPreset::Stability;
+    diagnostics::StabilityStressConfig stabilityConfig;
+    std::string stabilityReportPath;
     std::string saveConfigPath;
     int screenshotFrame = 10;
     try
@@ -275,7 +306,19 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
                          cpuProfilePath, cpuProfileLog, cpuProfileRetainedFrames,
                          memoryProfilePath, memoryLeakReport, memoryProfileRetainedFrames,
                          gpuProfilePath, gpuProfileRetainedFrames, debugUi, frameDebugger,
-                         saveConfigPath);
+                         saveConfigPath, stabilityStress, stabilityConfig, stabilityReportPath);
+        if (stabilityStress)
+        {
+            application.Unfocused = UnfocusedBehavior::Continue;
+            application.FixedDeltaSeconds = application.FixedDeltaSeconds > 0.0f
+                ? application.FixedDeltaSeconds : 1.0f / 60.0f;
+            if (stabilityReportPath.empty())
+            {
+                stabilityReportPath = (std::filesystem::path("build") / "stability" /
+                    (application.Window.api == GraphicsApi::OpenGL
+                        ? "stability.opengl.json" : "stability.vulkan.json")).string();
+            }
+        }
         if (!saveConfigPath.empty())
         {
             std::string error;
@@ -301,7 +344,7 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     memoryProfiler.SetEnabled(false);
     memoryProfiler.Reset();
     profiling::MemoryProfilerConfig memoryConfig;
-    memoryConfig.Enabled = !memoryProfilePath.empty() || memoryLeakReport || debugUi;
+    memoryConfig.Enabled = !memoryProfilePath.empty() || memoryLeakReport || debugUi || stabilityStress;
     memoryConfig.LeakReportOnShutdown = memoryLeakReport;
     memoryConfig.RetainedFrames = memoryProfileRetainedFrames;
     memoryProfiler.Configure(memoryConfig);
@@ -318,18 +361,52 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
         {
             ENGINE_MEMORY_TAG_SCOPE("Core");
             Application app(application);
+            SampleAssetPipeline sampleAssets;
             app.GetDebugOverlay().SetVisible(debugUi);
             app.GetDebugOverlay().SetFrameDebuggerVisible(frameDebugger);
             app.GetDebugOverlay().SetValue("APPLICATION", "SAMPLE", PresetName(preset));
-            PopulateSandboxScene(app, sceneConfig);
+            PopulateSandboxScene(app, sceneConfig, sampleAssets);
+            app.GetDebugOverlay().SetValue("ASSET PIPELINE", "REGISTERED", std::to_string(sampleAssets.AssetCount()));
+            app.GetDebugOverlay().SetValue("ASSET PIPELINE", "RUNTIME RESOURCES", std::to_string(sampleAssets.RuntimeResourceCount()));
+            app.GetDebugOverlay().SetValue("ASSET PIPELINE", "LOADED", std::to_string(sampleAssets.LoadedResourceCount()));
+            app.GetDebugOverlay().SetValue("ASSET PIPELINE", "CACHE HITS", std::to_string(sampleAssets.CacheHitCount()));
             SandboxControls controls(app, sceneConfig.FlashlightOn,
                                      !sceneConfig.LocalLightShowcase && !sceneConfig.HdriStudio,
                                      sceneConfig.LocalLightShowcase, sceneConfig.DayNightShowcase,
                                      sceneConfig.PostShowcase, sceneConfig.DayNightCycleSeconds,
                                      sceneConfig.SunAzimuthDegrees, sceneConfig.SunElevationDegrees,
                                      screenshotPath, hdrScreenshotPath, screenshotFrame);
-            app.SetUpdateCallback([&controls](float deltaTime) { controls.Update(deltaTime); });
+            std::unique_ptr<diagnostics::StabilityStressRunner> stabilityRunner;
+            if (stabilityStress)
+            {
+                stabilityRunner = std::make_unique<diagnostics::StabilityStressRunner>(
+                    app, stabilityConfig,
+                    [&app, &sceneConfig, &sampleAssets]
+                    {
+                        const size_t invalidated = sampleAssets.InvalidateImportedResources();
+                        app.GetScene() = Scene{};
+                        PopulateSandboxScene(app, sceneConfig, sampleAssets);
+                        app.GetDebugOverlay().SetValue("ASSET PIPELINE", "HOT RELOAD INVALIDATED",
+                                                       std::to_string(invalidated));
+                        app.GetDebugOverlay().SetValue("ASSET PIPELINE", "LOADED",
+                            std::to_string(sampleAssets.LoadedResourceCount()));
+                    });
+            }
+            app.SetUpdateCallback([&controls, &stabilityRunner](float deltaTime)
+            {
+                controls.Update(deltaTime);
+                if (stabilityRunner)
+                    stabilityRunner->Update(deltaTime);
+            });
             app.Run();
+            if (stabilityRunner)
+            {
+                if (!stabilityRunner->WriteJsonReport(stabilityReportPath))
+                    throw std::runtime_error("Failed to write stability report: " + stabilityReportPath);
+                log::Info("Saved stability report: " + stabilityReportPath);
+                if (!stabilityRunner->Succeeded())
+                    throw std::runtime_error("Renderer stability stress failed; see " + stabilityReportPath);
+            }
             if (application.FrameCapture.Enabled && !app.GetFrameCapture().CaptureCompleted())
             {
                 throw std::runtime_error(app.GetFrameCapture().LastError().empty()

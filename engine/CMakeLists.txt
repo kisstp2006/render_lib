@@ -18,8 +18,13 @@ set_target_properties(engine_build_config PROPERTIES FOLDER "Engine/Build")
 # Foundation -> Core/Scene/Runtime -> RendererCore -> API backends -> Application.
 add_subdirectory(modules/ThirdParty)
 add_subdirectory(modules/Foundation)
+add_subdirectory(modules/AssetCore)
+add_subdirectory(modules/Resources)
+add_subdirectory(modules/AssetPipeline)
+add_subdirectory(modules/AssetTools)
 add_subdirectory(modules/Core)
 add_subdirectory(modules/Scene)
+add_subdirectory(modules/AssetCookers)
 add_subdirectory(modules/Assets)
 add_subdirectory(modules/Runtime)
 add_subdirectory(modules/RenderTools)
@@ -37,8 +42,13 @@ add_library(engine STATIC src/Engine.cpp)
 target_link_libraries(engine PUBLIC
     engine_build_config
     engine_foundation
+    engine_asset_core
+    engine_resources
+    engine_asset_pipeline
+    engine_asset_tools
     engine_core
     engine_scene
+    engine_asset_cookers
     engine_assets
     engine_runtime
     engine_render_tools

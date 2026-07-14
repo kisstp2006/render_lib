@@ -26,6 +26,22 @@ constexpr VkQueryPipelineStatisticFlags kPipelineStatistics =
 
 } // namespace
 
+BackendResourceStats VulkanRenderBackend::GetResourceStats() const
+{
+    const vulkan::ResourceMemoryStats memory = m_resources.MemoryStats();
+    BackendResourceStats stats;
+    stats.DeviceLocalBytes = memory.DeviceLocalBytes;
+    stats.PeakDeviceLocalBytes = memory.PeakDeviceLocalBytes;
+    stats.HostVisibleBytes = memory.HostVisibleBytes;
+    stats.PeakHostVisibleBytes = memory.PeakHostVisibleBytes;
+    stats.LiveNativeAllocations = memory.AllocationCount;
+    stats.MeshResources = m_meshCache.size();
+    stats.TextureResources = m_textureCache.size() + m_panoramaCache.size() +
+                             m_colorLutCache.size();
+    stats.MaterialResources = m_materialCache.size();
+    return stats;
+}
+
 void VulkanRenderBackend::CreatePerformanceQueries()
 {
     VkPhysicalDeviceProperties properties{};

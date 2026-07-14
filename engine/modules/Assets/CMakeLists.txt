@@ -2,14 +2,30 @@ engine_add_module(engine_assets
     FOLDER "Assets"
     ALIAS assets
     SOURCES
+        ${ENGINE_ROOT}/include/engine/asset/BuiltinAssetTypes.h
         ${ENGINE_ROOT}/include/engine/asset/ColorGrading.h
+        ${ENGINE_ROOT}/include/engine/asset/ColorGradingAsset.h
+        ${ENGINE_ROOT}/include/engine/asset/CubemapAsset.h
         ${ENGINE_ROOT}/include/engine/asset/GltfLoader.h
+        ${ENGINE_ROOT}/include/engine/asset/ModelAsset.h
+        ${ENGINE_ROOT}/include/engine/asset/SceneAsset.h
+        ${ENGINE_ROOT}/include/engine/asset/TextureAsset.h
         ${ENGINE_ROOT}/src/asset/ColorGrading.cpp
+        ${ENGINE_ROOT}/src/asset/ColorGradingAsset.cpp
+        ${ENGINE_ROOT}/src/asset/BuiltinAssetTypes.cpp
+        ${ENGINE_ROOT}/src/asset/CubemapAsset.cpp
         ${ENGINE_ROOT}/src/asset/GltfLoader.cpp
+        ${ENGINE_ROOT}/src/asset/ModelAsset.cpp
+        ${ENGINE_ROOT}/src/asset/SceneAsset.cpp
+        ${ENGINE_ROOT}/src/asset/TextureAsset.cpp
     PUBLIC_DEPS
         engine_foundation
+        engine_asset_core
+        engine_resources
+        engine_asset_pipeline
         engine_scene
     PRIVATE_DEPS
+        engine_asset_cookers
         engine_third_party
     PRIVATE_INCLUDE_DIRS
         ${cgltf_SOURCE_DIR})

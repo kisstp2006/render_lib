@@ -50,6 +50,38 @@ float HalfToFloat(uint16_t half)
     return value;
 }
 
+VkSamplerAddressMode ToSamplerAddressMode(TextureAddressMode mode)
+{
+    switch (mode)
+    {
+    case TextureAddressMode::Clamp: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    case TextureAddressMode::Mirror: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    case TextureAddressMode::Border: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    default: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    }
+}
+
+VkFormat ToTextureFormat(TexturePixelStorage storage, bool srgb)
+{
+    switch (storage)
+    {
+    case TexturePixelStorage::Rgba32Float:
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    case TexturePixelStorage::Bc1Rgb:
+        return srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    case TexturePixelStorage::Bc3Rgba:
+        return srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+    case TexturePixelStorage::Bc5Rg:
+        return VK_FORMAT_BC5_UNORM_BLOCK;
+    case TexturePixelStorage::Bc7Rgba:
+        return srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+    case TexturePixelStorage::Astc4x4Rgba:
+        return srgb ? VK_FORMAT_ASTC_4x4_SRGB_BLOCK : VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+    default:
+        return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
 } // namespace
 
 VkCommandBuffer VulkanRenderBackend::BeginImmediateCommands()
@@ -155,16 +187,58 @@ const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
     const std::shared_ptr<TextureData>& texture, const std::shared_ptr<TextureData>& fallback)
 {
     const std::shared_ptr<TextureData>& source = texture ? texture : fallback;
-    if (!source || source->Width <= 0 || source->Height <= 0
-        || source->Pixels.size() < static_cast<size_t>(source->Width * source->Height * 4))
+    if (!source || source->Width <= 0 || source->Height <= 0)
     {
         throw std::runtime_error("Vulkan: invalid CPU texture data");
     }
     if (const auto found = m_textureCache.find(source.get()); found != m_textureCache.end())
         return found->second;
 
-    const VkDeviceSize byteCount = static_cast<VkDeviceSize>(source->Width)
-                                 * static_cast<VkDeviceSize>(source->Height) * 4;
+    const bool floatingPoint = source->Storage == TexturePixelStorage::Rgba32Float;
+    const bool blockCompressed = IsBlockCompressed(source->Storage);
+    const bool hasCookedMips = !source->MipLevels.empty();
+    if (blockCompressed && !hasCookedMips)
+        throw std::runtime_error("Vulkan: block-compressed textures require a complete cooked mip chain");
+    const uint32_t largestDimension = static_cast<uint32_t>(std::max(source->Width, source->Height));
+    const uint32_t mipLevels = hasCookedMips ? static_cast<uint32_t>(source->MipLevels.size()) :
+        static_cast<uint32_t>(std::floor(std::log2(largestDimension))) + 1u;
+
+    std::vector<VkBufferImageCopy> copyRegions;
+    VkDeviceSize byteCount = 0;
+    if (hasCookedMips)
+    {
+        copyRegions.reserve(source->MipLevels.size());
+        for (uint32_t mip = 0; mip < mipLevels; ++mip)
+        {
+            const TextureMipData& level = source->MipLevels[mip];
+            const size_t expected = TextureMipByteSize(source->Storage, static_cast<uint32_t>(level.Width),
+                                                       static_cast<uint32_t>(level.Height));
+            const size_t available = floatingPoint ? level.FloatPixels.size() * sizeof(float) : level.Pixels.size();
+            if (level.Width <= 0 || level.Height <= 0 ||
+                available != expected)
+                throw std::runtime_error("Vulkan: invalid cooked texture mip data");
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = byteCount;
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+            copy.imageExtent = {static_cast<uint32_t>(level.Width),
+                                static_cast<uint32_t>(level.Height), 1};
+            copyRegions.push_back(copy);
+            byteCount += static_cast<VkDeviceSize>(expected);
+        }
+    }
+    else
+    {
+        const size_t expected = static_cast<size_t>(source->Width) * source->Height * 4u;
+        if ((floatingPoint ? source->FloatPixels.size() : source->Pixels.size()) < expected)
+            throw std::runtime_error("Vulkan: invalid CPU texture level zero data");
+        byteCount = static_cast<VkDeviceSize>(expected * (floatingPoint ? sizeof(float) : sizeof(uint8_t)));
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {static_cast<uint32_t>(source->Width),
+                            static_cast<uint32_t>(source->Height), 1};
+        copyRegions.push_back(copy);
+    }
+
     vulkan::Buffer staging = m_resources.CreateBuffer(
         byteCount, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -175,16 +249,37 @@ const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
         void* mapped = nullptr;
         if (vkMapMemory(m_device, staging.Memory, 0, byteCount, 0, &mapped) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to map texture staging memory");
-        std::memcpy(mapped, source->Pixels.data(), static_cast<size_t>(byteCount));
+        if (hasCookedMips)
+        {
+            std::byte* destination = static_cast<std::byte*>(mapped);
+            for (uint32_t mip = 0; mip < mipLevels; ++mip)
+            {
+                const TextureMipData& level = source->MipLevels[mip];
+                const size_t size = TextureMipByteSize(source->Storage, static_cast<uint32_t>(level.Width),
+                                                       static_cast<uint32_t>(level.Height));
+                const void* pixels = floatingPoint ? static_cast<const void*>(level.FloatPixels.data()) :
+                                                     static_cast<const void*>(level.Pixels.data());
+                std::memcpy(destination + copyRegions[mip].bufferOffset, pixels, size);
+            }
+        }
+        else
+        {
+            const void* pixels = floatingPoint ? static_cast<const void*>(source->FloatPixels.data()) :
+                                                 static_cast<const void*>(source->Pixels.data());
+            std::memcpy(mapped, pixels, static_cast<size_t>(byteCount));
+        }
         vkUnmapMemory(m_device, staging.Memory);
 
-        const VkFormat format = source->SRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-        const uint32_t largestDimension = static_cast<uint32_t>(std::max(source->Width, source->Height));
-        const uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(largestDimension))) + 1u;
+        const VkFormat format = ToTextureFormat(source->Storage, source->SRGB);
+        VkFormatProperties formatProperties{};
+        vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &formatProperties);
+        if ((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) == 0)
+            throw std::runtime_error("Vulkan: the GPU does not support the cooked texture block format");
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!hasCookedMips && mipLevels > 1) usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         gpuTexture.Image = m_resources.CreateImage2D(
             static_cast<uint32_t>(source->Width), static_cast<uint32_t>(source->Height), format,
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
+            usage, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
         m_resources.SetDebugName(gpuTexture.Image,
             "Material Texture " + std::to_string(textureId) +
             (source->SRGB ? " (sRGB)" : " (Linear)"));
@@ -207,92 +302,121 @@ const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
         dependency.pImageMemoryBarriers = &toTransfer;
         vkCmdPipelineBarrier2(commandBuffer, &dependency);
 
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {static_cast<uint32_t>(source->Width), static_cast<uint32_t>(source->Height), 1};
         vkCmdCopyBufferToImage(commandBuffer, staging.Handle, gpuTexture.Image.Handle,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
 
-        int32_t mipWidth = source->Width;
-        int32_t mipHeight = source->Height;
-        for (uint32_t mip = 1; mip < mipLevels; ++mip)
+        if (!hasCookedMips)
         {
-            VkImageMemoryBarrier2 toSource{};
-            toSource.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            toSource.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            toSource.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            toSource.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            toSource.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-            toSource.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            toSource.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            toSource.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toSource.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toSource.image = gpuTexture.Image.Handle;
-            toSource.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1u, 1, 0, 1};
-            dependency.pImageMemoryBarriers = &toSource;
+            int32_t mipWidth = source->Width;
+            int32_t mipHeight = source->Height;
+            for (uint32_t mip = 1; mip < mipLevels; ++mip)
+            {
+                VkImageMemoryBarrier2 toSource{};
+                toSource.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                toSource.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                toSource.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                toSource.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                toSource.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                toSource.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                toSource.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                toSource.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toSource.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toSource.image = gpuTexture.Image.Handle;
+                toSource.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1u, 1, 0, 1};
+                dependency.pImageMemoryBarriers = &toSource;
+                vkCmdPipelineBarrier2(commandBuffer, &dependency);
+
+                const int32_t nextWidth = std::max(mipWidth / 2, 1);
+                const int32_t nextHeight = std::max(mipHeight / 2, 1);
+                VkImageBlit blit{};
+                blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1u, 0, 1};
+                blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
+                blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+                blit.dstOffsets[1] = {nextWidth, nextHeight, 1};
+                vkCmdBlitImage(commandBuffer,
+                               gpuTexture.Image.Handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               gpuTexture.Image.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1, &blit, VK_FILTER_LINEAR);
+                mipWidth = nextWidth;
+                mipHeight = nextHeight;
+            }
+        }
+
+        if (hasCookedMips)
+        {
+            VkImageMemoryBarrier2 toShader{};
+            toShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            toShader.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            toShader.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            toShader.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            toShader.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.image = gpuTexture.Image.Handle;
+            toShader.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
+            dependency.imageMemoryBarrierCount = 1;
+            dependency.pImageMemoryBarriers = &toShader;
             vkCmdPipelineBarrier2(commandBuffer, &dependency);
-
-            const int32_t nextWidth = std::max(mipWidth / 2, 1);
-            const int32_t nextHeight = std::max(mipHeight / 2, 1);
-            VkImageBlit blit{};
-            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1u, 0, 1};
-            blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
-            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
-            blit.dstOffsets[1] = {nextWidth, nextHeight, 1};
-            vkCmdBlitImage(commandBuffer,
-                           gpuTexture.Image.Handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           gpuTexture.Image.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           1, &blit, VK_FILTER_LINEAR);
-            mipWidth = nextWidth;
-            mipHeight = nextHeight;
         }
-
-        std::array<VkImageMemoryBarrier2, 2> toShader{};
-        uint32_t barrierCount = 0;
-        if (mipLevels > 1)
+        else
         {
-            VkImageMemoryBarrier2& generated = toShader[barrierCount++];
-            generated.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            generated.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            generated.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-            generated.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            generated.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            generated.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            generated.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            generated.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            generated.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            generated.image = gpuTexture.Image.Handle;
-            generated.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels - 1u, 0, 1};
+            std::array<VkImageMemoryBarrier2, 2> toShader{};
+            uint32_t barrierCount = 0;
+            if (mipLevels > 1)
+            {
+                VkImageMemoryBarrier2& generated = toShader[barrierCount++];
+                generated.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                generated.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                generated.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                generated.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                generated.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                generated.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                generated.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                generated.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                generated.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                generated.image = gpuTexture.Image.Handle;
+                generated.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels - 1u, 0, 1};
+            }
+            VkImageMemoryBarrier2& last = toShader[barrierCount++];
+            last.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            last.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            last.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            last.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            last.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            last.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            last.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            last.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            last.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            last.image = gpuTexture.Image.Handle;
+            last.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mipLevels - 1u, 1, 0, 1};
+            dependency.imageMemoryBarrierCount = barrierCount;
+            dependency.pImageMemoryBarriers = toShader.data();
+            vkCmdPipelineBarrier2(commandBuffer, &dependency);
         }
-        VkImageMemoryBarrier2& last = toShader[barrierCount++];
-        last.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        last.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        last.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        last.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        last.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        last.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        last.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        last.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        last.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        last.image = gpuTexture.Image.Handle;
-        last.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mipLevels - 1u, 1, 0, 1};
-        dependency.imageMemoryBarrierCount = barrierCount;
-        dependency.pImageMemoryBarriers = toShader.data();
-        vkCmdPipelineBarrier2(commandBuffer, &dependency);
         EndImmediateCommands(commandBuffer);
 
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        samplerInfo.magFilter = VK_FILTER_LINEAR;
-        samplerInfo.minFilter = VK_FILTER_LINEAR;
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.anisotropyEnable = m_samplerAnisotropySupported ? VK_TRUE : VK_FALSE;
-        samplerInfo.maxAnisotropy = m_maxSamplerAnisotropy;
+        const bool nearest = source->Filter == TextureFilterMode::Nearest;
+        samplerInfo.magFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        samplerInfo.minFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = (source->Filter == TextureFilterMode::Trilinear ||
+                                  source->Filter == TextureFilterMode::Anisotropic) ?
+                                 VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.addressModeU = ToSamplerAddressMode(source->AddressU);
+        samplerInfo.addressModeV = ToSamplerAddressMode(source->AddressV);
+        samplerInfo.addressModeW = ToSamplerAddressMode(source->AddressW);
+        samplerInfo.mipLodBias = source->MipBias;
+        samplerInfo.anisotropyEnable = m_samplerAnisotropySupported &&
+            source->Filter == TextureFilterMode::Anisotropic ? VK_TRUE : VK_FALSE;
+        samplerInfo.maxAnisotropy = samplerInfo.anisotropyEnable ?
+            std::clamp(source->MaxAnisotropy, 1.0f, m_maxSamplerAnisotropy) : 1.0f;
         samplerInfo.minLod = 0.0f;
         samplerInfo.maxLod = static_cast<float>(mipLevels - 1u);
+        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
         if (vkCreateSampler(m_device, &samplerInfo, nullptr, &gpuTexture.Sampler) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create material sampler");
         SetDebugName(VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<uint64_t>(gpuTexture.Sampler),

@@ -33,6 +33,7 @@ public:
     void RequestHdrScreenshot(const std::string& path) override { m_hdrScreenshotPath = path; }
     BackendFrameStats GetFrameStats() const override { return m_frameStats; }
     BackendCapabilities GetCapabilities() const override { return m_capabilities; }
+    BackendResourceStats GetResourceStats() const override;
     debug::FrameDebugSnapshot GetFrameDebugSnapshot() const override;
     bool CaptureFrameDebugResource(uint64_t resourceId, uint32_t mipLevel,
                                    uint32_t layer,

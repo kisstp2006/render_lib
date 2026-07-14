@@ -361,6 +361,11 @@ void VulkanRenderBackend::CreateLogicalDevice()
     deviceFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
     deviceFeatures.imageCubeArray = supportedFeatures.imageCubeArray;
     deviceFeatures.pipelineStatisticsQuery = supportedFeatures.pipelineStatisticsQuery;
+    // Cooked assets may contain native desktop BC or mobile ASTC blocks. The
+    // corresponding device feature must be enabled before those formats can
+    // legally be sampled, even when format properties advertise support.
+    deviceFeatures.textureCompressionBC = supportedFeatures.textureCompressionBC;
+    deviceFeatures.textureCompressionASTC_LDR = supportedFeatures.textureCompressionASTC_LDR;
     m_samplerAnisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
     m_pipelineStatisticsSupported = supportedFeatures.pipelineStatisticsQuery == VK_TRUE;
     m_capabilities.GpuPipelineStatistics = m_pipelineStatisticsSupported;

@@ -6,6 +6,8 @@ namespace engine {
 class Application;
 }
 
+class SampleAssetPipeline;
+
 struct SandboxSceneConfig
 {
     std::string GltfPath;
@@ -49,4 +51,5 @@ struct SandboxSceneConfig
     bool AnimateNightSky = true;
 };
 
-void PopulateSandboxScene(engine::Application& app, const SandboxSceneConfig& config);
+void PopulateSandboxScene(engine::Application& app, const SandboxSceneConfig& config,
+                          SampleAssetPipeline& assets);

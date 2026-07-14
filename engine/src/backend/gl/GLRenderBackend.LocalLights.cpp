@@ -94,6 +94,11 @@ void GLRenderBackend::DestroyLocalLightResources()
     if (m_pointShadowFbo) glDeleteFramebuffers(1, &m_pointShadowFbo);
     if (m_localShadowAtlas) glDeleteTextures(1, &m_localShadowAtlas);
     if (m_localShadowAtlasFbo) glDeleteFramebuffers(1, &m_localShadowAtlasFbo);
+    m_cookieAtlas = 0;
+    m_pointShadowArray = 0;
+    m_pointShadowFbo = 0;
+    m_localShadowAtlas = 0;
+    m_localShadowAtlasFbo = 0;
     m_cookieSlots.clear();
 }
 

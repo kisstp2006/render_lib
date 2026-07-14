@@ -56,6 +56,11 @@ class Application
     bool IsPaused() const { return m_paused; }
     void SetFrameRateLimit(double framesPerSecond);
     bool SetPresentMode(PresentMode mode);
+    void SetWindowMode(WindowMode mode, int monitor = -1, int width = 0, int height = 0);
+    // Recreates the active backend against the existing window and scene.
+    // This is the safe shader/renderer hot-reload path: all old native
+    // resources must be released before the new backend is initialized.
+    void ReloadRenderer();
     void SetRuntimeMonitorsEnabled(bool enabled);
 
   private:

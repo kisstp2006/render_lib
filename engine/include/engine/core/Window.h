@@ -66,7 +66,10 @@ class Window
 
     void SetTitle(const std::string& title);
     void SetCursorMode(CursorMode mode);
+    void SetSize(int width, int height);
     void SetMode(WindowMode mode, int monitor = -1, int width = 0, int height = 0);
+    void Minimize();
+    void Restore();
 
     bool IsFocused() const;
     bool IsVisible() const;

@@ -185,6 +185,12 @@ void GLRenderBackend::Shutdown()
     glDeleteBuffers(2, m_exposurePbos);
     DestroyGpuProfilerQueries();
     m_exposurePbos[0] = m_exposurePbos[1] = 0;
+    m_emptyVao = 0;
+    m_shadowMaps.fill(0);
+    m_shadowFbo = 0;
+    m_width = 0;
+    m_height = 0;
+    m_window = nullptr;
 }
 
 void GLRenderBackend::Resize(int width, int height)

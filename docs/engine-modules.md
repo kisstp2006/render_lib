@@ -17,7 +17,8 @@ References:
 
 ```text
 Application -> Runtime -> Foundation
-           |-> Assets -> Scene -> Foundation
+           |-> AssetTools -> AssetPipeline -> Resources -> AssetCore -> Foundation
+           |              -> Assets -> AssetCookers -> Scene -> Foundation
            |-> RendererOpenGL -> RendererCore -> Core -> Foundation
            |                   |               -> Scene
            |-> RendererVulkan -> RendererCore
@@ -35,9 +36,14 @@ target. Native backends consume the same `Scene`, `Camera` and
 | CMake target | Alias | Responsibility |
 | --- | --- | --- |
 | `engine_foundation` | `engine::foundation` | Logging and CPU/GPU/memory profiling primitives |
+| `engine_asset_core` | `engine::asset_core` | GUIDs, descriptor serialization/migration, hashes and dependency database |
+| `engine_resources` | `engine::resources` | Cooked resource format, runtime registry, typed handles/loaders and weak cache |
+| `engine_asset_pipeline` | `engine::asset_pipeline` | Import dispatch, validation, dependency-ordered transform and dirty-state policy |
+| `engine_asset_tools` | `engine::asset_tools` | UI-independent inspector/browser/drop/preview models |
 | `engine_core` | `engine::core` | Window, input, camera and RenderDoc integration |
 | `engine_scene` | `engine::scene` | Backend-independent meshes, materials, lights and environment |
-| `engine_assets` | `engine::assets` | glTF and color-grading import |
+| `engine_asset_cookers` | `engine::asset_cookers` | BC/ASTC encoding, meshoptimizer LOD/geometry optimization and collision BVH/convex cooking |
+| `engine_assets` | `engine::assets` | Texture, color-LUT, cubemap, skybox, material, glTF static-mesh and scene asset types plus compatibility source loaders |
 | `engine_runtime` | `engine::runtime` | World hierarchy, components and runtime C++ plugins |
 | `engine_renderer_core` | `engine::renderer_core` | Shared CSM, exposure, TAA, frame preparation and debug UI |
 | `engine_renderer_opengl` | `engine::renderer_opengl` | OpenGL resource ownership, passes and synchronization |

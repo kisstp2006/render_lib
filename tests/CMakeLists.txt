@@ -39,7 +39,57 @@ else()
     target_compile_options(engine_test_dependent_plugin PRIVATE -Wall -Wextra)
 endif()
 
+if(ENGINE_BUILD_SANDBOX)
+    set(STABILITY_STRESS_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunStabilityStress.cmake)
+    set(STABILITY_STRESS_OUTPUT ${CMAKE_BINARY_DIR}/stability)
+    set(STABILITY_STRESS_COMMAND
+        ${CMAKE_COMMAND}
+        -DSTABILITY_EXECUTABLE=$<TARGET_FILE:sample_stability>
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DOUTPUT_DIR=${STABILITY_STRESS_OUTPUT}
+        -DRUN_VULKAN=$<BOOL:${ENGINE_BUILD_VULKAN}>)
+
+    add_custom_target(stability_stress
+        COMMAND ${STABILITY_STRESS_COMMAND} -P ${STABILITY_STRESS_SCRIPT}
+        DEPENDS sample_stability
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        USES_TERMINAL
+        COMMENT "Running long-lived resize/fullscreen/hot-reload resource stress tests")
+    set_target_properties(stability_stress PROPERTIES FOLDER "Tests/GPU")
+
+    add_custom_target(stability_stress_long
+        COMMAND ${STABILITY_STRESS_COMMAND}
+                -DSTRESS_CYCLES=100
+                -DSTRESS_STAGE_FRAMES=8
+                -P ${STABILITY_STRESS_SCRIPT}
+        DEPENDS sample_stability
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        USES_TERMINAL
+        COMMENT "Running 100-cycle OpenGL/Vulkan stability soak test")
+    set_target_properties(stability_stress_long PROPERTIES FOLDER "Tests/GPU")
+
+    if(ENGINE_ENABLE_GPU_STABILITY_TESTS)
+        add_test(NAME engine_stability_stress
+            COMMAND ${STABILITY_STRESS_COMMAND} -P ${STABILITY_STRESS_SCRIPT})
+        set_tests_properties(engine_stability_stress PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            LABELS "gpu;stability"
+            TIMEOUT 1200)
+    endif()
+endif()
+
 add_test(NAME engine_renderer_core COMMAND engine_tests)
+
+add_executable(engine_asset_tests src/AssetPipelineTests.cpp)
+set_target_properties(engine_asset_tests PROPERTIES FOLDER "Tests")
+target_link_libraries(engine_asset_tests PRIVATE engine_assets engine_asset_tools engine_asset_cookers)
+if(MSVC)
+    target_compile_options(engine_asset_tests PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(engine_asset_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME engine_asset_pipeline COMMAND engine_asset_tests)
+set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 180)
 
 add_executable(engine_visual_compare src/VisualCompare.cpp)
 set_target_properties(engine_visual_compare PROPERTIES FOLDER "Tools")

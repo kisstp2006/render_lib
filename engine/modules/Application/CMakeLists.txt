@@ -16,7 +16,9 @@ engine_add_module(engine_application
         ${ENGINE_ROOT}/include/engine/core/Application.h
         ${ENGINE_ROOT}/include/engine/core/ApplicationConfig.h
         ${ENGINE_ROOT}/include/engine/core/ApplicationDesc.h
+        ${ENGINE_ROOT}/include/engine/diagnostics/StabilityStress.h
         ${ENGINE_ROOT}/src/core/Application.cpp
         ${ENGINE_ROOT}/src/core/ApplicationConfig.cpp
+        ${ENGINE_ROOT}/src/diagnostics/StabilityStress.cpp
     PUBLIC_DEPS
         ${application_dependencies})
