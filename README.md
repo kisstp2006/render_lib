@@ -307,6 +307,16 @@ report and `--gpu-profile-retain N` sets its bounded history. Disable all native
 GPU queries with `--no-gpu-timing` or `Renderer.EnableGpuTiming = false`. See
 the [GPU profiler guide](docs/gpu-profiler.md).
 
+GPU discovery is also backend-neutral: vendor/device/driver identity, native
+format and query support, active feature tier and every automatic fallback are
+stored in one capability profile. Proven driver rules and hardware limits
+gracefully reduce MSAA, anisotropy, presentation and profiling features;
+unsupported BC/BC7/ASTC assets use their cooked RGBA8 safety mip chain instead
+of failing at upload. `--gpu-capabilities <path.json>` exports the complete
+profile, `--gpu-policy conservative` enables defensive caps and
+`--no-driver-workarounds` is available for diagnosis. See the
+[GPU capability and fallback guide](docs/gpu-capabilities.md).
+
 RenderDoc capture is deterministic and backend-neutral. `--renderdoc-capture
 <path-template> --renderdoc-frame N` captures the same fixed-step frame from
 OpenGL or Vulkan and exits after saving; `--renderdoc-library <path>` supports
@@ -372,6 +382,8 @@ Every sample accepts `--windowed`, `--fixed-window`, `--borderless`,
 `--position X Y`, `--cursor MODE`, `--vsync`,
 `--no-vsync`, `--adaptive-vsync`, `--msaa N`, `--anisotropy N`, `--adapter NAME`,
 `--no-prefer-discrete`, `--validation`, `--no-validation`, `--no-gpu-timing`,
+`--gpu-policy default|conservative`, `--no-driver-workarounds`,
+`--gpu-capabilities path.json`,
 `--no-runtime-monitors`,
 `--max-fps N`, `--max-delta N` and `--unfocused continue|render|pause`.
 Profiling switches shared by every sample are `--cpu-profile path.json`,
@@ -468,7 +480,7 @@ above are not repeated here.
    - [x] In-engine frame debugger with unified pass order/timing, input/output resource links, texture metadata/memory and frozen mip/layer previews for OpenGL and Vulkan
    - [x] Golden-image visual regression tests with deterministic OpenGL/Vulkan LDR+HDR capture, mixed absolute/relative tolerance, diff images, heatmaps and JSON reports
    - [x] Long-running resize/minimize/fullscreen, hot-reload and resource-lifetime stress tests
-   - [ ] GPU vendor/driver capability database and graceful feature fallback paths
+   - [x] GPU vendor/driver capability database with shared OpenGL/Vulkan discovery, capability tiers, software-driver rules, JSON/debug-UI diagnostics and graceful MSAA/anisotropy/present/profiler/BC/ASTC fallback paths
    - [ ] Pipeline cache, shader permutation cache and stutter regression benchmarks
    - [ ] Render graph/frame graph with explicit resource lifetimes and transient target aliasing
 

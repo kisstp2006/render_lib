@@ -4,6 +4,7 @@
 #include <string>
 
 #include "engine/debug/FrameDebugger.h"
+#include "engine/render/GpuCapabilities.h"
 
 namespace engine
 {
@@ -34,6 +35,8 @@ struct RenderBackendConfig
     bool EnableValidation = true;
 #endif
     bool EnableGpuTiming = true;
+    GpuCapabilityPolicy CapabilityPolicy = GpuCapabilityPolicy::Default;
+    bool EnableDriverWorkarounds = true;
 };
 
 struct BackendCapabilities
@@ -50,6 +53,7 @@ struct BackendCapabilities
     bool GpuMemoryBudget = false;
     bool ImmediatePresent = false;
     bool AdaptivePresent = false;
+    GpuCapabilityProfile Gpu;
 };
 
 struct BackendFrameStats

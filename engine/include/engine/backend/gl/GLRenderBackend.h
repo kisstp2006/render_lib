@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "engine/backend/IRenderBackend.h"
@@ -227,6 +228,7 @@ private:
     // after the original shared_ptr was released.
     std::unordered_map<std::shared_ptr<MeshData>, std::unique_ptr<GLMesh>> m_meshCache;
     std::unordered_map<std::shared_ptr<TextureData>, std::unique_ptr<GLTexture>> m_textureCache;
+    std::unordered_set<const TextureData*> m_textureFallbackWarnings;
     std::unordered_map<std::shared_ptr<ColorGradingLutData>, unsigned int> m_colorLutCache;
 };
 

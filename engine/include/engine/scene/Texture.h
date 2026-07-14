@@ -75,6 +75,9 @@ struct TextureData
     std::vector<uint8_t> Pixels;
     std::vector<float> FloatPixels;
     std::vector<TextureMipData> MipLevels;
+    // Platform-neutral safety payload emitted next to native BC/ASTC blocks.
+    // It is used only when the selected GPU cannot sample the cooked format.
+    std::vector<TextureMipData> Rgba8FallbackMipLevels;
     TextureFilterMode Filter = TextureFilterMode::Anisotropic;
     TextureAddressMode AddressU = TextureAddressMode::Repeat;
     TextureAddressMode AddressV = TextureAddressMode::Repeat;

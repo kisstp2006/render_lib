@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <sstream>
 #include <set>
 #include <stdexcept>
 
@@ -112,6 +113,20 @@ VkSampleCountFlagBits SelectSampleCount(VkSampleCountFlags supported, uint32_t r
             return samples;
     }
     return VK_SAMPLE_COUNT_1_BIT;
+}
+
+std::string VulkanVersion(uint32_t version)
+{
+    return std::to_string(VK_API_VERSION_MAJOR(version)) + "." +
+           std::to_string(VK_API_VERSION_MINOR(version)) + "." +
+           std::to_string(VK_API_VERSION_PATCH(version));
+}
+
+bool SupportsSampledFormat(VkPhysicalDevice device, VkFormat format)
+{
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(device, format, &properties);
+    return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
 }
 
 } // namespace
@@ -319,23 +334,108 @@ void VulkanRenderBackend::PickPhysicalDevice()
         throw std::runtime_error("No suitable Vulkan GPU found");
     }
 
-    VkPhysicalDeviceProperties props{};
-    vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
+    VkPhysicalDeviceDriverProperties driver{};
+    driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+    VkPhysicalDeviceProperties2 properties2{};
+    properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties2.pNext = &driver;
+    vkGetPhysicalDeviceProperties2(m_physicalDevice, &properties2);
+    const VkPhysicalDeviceProperties& props = properties2.properties;
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(m_physicalDevice, &features);
     const VkSampleCountFlags commonSamples = props.limits.framebufferColorSampleCounts
                                            & props.limits.framebufferDepthSampleCounts;
-    m_msaaSamples = SelectSampleCount(commonSamples, std::max(m_config.MsaaSamples, 1u));
+
+    uint32_t presentModeCount = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &presentModeCount, nullptr);
+    std::vector<VkPresentModeKHR> presentModes(presentModeCount);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &presentModeCount,
+                                               presentModes.data());
+    const auto hasPresentMode = [&presentModes](VkPresentModeKHR mode)
+    {
+        return std::find(presentModes.begin(), presentModes.end(), mode) != presentModes.end();
+    };
+
+    const QueueFamilyIndices queueIndices = FindQueueFamilies(m_physicalDevice);
+    uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &familyCount, families.data());
+    const bool timestamps = queueIndices.Graphics && families[*queueIndices.Graphics].timestampValidBits > 0 &&
+                            props.limits.timestampComputeAndGraphics == VK_TRUE;
+
+    GpuRawCapabilities raw;
+    raw.Device.Api = GpuApi::Vulkan;
+    raw.Device.VendorId = props.vendorID;
+    raw.Device.DeviceId = props.deviceID;
+    raw.Device.DriverId = static_cast<uint32_t>(driver.driverID);
+    raw.Device.DriverVersion = props.driverVersion;
+    raw.Device.DeviceName = props.deviceName;
+    raw.Device.Vendor = IdentifyGpuVendor(props.vendorID, driver.driverName, props.deviceName);
+    raw.Device.VendorName = GpuVendorName(raw.Device.Vendor);
+    raw.Device.ApiVersion = VulkanVersion(props.apiVersion);
+    raw.Device.DriverName = driver.driverName;
+    raw.Device.DriverInfo = driver.driverInfo;
+    raw.Device.ConformanceVersion = std::to_string(driver.conformanceVersion.major) + "." +
+        std::to_string(driver.conformanceVersion.minor) + "." +
+        std::to_string(driver.conformanceVersion.subminor) + "." +
+        std::to_string(driver.conformanceVersion.patch);
+    raw.Device.SoftwareRenderer = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    raw.MaxMsaaSamples = SampleCountValue(SelectSampleCount(commonSamples, 64));
+    raw.MaxAnisotropy = features.samplerAnisotropy ? props.limits.maxSamplerAnisotropy : 1.0f;
+    raw.TextureCompressionBc = features.textureCompressionBC &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_BC1_RGBA_UNORM_BLOCK) &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_BC1_RGBA_SRGB_BLOCK) &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_BC3_UNORM_BLOCK) &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_BC3_SRGB_BLOCK) &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_BC5_UNORM_BLOCK);
+    raw.TextureCompressionBc7 = features.textureCompressionBC &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_BC7_UNORM_BLOCK) &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_BC7_SRGB_BLOCK);
+    raw.TextureCompressionAstc = features.textureCompressionASTC_LDR &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_ASTC_4x4_UNORM_BLOCK) &&
+        SupportsSampledFormat(m_physicalDevice, VK_FORMAT_ASTC_4x4_SRGB_BLOCK);
+    raw.GpuTimestamps = timestamps;
+    raw.PipelineStatistics = features.pipelineStatisticsQuery;
+    raw.MemoryBudget = DeviceHasExtension(m_physicalDevice, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    raw.ImmediatePresent = hasPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
+    raw.AdaptivePresent = hasPresentMode(VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+    raw.DynamicRendering = true;
+    raw.Synchronization2 = true;
+
+    GpuCapabilityRequest request;
+    request.MsaaSamples = m_config.MsaaSamples;
+    request.MaxAnisotropy = m_config.MaxAnisotropy;
+    request.EnableGpuTiming = m_config.EnableGpuTiming;
+    request.RequestImmediatePresent = m_config.Presentation == PresentMode::Immediate;
+    request.RequestAdaptivePresent = m_config.Presentation == PresentMode::Adaptive;
+    request.Policy = m_config.CapabilityPolicy;
+    request.EnableDriverWorkarounds = m_config.EnableDriverWorkarounds;
+    m_capabilities.Gpu = EvaluateGpuCapabilities(raw, request);
+    m_msaaSamples = SelectSampleCount(commonSamples, m_capabilities.Gpu.SelectedMsaaSamples);
     m_capabilities.AdapterName = props.deviceName;
-    m_capabilities.MaxMsaaSamples = SampleCountValue(SelectSampleCount(commonSamples, 64));
+    m_capabilities.MaxMsaaSamples = raw.MaxMsaaSamples;
     m_capabilities.ActiveMsaaSamples = SampleCountValue(m_msaaSamples);
-    m_memoryBudgetSupported = DeviceHasExtension(m_physicalDevice,
-                                                  VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    m_capabilities.MaxAnisotropy = raw.MaxAnisotropy;
+    m_capabilities.ActiveAnisotropy = m_capabilities.Gpu.SelectedAnisotropy;
+    m_capabilities.GpuTiming = raw.GpuTimestamps;
+    m_capabilities.GpuPipelineStatistics = raw.PipelineStatistics;
+    m_capabilities.ImmediatePresent = raw.ImmediatePresent;
+    m_capabilities.AdaptivePresent = raw.AdaptivePresent;
+    m_capabilities.HardwareAccelerated = !raw.Device.SoftwareRenderer;
+    m_memoryBudgetSupported = raw.MemoryBudget;
     m_capabilities.GpuMemoryBudget = m_memoryBudgetSupported;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memoryProperties);
     for (uint32_t i = 0; i < memoryProperties.memoryHeapCount; ++i)
         if ((memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
             m_capabilities.DedicatedVideoMemoryBytes += memoryProperties.memoryHeaps[i].size;
-    log::Info(std::string("Vulkan GPU: ") + props.deviceName);
+    log::Info(std::string("Vulkan GPU: ") + props.deviceName + " (" + driver.driverName +
+              ", API " + raw.Device.ApiVersion + ", tier " +
+              GpuFeatureTierName(m_capabilities.Gpu.Tier) + ")");
+    for (const GpuFallbackDecision& fallback : m_capabilities.Gpu.Fallbacks)
+        log::Warn("GPU fallback [" + fallback.RuleId + "] " + fallback.Feature + ": " +
+                  fallback.Requested + " -> " + fallback.Selected + " (" + fallback.Reason + ")");
 }
 
 void VulkanRenderBackend::CreateLogicalDevice()
@@ -366,16 +466,15 @@ void VulkanRenderBackend::CreateLogicalDevice()
     // legally be sampled, even when format properties advertise support.
     deviceFeatures.textureCompressionBC = supportedFeatures.textureCompressionBC;
     deviceFeatures.textureCompressionASTC_LDR = supportedFeatures.textureCompressionASTC_LDR;
-    m_samplerAnisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
+    m_samplerAnisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE &&
+        m_capabilities.Gpu.Supports(GpuFeature::AnisotropicFiltering);
     m_pipelineStatisticsSupported = supportedFeatures.pipelineStatisticsQuery == VK_TRUE;
     m_capabilities.GpuPipelineStatistics = m_pipelineStatisticsSupported;
 
     VkPhysicalDeviceProperties physicalDeviceProperties{};
     vkGetPhysicalDeviceProperties(m_physicalDevice, &physicalDeviceProperties);
     m_maxSamplerAnisotropy = m_samplerAnisotropySupported
-        ? std::clamp(m_config.MaxAnisotropy, 1.0f,
-                     physicalDeviceProperties.limits.maxSamplerAnisotropy)
-        : 1.0f;
+        ? m_capabilities.Gpu.SelectedAnisotropy : 1.0f;
     m_capabilities.MaxAnisotropy = m_samplerAnisotropySupported
         ? physicalDeviceProperties.limits.maxSamplerAnisotropy : 1.0f;
     m_capabilities.ActiveAnisotropy = m_maxSamplerAnisotropy;

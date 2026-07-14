@@ -5,6 +5,8 @@
 #include "engine/render/CascadedShadows.h"
 #include "engine/render/Exposure.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/render/GpuCapabilities.h"
+#include "engine/render/TextureFallback.h"
 #include "engine/render/SceneRenderer.h"
 #include "engine/render/ShaderSource.h"
 #include "engine/render/TemporalAA.h"
@@ -992,6 +994,8 @@ void TestApplicationConfigRoundTrip()
     source.Renderer.PreferredAdapter = "RTX test";
     source.Renderer.EnableValidation = false;
     source.Renderer.EnableGpuTiming = false;
+    source.Renderer.CapabilityPolicy = GpuCapabilityPolicy::Conservative;
+    source.Renderer.EnableDriverWorkarounds = false;
     source.Unfocused = UnfocusedBehavior::RenderOnly;
     source.MaximumDeltaSeconds = 0.05f;
     source.FixedDeltaSeconds = 1.0f / 60.0f;
@@ -1023,7 +1027,9 @@ void TestApplicationConfigRoundTrip()
             && loaded.Renderer.MaxAnisotropy == 16.0f
             && !loaded.Renderer.PreferDiscreteGpu
             && loaded.Renderer.PreferredAdapter == "RTX test"
-            && !loaded.Renderer.EnableValidation && !loaded.Renderer.EnableGpuTiming,
+            && !loaded.Renderer.EnableValidation && !loaded.Renderer.EnableGpuTiming
+            && loaded.Renderer.CapabilityPolicy == GpuCapabilityPolicy::Conservative
+            && !loaded.Renderer.EnableDriverWorkarounds,
             "renderer configuration must survive a complete round trip");
     Require(loaded.Unfocused == UnfocusedBehavior::RenderOnly
             && std::abs(loaded.MaximumDeltaSeconds - 0.05f) < 1.0e-6f
@@ -1043,6 +1049,86 @@ void TestApplicationConfigRoundTrip()
             "invalid configs must report a useful error without partially mutating state");
     std::error_code removeError;
     std::filesystem::remove(path, removeError);
+}
+
+void TestGpuCapabilityDatabaseAndFallbacks()
+{
+    Require(IdentifyGpuVendor(0x10de, "", "") == GpuVendor::Nvidia &&
+                IdentifyGpuVendor(0, "ATI Technologies", "Radeon") == GpuVendor::AMD &&
+                IdentifyGpuVendor(0, "Mesa", "llvmpipe") == GpuVendor::Mesa,
+            "GPU vendor database must recognize PCI IDs and API identity strings");
+
+    GpuRawCapabilities raw;
+    raw.Device.Api = GpuApi::Vulkan;
+    raw.Device.VendorId = 0x8086;
+    raw.Device.Vendor = GpuVendor::Intel;
+    raw.Device.DeviceName = "Synthetic GPU";
+    raw.Device.DriverName = "Synthetic Driver";
+    raw.MaxMsaaSamples = 4;
+    raw.MaxAnisotropy = 8.0f;
+    raw.TextureCompressionBc = true;
+    raw.TextureCompressionBc7 = false;
+    raw.GpuTimestamps = true;
+    raw.PipelineStatistics = true;
+    raw.ImmediatePresent = false;
+    raw.DynamicRendering = true;
+    raw.Synchronization2 = true;
+    GpuCapabilityRequest request;
+    request.MsaaSamples = 8;
+    request.MaxAnisotropy = 16.0f;
+    request.RequestImmediatePresent = true;
+    const GpuCapabilityProfile profile = EvaluateGpuCapabilities(raw, request);
+    Require(profile.SelectedMsaaSamples == 4 && profile.SelectedAnisotropy == 8.0f &&
+                profile.Supports(GpuFeature::TextureCompressionBc) &&
+                !profile.Supports(GpuFeature::TextureCompressionBc7) &&
+                profile.Fallbacks.size() >= 3,
+            "capability evaluation must clamp requests and record each safe fallback");
+
+    TextureData compressed;
+    compressed.Width = 4;
+    compressed.Height = 4;
+    compressed.Storage = TexturePixelStorage::Bc7Rgba;
+    TextureMipData nativeMip;
+    nativeMip.Width = 4;
+    nativeMip.Height = 4;
+    nativeMip.Pixels.resize(16);
+    compressed.MipLevels.push_back(nativeMip);
+    TextureMipData fallbackMip;
+    fallbackMip.Width = 4;
+    fallbackMip.Height = 4;
+    fallbackMip.Pixels.resize(4 * 4 * 4, 127);
+    compressed.Rgba8FallbackMipLevels.push_back(fallbackMip);
+    TextureData scratch;
+    std::string reason;
+    const TextureData* selected = ResolveTextureForGpu(compressed, profile, scratch, &reason);
+    Require(selected == &scratch && selected->Storage == TexturePixelStorage::Rgba8 &&
+                selected->MipLevels.front().Pixels.size() == 64 && !reason.empty(),
+            "unsupported block textures must select their cooked RGBA8 mip chain");
+
+    raw.Device.DeviceName = "llvmpipe (LLVM software rasterizer)";
+    raw.MaxMsaaSamples = 16;
+    raw.MaxAnisotropy = 16.0f;
+    request.MsaaSamples = 8;
+    request.MaxAnisotropy = 16.0f;
+    const GpuCapabilityProfile software = EvaluateGpuCapabilities(raw, request);
+    Require(software.Device.SoftwareRenderer && software.Tier == GpuFeatureTier::Compatibility &&
+                software.SelectedMsaaSamples == 1 && software.SelectedAnisotropy == 1.0f &&
+                !software.Uses(GpuFeature::GpuTimestamps) && !software.AppliedRules.empty(),
+            "software renderers must enter deterministic safe mode");
+
+    const std::filesystem::path report = std::filesystem::temp_directory_path() /
+        "source_like_gpu_capabilities_test.json";
+    std::string error;
+    Require(WriteGpuCapabilityReport(report, software, &error),
+            "GPU capability report must be exportable");
+    std::ifstream stream(report);
+    const std::string json((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+    Require(json.find("software-renderer-safe-mode") != std::string::npos &&
+                json.find("\"features\"") != std::string::npos,
+            "GPU capability report must include feature and applied-rule data");
+    std::error_code removeError;
+    std::filesystem::remove(report, removeError);
 }
 
 void TestRuntimePluginAndWorld()
@@ -1184,6 +1270,7 @@ int main()
     TestMemoryProfilerDisabledMode();
     TestMemoryProfilerTrackingAndExport();
     TestMemoryProfilerMultithreaded();
+    TestGpuCapabilityDatabaseAndFallbacks();
     TestApplicationConfigRoundTrip();
     TestRuntimePluginAndWorld();
     TestRuntimePluginDependencies();

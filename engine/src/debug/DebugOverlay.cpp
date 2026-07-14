@@ -892,7 +892,10 @@ void DebugOverlay::DrawGpuMonitor(const DebugOverlayMetrics& metrics,
         Text(10, 92, "PIPELINE STATISTICS UNAVAILABLE", dim, 1);
         Text(10, 108, "DRAWS/PRIMITIVES --/--", dim, 1);
     }
-    Text(10, 124, Shorten(metrics.BackendName, 26) + "  AA " + metrics.AntiAliasing,
+    Text(10, 124, Shorten(metrics.BackendName, 18) + "  " +
+             std::string(GpuFeatureTierName(metrics.Capabilities.Gpu.Tier)) +
+             "  FB " + std::to_string(metrics.Capabilities.Gpu.Fallbacks.size()) +
+             "  AA " + metrics.AntiAliasing,
          dim, 1);
     AddLayer(kGpuMonitorX, kGpuMonitorY, kGpuMonitorWidth, kGpuMonitorHeight,
              m_gpuPlacement);

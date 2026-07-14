@@ -137,6 +137,11 @@ const char* Name(PresentMode value)
     }
 }
 
+const char* Name(GpuCapabilityPolicy value)
+{
+    return value == GpuCapabilityPolicy::Conservative ? "conservative" : "default";
+}
+
 const char* Name(UnfocusedBehavior value)
 {
     switch (value)
@@ -201,6 +206,8 @@ bool SaveApplicationConfig(const std::filesystem::path& path, const ApplicationD
          << "renderer.preferred_adapter=" << std::quoted(renderer.PreferredAdapter) << '\n'
          << "renderer.validation=" << renderer.EnableValidation << '\n'
          << "renderer.gpu_timing=" << renderer.EnableGpuTiming << '\n'
+         << "renderer.gpu_policy=" << Name(renderer.CapabilityPolicy) << '\n'
+         << "renderer.driver_workarounds=" << renderer.EnableDriverWorkarounds << '\n'
          << "application.unfocused=" << Name(config.Unfocused) << '\n'
          << "application.max_delta=" << config.MaximumDeltaSeconds << '\n'
          << "application.fixed_delta=" << config.FixedDeltaSeconds << '\n'
@@ -300,6 +307,13 @@ bool LoadApplicationConfig(const std::filesystem::path& path, ApplicationDesc& c
             valid = ParseBool(value, parsed.Renderer.EnableValidation);
         else if (key == "renderer.gpu_timing")
             valid = ParseBool(value, parsed.Renderer.EnableGpuTiming);
+        else if (key == "renderer.gpu_policy")
+            valid = ParseEnum(value,
+                              {{"default", GpuCapabilityPolicy::Default},
+                               {"conservative", GpuCapabilityPolicy::Conservative}},
+                              parsed.Renderer.CapabilityPolicy);
+        else if (key == "renderer.driver_workarounds")
+            valid = ParseBool(value, parsed.Renderer.EnableDriverWorkarounds);
         else if (key == "application.unfocused")
             valid = ParseEnum(value,
                               {{"continue", UnfocusedBehavior::Continue},

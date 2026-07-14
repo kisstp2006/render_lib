@@ -817,7 +817,7 @@ bool EncodeTexture(const std::vector<Image> &mips, RuntimeTextureFormat format, 
                    const TextureAssetSettings &settings, std::vector<std::byte> &output, std::string *error)
 {
     resources::BinaryWriter writer;
-    writer.WriteU32(2);
+    writer.WriteU32(3);
     writer.WriteU8(static_cast<uint8_t>(format));
     writer.WriteU8(static_cast<uint8_t>(usage));
     writer.WriteU8(srgb ? 1 : 0);
@@ -847,6 +847,14 @@ bool EncodeTexture(const std::vector<Image> &mips, RuntimeTextureFormat format, 
         writer.WriteU32(mip.Height);
         writer.WriteU64(bytes.size());
         writer.WriteBytes(bytes);
+        if (IsBlockCompressed(storage))
+        {
+            const std::vector<std::byte> fallback = ImageBytes(mip, RuntimeTextureFormat::Rgba8Unorm);
+            writer.WriteU64(fallback.size());
+            writer.WriteBytes(fallback);
+        }
+        else
+            writer.WriteU64(0);
     }
     output = writer.TakeData();
     return true;
@@ -858,7 +866,7 @@ std::shared_ptr<TextureData> LoadTextureResource(const resources::ResourceLoadCo
     uint32_t version = 0, mipCount = 0;
     uint8_t formatValue = 0, usage = 0, srgb = 0, filter = 0, addressU = 0, addressV = 0, addressW = 0, reserved = 0;
     float anisotropy = 0.0f, mipBias = 0.0f;
-    if (!reader.ReadU32(version) || (version != 1 && version != 2) || !reader.ReadU8(formatValue) || !reader.ReadU8(usage) ||
+    if (!reader.ReadU32(version) || (version < 1 || version > 3) || !reader.ReadU8(formatValue) || !reader.ReadU8(usage) ||
         !reader.ReadU8(srgb) || !reader.ReadU8(filter) || !reader.ReadU8(addressU) || !reader.ReadU8(addressV) ||
         !reader.ReadU8(addressW) || !reader.ReadU8(reserved) || !reader.ReadF32(anisotropy) ||
         !reader.ReadF32(mipBias) || !reader.ReadU32(mipCount) || mipCount == 0 || mipCount > 32 ||
@@ -922,6 +930,37 @@ std::shared_ptr<TextureData> LoadTextureResource(const resources::ResourceLoadCo
             std::memcpy(mip.Pixels.data(), bytes.data(), bytes.size());
         }
         texture->MipLevels.push_back(std::move(mip));
+        if (version >= 3)
+        {
+            uint64_t fallbackByteCount = 0;
+            if (!reader.ReadU64(fallbackByteCount) || fallbackByteCount > reader.Remaining())
+            {
+                if (error) *error = "Malformed texture fallback payload size";
+                return {};
+            }
+            if (fallbackByteCount != 0)
+            {
+                const uint64_t expectedFallback = TextureMipByteSize(TexturePixelStorage::Rgba8,
+                                                                     width, height);
+                if (!IsBlockCompressed(texture->Storage) || fallbackByteCount != expectedFallback)
+                {
+                    if (error) *error = "Malformed RGBA8 texture fallback payload";
+                    return {};
+                }
+                std::span<const std::byte> fallbackBytes;
+                if (!reader.ReadBytes(static_cast<size_t>(fallbackByteCount), fallbackBytes))
+                {
+                    if (error) *error = reader.Error();
+                    return {};
+                }
+                TextureMipData fallbackMip;
+                fallbackMip.Width = static_cast<int>(width);
+                fallbackMip.Height = static_cast<int>(height);
+                fallbackMip.Pixels.resize(static_cast<size_t>(fallbackByteCount));
+                std::memcpy(fallbackMip.Pixels.data(), fallbackBytes.data(), fallbackBytes.size());
+                texture->Rgba8FallbackMipLevels.push_back(std::move(fallbackMip));
+            }
+        }
     }
     if (reader.Remaining() != 0)
     {
@@ -1212,8 +1251,11 @@ bool RegisterTextureAssetType(AssetTypeRegistry &registry, resources::ResourceMa
     type.Icon = "texture-2d";
     type.DescriptorVersion = 1;
     type.ImporterVersion = 1;
-    type.TransformerVersion = 2;
-    type.ResourceVersion = 2;
+    // v3 adds an RGBA8 safety mip chain next to BC/ASTC payloads. Bumping both
+    // versions invalidates old cache entries so unsupported GPUs never depend
+    // on a legacy compressed-only resource.
+    type.TransformerVersion = 3;
+    type.ResourceVersion = 3;
     type.Properties = TextureProperties();
     type.Import = [](const AssetImportRequest &request) {
         ImportResult result;

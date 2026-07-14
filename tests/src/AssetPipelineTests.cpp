@@ -151,8 +151,10 @@ AssetGuid TestDescriptorAndTexture(TestContext &context)
             "runtime must load cooked texture rather than source");
     Require(runtime->MipLevels.size() == 3, "4x4 texture must contain three cooked mip levels");
     Require(runtime->Storage == TexturePixelStorage::Bc7Rgba &&
-                runtime->MipLevels.front().Pixels.size() == TextureMipByteSize(runtime->Storage, 4, 4),
-            "desktop high-quality color textures must cook to valid BC7 blocks");
+                runtime->MipLevels.front().Pixels.size() == TextureMipByteSize(runtime->Storage, 4, 4) &&
+                runtime->Rgba8FallbackMipLevels.size() == runtime->MipLevels.size() &&
+                runtime->Rgba8FallbackMipLevels.front().Pixels.size() == 4u * 4u * 4u,
+            "desktop high-quality color textures must cook BC7 blocks plus a safe RGBA8 fallback");
     const AssetTransformResult cached = context.Pipeline.TransformAsset(texture);
     Require(cached.Succeeded && cached.SkippedAsUpToDate, "unchanged asset must not be transformed twice");
     const auto red = context.Root / "Source/pack_red.ppm", green = context.Root / "Source/pack_green.ppm";
@@ -194,8 +196,9 @@ AssetGuid TestDescriptorAndTexture(TestContext &context)
     const auto mobileRuntime = context.Resources.Load<TextureData>(texture, &error);
     Require(mobileRuntime && mobileRuntime->Storage == TexturePixelStorage::Astc4x4Rgba &&
                 mobileRuntime->MipLevels.front().Pixels.size() ==
-                    TextureMipByteSize(TexturePixelStorage::Astc4x4Rgba, 4, 4),
-            "mobile profile must load native ASTC blocks from the cooked registry");
+                    TextureMipByteSize(TexturePixelStorage::Astc4x4Rgba, 4, 4) &&
+                mobileRuntime->Rgba8FallbackMipLevels.size() == mobileRuntime->MipLevels.size(),
+            "mobile profile must load ASTC blocks with an RGBA8 safety payload");
     return texture;
 }
 

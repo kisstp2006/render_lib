@@ -2,6 +2,7 @@
 
 #include "engine/backend/vk/VulkanShaderInterop.h"
 #include "engine/core/Log.h"
+#include "engine/render/TextureFallback.h"
 #include "engine/testing/VisualRegression.h"
 
 #include <stb_image_write.h>
@@ -186,13 +187,38 @@ const VulkanRenderBackend::GpuMesh& VulkanRenderBackend::GetOrCreateMesh(const s
 const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
     const std::shared_ptr<TextureData>& texture, const std::shared_ptr<TextureData>& fallback)
 {
-    const std::shared_ptr<TextureData>& source = texture ? texture : fallback;
-    if (!source || source->Width <= 0 || source->Height <= 0)
+    const std::shared_ptr<TextureData>& sourceOwner = texture ? texture : fallback;
+    if (!sourceOwner || sourceOwner->Width <= 0 || sourceOwner->Height <= 0)
     {
         throw std::runtime_error("Vulkan: invalid CPU texture data");
     }
-    if (const auto found = m_textureCache.find(source.get()); found != m_textureCache.end())
+    const TextureData* cacheKey = sourceOwner.get();
+    if (const auto found = m_textureCache.find(cacheKey); found != m_textureCache.end())
         return found->second;
+
+    TextureData scratch;
+    std::string fallbackReason;
+    const TextureData* source = ResolveTextureForGpu(*sourceOwner, m_capabilities.Gpu,
+                                                      scratch, &fallbackReason);
+    if (!source)
+    {
+        if (!fallback || fallback.get() == cacheKey)
+            throw std::runtime_error("Vulkan: " + fallbackReason);
+        source = fallback.get();
+        fallbackReason += "; using the material default texture";
+    }
+    if (source != sourceOwner.get())
+    {
+        log::Warn("Vulkan texture fallback: " + fallbackReason);
+        const std::string feature = TextureStorageName(sourceOwner->Storage);
+        if (std::none_of(m_capabilities.Gpu.Fallbacks.begin(), m_capabilities.Gpu.Fallbacks.end(),
+                         [&feature](const GpuFallbackDecision& decision)
+                         { return decision.Feature == feature; }))
+            m_capabilities.Gpu.Fallbacks.push_back(
+                {"unsupported-texture-format", feature, "native upload",
+                 source == fallback.get() ? "material default texture" : "RGBA8 fallback mip chain",
+                 fallbackReason});
+    }
 
     const bool floatingPoint = source->Storage == TexturePixelStorage::Rgba32Float;
     const bool blockCompressed = IsBlockCompressed(source->Storage);
@@ -432,7 +458,7 @@ const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(
     }
 
     m_resources.Destroy(staging);
-    return m_textureCache.emplace(source.get(), std::move(gpuTexture)).first->second;
+    return m_textureCache.emplace(cacheKey, std::move(gpuTexture)).first->second;
 }
 
 VulkanRenderBackend::GpuMaterial& VulkanRenderBackend::GetOrCreateMaterial(const Material& material)

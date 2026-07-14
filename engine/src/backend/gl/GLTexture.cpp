@@ -139,10 +139,13 @@ GLTexture::GLTexture(const TextureData& data, float maxAnisotropy)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, ToWrap(data.AddressV));
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, data.MipBias);
 #ifdef GL_TEXTURE_MAX_ANISOTROPY
-    const float requestedAnisotropy = data.Filter == TextureFilterMode::Anisotropic ?
-        std::min(data.MaxAnisotropy, maxAnisotropy) : 1.0f;
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY,
-                    std::max(requestedAnisotropy, 1.0f));
+    if (GLAD_GL_EXT_texture_filter_anisotropic && maxAnisotropy > 1.0f)
+    {
+        const float requestedAnisotropy = data.Filter == TextureFilterMode::Anisotropic ?
+            std::min(data.MaxAnisotropy, maxAnisotropy) : 1.0f;
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY,
+                        std::max(requestedAnisotropy, 1.0f));
+    }
 #else
     (void)maxAnisotropy;
 #endif

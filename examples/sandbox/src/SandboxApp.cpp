@@ -97,6 +97,7 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
                        std::string& memoryProfilePath, bool& memoryLeakReport,
                        uint32_t& memoryProfileRetainedFrames,
                        std::string& gpuProfilePath, uint32_t& gpuProfileRetainedFrames,
+                       std::string& gpuCapabilitiesPath,
                        bool& debugUi, bool& frameDebugger,
                       std::string& saveConfigPath,
                       bool& stabilityStress,
@@ -155,6 +156,15 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
         else if (argument == "--validation") renderer.EnableValidation = true;
         else if (argument == "--no-validation") renderer.EnableValidation = false;
         else if (argument == "--no-gpu-timing") renderer.EnableGpuTiming = false;
+        else if (argument == "--gpu-policy" && i + 1 < argc)
+        {
+            const std::string value = argv[++i];
+            if (value == "default") renderer.CapabilityPolicy = GpuCapabilityPolicy::Default;
+            else if (value == "conservative") renderer.CapabilityPolicy = GpuCapabilityPolicy::Conservative;
+            else throw std::runtime_error("Unknown GPU policy: " + value);
+        }
+        else if (argument == "--no-driver-workarounds") renderer.EnableDriverWorkarounds = false;
+        else if (argument == "--gpu-capabilities" && i + 1 < argc) gpuCapabilitiesPath = argv[++i];
         else if (argument == "--no-runtime-monitors") application.EnableRuntimeMonitors = false;
         else if (argument == "--renderdoc-capture" && i + 1 < argc)
         {
@@ -291,6 +301,7 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     bool memoryLeakReport = false;
     uint32_t memoryProfileRetainedFrames = 240;
     std::string gpuProfilePath;
+    std::string gpuCapabilitiesPath;
     uint32_t gpuProfileRetainedFrames = 240;
     bool debugUi = false;
     bool frameDebugger = false;
@@ -305,7 +316,8 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
                          screenshotFrame,
                          cpuProfilePath, cpuProfileLog, cpuProfileRetainedFrames,
                          memoryProfilePath, memoryLeakReport, memoryProfileRetainedFrames,
-                         gpuProfilePath, gpuProfileRetainedFrames, debugUi, frameDebugger,
+                         gpuProfilePath, gpuProfileRetainedFrames, gpuCapabilitiesPath,
+                         debugUi, frameDebugger,
                          saveConfigPath, stabilityStress, stabilityConfig, stabilityReportPath);
         if (stabilityStress)
         {
@@ -399,6 +411,15 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
                     stabilityRunner->Update(deltaTime);
             });
             app.Run();
+            if (!gpuCapabilitiesPath.empty())
+            {
+                std::string capabilityError;
+                if (!WriteGpuCapabilityReport(gpuCapabilitiesPath,
+                                              app.GetBackend().GetCapabilities().Gpu,
+                                              &capabilityError))
+                    throw std::runtime_error(capabilityError);
+                log::Info("Saved GPU capability report: " + gpuCapabilitiesPath);
+            }
             if (stabilityRunner)
             {
                 if (!stabilityRunner->WriteJsonReport(stabilityReportPath))

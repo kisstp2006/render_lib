@@ -4,6 +4,7 @@
 #include "engine/core/Log.h"
 #include "engine/core/Window.h"
 #include "engine/debug/DebugOverlay.h"
+#include "engine/render/TextureFallback.h"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -37,16 +38,39 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
 
     int maximumSamples = 1;
     glGetIntegerv(GL_MAX_SAMPLES, &maximumSamples);
-    m_capabilities.AdapterName = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
-    m_capabilities.MaxMsaaSamples = static_cast<uint32_t>(std::max(maximumSamples, 1));
-    m_capabilities.GpuTiming = true;
+    const auto stringValue = [](GLenum name) -> std::string
+    {
+        const GLubyte* value = glGetString(name);
+        return value ? reinterpret_cast<const char*>(value) : "Unknown";
+    };
+    GpuRawCapabilities raw;
+    raw.Device.Api = GpuApi::OpenGL;
+    raw.Device.DeviceName = stringValue(GL_RENDERER);
+    raw.Device.VendorName = stringValue(GL_VENDOR);
+    raw.Device.ApiVersion = stringValue(GL_VERSION);
+    raw.Device.DriverName = raw.Device.VendorName + " OpenGL driver";
+    raw.Device.DriverInfo = raw.Device.ApiVersion + "; GLSL " + stringValue(GL_SHADING_LANGUAGE_VERSION);
+    raw.Device.Vendor = IdentifyGpuVendor(0, raw.Device.VendorName, raw.Device.DeviceName);
+    raw.MaxMsaaSamples = static_cast<uint32_t>(std::max(maximumSamples, 1));
+    raw.GpuTimestamps = GLAD_GL_VERSION_3_3 || GLAD_GL_ARB_timer_query;
+    raw.TextureCompressionBc = GLAD_GL_EXT_texture_compression_s3tc &&
+        (GLAD_GL_VERSION_3_0 || GLAD_GL_ARB_texture_compression_rgtc);
+    raw.TextureCompressionBc7 = GLAD_GL_VERSION_4_2 || GLAD_GL_ARB_texture_compression_bptc;
+    raw.TextureCompressionAstc = GLAD_GL_KHR_texture_compression_astc_ldr != 0;
     m_gpuPipelineStatisticsSupported = GLAD_GL_ARB_pipeline_statistics_query != 0;
     m_gpuMemoryBudgetSupported = GLAD_GL_NVX_gpu_memory_info != 0;
-    m_capabilities.GpuPipelineStatistics = m_gpuPipelineStatisticsSupported;
-    m_capabilities.GpuMemoryBudget = m_gpuMemoryBudgetSupported;
-    m_capabilities.ImmediatePresent = true;
-    m_capabilities.AdaptivePresent = glfwExtensionSupported("WGL_EXT_swap_control_tear")
+    raw.PipelineStatistics = m_gpuPipelineStatisticsSupported;
+    raw.MemoryBudget = m_gpuMemoryBudgetSupported;
+    raw.ImmediatePresent = true;
+    raw.AdaptivePresent = glfwExtensionSupported("WGL_EXT_swap_control_tear")
         || glfwExtensionSupported("GLX_EXT_swap_control_tear");
+    m_capabilities.AdapterName = raw.Device.DeviceName;
+    m_capabilities.MaxMsaaSamples = raw.MaxMsaaSamples;
+    m_capabilities.GpuTiming = raw.GpuTimestamps;
+    m_capabilities.GpuPipelineStatistics = raw.PipelineStatistics;
+    m_capabilities.GpuMemoryBudget = raw.MemoryBudget;
+    m_capabilities.ImmediatePresent = raw.ImmediatePresent;
+    m_capabilities.AdaptivePresent = raw.AdaptivePresent;
     if (m_gpuMemoryBudgetSupported)
     {
         constexpr GLenum kGpuMemoryInfoTotalAvailableMemoryNvx = 0x9048;
@@ -58,21 +82,36 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
                 static_cast<uint64_t>(dedicatedVideoMemoryKilobytes) * 1024ull;
     }
 #ifdef GL_MAX_TEXTURE_MAX_ANISOTROPY
-    float deviceAnisotropy = 1.0f;
-    glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &deviceAnisotropy);
-    m_capabilities.MaxAnisotropy = std::max(deviceAnisotropy, 1.0f);
+    if (GLAD_GL_EXT_texture_filter_anisotropic)
+    {
+        float deviceAnisotropy = 1.0f;
+        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &deviceAnisotropy);
+        m_capabilities.MaxAnisotropy = std::max(deviceAnisotropy, 1.0f);
+    }
 #endif
-    const uint32_t requestedSamples = std::max(config.MsaaSamples, 1u);
-    m_msaaSamples = 1;
-    for (const int samples : {2, 4, 8, 16})
-        if (static_cast<uint32_t>(samples) <= requestedSamples && samples <= maximumSamples)
-            m_msaaSamples = samples;
-    m_maxAnisotropy = std::clamp(config.MaxAnisotropy, 1.0f,
-                                 m_capabilities.MaxAnisotropy);
+    raw.MaxAnisotropy = m_capabilities.MaxAnisotropy;
+    GpuCapabilityRequest request;
+    request.MsaaSamples = config.MsaaSamples;
+    request.MaxAnisotropy = config.MaxAnisotropy;
+    request.EnableGpuTiming = config.EnableGpuTiming;
+    request.RequestImmediatePresent = config.Presentation == PresentMode::Immediate;
+    request.RequestAdaptivePresent = config.Presentation == PresentMode::Adaptive;
+    request.Policy = config.CapabilityPolicy;
+    request.EnableDriverWorkarounds = config.EnableDriverWorkarounds;
+    m_capabilities.Gpu = EvaluateGpuCapabilities(raw, request);
+    m_msaaSamples = static_cast<int>(m_capabilities.Gpu.SelectedMsaaSamples);
+    m_maxAnisotropy = m_capabilities.Gpu.SelectedAnisotropy;
     m_capabilities.ActiveMsaaSamples = static_cast<uint32_t>(m_msaaSamples);
     m_capabilities.ActiveAnisotropy = m_maxAnisotropy;
-    m_gpuTimingEnabled = config.EnableGpuTiming;
+    m_gpuTimingEnabled = m_capabilities.Gpu.Uses(GpuFeature::GpuTimestamps);
     SetPresentMode(config.Presentation);
+
+    log::Info("OpenGL GPU: " + raw.Device.DeviceName + " (" + raw.Device.VendorName +
+              ", " + raw.Device.ApiVersion + ", tier " +
+              GpuFeatureTierName(m_capabilities.Gpu.Tier) + ")");
+    for (const GpuFallbackDecision& fallback : m_capabilities.Gpu.Fallbacks)
+        log::Warn("GPU fallback [" + fallback.RuleId + "] " + fallback.Feature + ": " +
+                  fallback.Requested + " -> " + fallback.Selected + " (" + fallback.Reason + ")");
 
     if (config.EnableValidation && GLAD_GL_KHR_debug)
     {
@@ -160,6 +199,7 @@ void GLRenderBackend::Shutdown()
     m_colorLutCache.clear();
     m_meshCache.clear();
     m_textureCache.clear();
+    m_textureFallbackWarnings.clear();
     m_defaultWhite.reset();
     m_defaultNormal.reset();
     m_environment.reset();
@@ -215,7 +255,32 @@ GLTexture& GLRenderBackend::GetOrCreateTexture(const std::shared_ptr<TextureData
 {
     if (const auto found = m_textureCache.find(data); found != m_textureCache.end())
         return *found->second;
-    auto texture = std::make_unique<GLTexture>(*data, m_maxAnisotropy);
+    TextureData scratch;
+    std::string reason;
+    const TextureData* upload = ResolveTextureForGpu(*data, m_capabilities.Gpu, scratch, &reason);
+    if (!upload)
+    {
+        if (m_textureFallbackWarnings.insert(data.get()).second)
+        {
+            log::Warn("OpenGL texture fallback: " + reason + "; using the default texture");
+            m_capabilities.Gpu.Fallbacks.push_back(
+                {"unsupported-texture-format", TextureStorageName(data->Storage),
+                 "native upload", "material default texture", reason});
+        }
+        return *m_defaultWhite;
+    }
+    if (upload != data.get() && m_textureFallbackWarnings.insert(data.get()).second)
+    {
+        log::Warn("OpenGL texture fallback: " + reason);
+        const std::string feature = TextureStorageName(data->Storage);
+        if (std::none_of(m_capabilities.Gpu.Fallbacks.begin(), m_capabilities.Gpu.Fallbacks.end(),
+                         [&feature](const GpuFallbackDecision& fallback)
+                         { return fallback.Feature == feature; }))
+            m_capabilities.Gpu.Fallbacks.push_back(
+                {"unsupported-texture-format", feature, "native upload",
+                 "RGBA8 fallback mip chain", reason});
+    }
+    auto texture = std::make_unique<GLTexture>(*upload, m_maxAnisotropy);
     GLTexture& result = *texture;
     m_textureCache.emplace(data, std::move(texture));
     return result;

@@ -57,8 +57,9 @@ void VulkanRenderBackend::CreatePerformanceQueries()
         && families[*indices.Graphics].timestampValidBits > 0
         && properties.limits.timestampComputeAndGraphics == VK_TRUE;
     m_capabilities.GpuTiming = timestampSupported;
-    m_gpuTimingSupported = timestampSupported && m_config.EnableGpuTiming;
-    if (!m_config.EnableGpuTiming)
+    m_gpuTimingSupported = timestampSupported &&
+        m_capabilities.Gpu.Uses(GpuFeature::GpuTimestamps);
+    if (!m_capabilities.Gpu.Uses(GpuFeature::GpuTimestamps))
         return;
 
     if (m_gpuTimingSupported)

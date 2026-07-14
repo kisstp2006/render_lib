@@ -116,6 +116,16 @@ Application::Application(const ApplicationDesc& desc) : m_desc(desc)
     m_debugOverlay.SetValue("APPLICATION", "PRESENT", PresentModeName(m_desc.Renderer.Presentation));
     m_debugOverlay.SetValue("APPLICATION", "FOCUS", m_wasFocused ? "FOREGROUND" : "BACKGROUND");
     m_debugOverlay.SetValue("RENDERER", "ADAPTER", capabilities.AdapterName);
+    m_debugOverlay.SetValue("RENDERER", "GPU VENDOR",
+                            GpuVendorName(capabilities.Gpu.Device.Vendor));
+    m_debugOverlay.SetValue("RENDERER", "DRIVER",
+                            capabilities.Gpu.Device.DriverName.empty()
+                                ? capabilities.Gpu.Device.ApiVersion
+                                : capabilities.Gpu.Device.DriverName);
+    m_debugOverlay.SetValue("RENDERER", "CAPABILITY TIER",
+                            GpuFeatureTierName(capabilities.Gpu.Tier));
+    m_debugOverlay.SetValue("RENDERER", "FALLBACKS",
+                            std::to_string(capabilities.Gpu.Fallbacks.size()));
     m_debugOverlay.SetValue("RENDERER", "MSAA", std::to_string(capabilities.ActiveMsaaSamples) + "X");
     m_debugOverlay.SetValue("RENDERER", "ANISOTROPY",
                             std::to_string(static_cast<int>(capabilities.ActiveAnisotropy)) + "X");
@@ -519,6 +529,16 @@ void Application::ReloadRenderer()
 
     const BackendCapabilities capabilities = m_backend->GetCapabilities();
     m_debugOverlay.SetValue("RENDERER", "ADAPTER", capabilities.AdapterName);
+    m_debugOverlay.SetValue("RENDERER", "GPU VENDOR",
+                            GpuVendorName(capabilities.Gpu.Device.Vendor));
+    m_debugOverlay.SetValue("RENDERER", "DRIVER",
+                            capabilities.Gpu.Device.DriverName.empty()
+                                ? capabilities.Gpu.Device.ApiVersion
+                                : capabilities.Gpu.Device.DriverName);
+    m_debugOverlay.SetValue("RENDERER", "CAPABILITY TIER",
+                            GpuFeatureTierName(capabilities.Gpu.Tier));
+    m_debugOverlay.SetValue("RENDERER", "FALLBACKS",
+                            std::to_string(capabilities.Gpu.Fallbacks.size()));
     m_debugOverlay.SetValue("RENDERER", "MSAA",
                             std::to_string(capabilities.ActiveMsaaSamples) + "X");
     m_debugOverlay.SetValue("RENDERER", "ANISOTROPY",
