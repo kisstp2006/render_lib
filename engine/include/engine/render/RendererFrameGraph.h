@@ -14,7 +14,9 @@ enum class RendererPass : uint8_t
     Environment,
     DirectionalShadows,
     LocalShadows,
+    OcclusionCull,
     MainHdr,
+    HiZBuild,
     PostProcess,
     DebugUi,
     Count
@@ -34,6 +36,9 @@ struct RendererFrameGraphFeatures
     bool Bloom = false;
     bool Fxaa = false;
     bool DebugUi = true;
+    bool OcclusionCulling = false;
+    uint32_t OcclusionCandidateCount = 0;
+    uint32_t HiZMipLevels = 1;
 };
 
 struct RendererFrameGraphCallbacks

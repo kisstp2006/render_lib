@@ -288,9 +288,12 @@ void PopulateVisibilityShowcase(Application& app)
     scene.Visibility.Enabled = true;
     scene.Visibility.FrustumCulling = true;
     scene.Visibility.DistanceCulling = true;
-    scene.Visibility.MaxDistance = 48.0f;
+    scene.Visibility.MaxDistance = 140.0f;
     scene.Visibility.DebugBounds = true;
     scene.Visibility.DebugCulledBounds = true;
+    scene.Visibility.GpuOcclusionCulling = true;
+    scene.Visibility.OcclusionDepthBias = 0.0001f;
+    scene.Visibility.DebugOcclusion = true;
     scene.Fog.Enabled = false;
     scene.PostProcess.AutoExposure = false;
     scene.PostProcess.Exposure = 1.5f;
@@ -304,6 +307,18 @@ void PopulateVisibilityShowcase(Application& app)
     floor.Roughness = 0.82f;
     scene.AddInstance(plane, floor, glm::translate(glm::mat4(1.0f), {0.0f, -1.0f, -30.0f}));
     scene.Instances().back().AlwaysVisible = true;
+
+    // A broad foreground wall deliberately hides the middle columns. The
+    // purple bounds behind it visualize delayed, conservative GPU Hi-Z rejects.
+    const auto occluder = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    Material occluderMaterial;
+    occluderMaterial.Albedo = {0.06f, 0.08f, 0.12f};
+    occluderMaterial.Metallic = 0.65f;
+    occluderMaterial.Roughness = 0.22f;
+    glm::mat4 occluderTransform = glm::translate(
+        glm::mat4(1.0f), {0.0f, 3.0f, -16.5f});
+    occluderTransform = glm::scale(occluderTransform, {13.0f, 4.5f, 0.5f});
+    scene.AddInstance(occluder, occluderMaterial, occluderTransform);
 
     for (int row = 0; row < 10; ++row)
     {

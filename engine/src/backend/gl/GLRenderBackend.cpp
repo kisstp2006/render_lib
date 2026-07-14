@@ -167,6 +167,10 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     m_debugOverlayShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/debug/overlay.frag");
     m_boundsDebugShader = std::make_unique<GLShader>(shaderDir + "/gl/debug/bounds.vert",
                                                      shaderDir + "/gl/debug/bounds.frag");
+    m_hizBuildShader = std::make_unique<GLShader>(
+        shaderDir + "/gl/visibility/hiz_build.comp");
+    m_occlusionTestShader = std::make_unique<GLShader>(
+        shaderDir + "/gl/visibility/occlusion_test.comp");
     m_environment = std::make_unique<GLEnvironment>(shaderDir);
 
     glGenVertexArrays(1, &m_emptyVao);
@@ -244,6 +248,9 @@ bool GLRenderBackend::SetPresentMode(PresentMode mode)
 
 void GLRenderBackend::Shutdown()
 {
+    // Hi-Z result buffers may still be the target of asynchronous compute.
+    // Complete those writes before deleting their storage during shutdown.
+    glFinish();
     for (const auto& [data, texture] : m_colorLutCache)
         glDeleteTextures(1, &texture);
     m_colorLutCache.clear();
@@ -264,6 +271,9 @@ void GLRenderBackend::Shutdown()
     m_postShader.reset();
     m_debugOverlayShader.reset();
     m_boundsDebugShader.reset();
+    m_hizBuildShader.reset();
+    m_occlusionTestShader.reset();
+    DestroyOcclusionResources();
     DestroySceneTargets();
     DestroyLocalLightResources();
 
@@ -293,6 +303,7 @@ void GLRenderBackend::Resize(int width, int height)
     m_width = width;
     m_height = height;
     m_hasFrameDebugFrame = false;
+    m_occlusionState.Reset();
     CreateSceneTargets(width, height);
 }
 

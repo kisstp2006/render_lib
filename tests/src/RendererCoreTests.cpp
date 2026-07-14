@@ -11,6 +11,7 @@
 #include "engine/render/PipelineCache.h"
 #include "engine/render/RenderGraph.h"
 #include "engine/render/RendererFrameGraph.h"
+#include "engine/render/OcclusionCulling.h"
 #include "engine/render/TextureFallback.h"
 #include "engine/render/SceneRenderer.h"
 #include "engine/render/ShaderSource.h"
@@ -467,6 +468,86 @@ void TestVisibilityCulling()
             "bounds debug data must include visible and culled finite bounds but exclude invalid meshes");
     Require(SquaredDistanceToBounds({0.0f, 0.0f, 0.0f}, frame.VisibilityDebug[0].Bounds) == 16.0f,
             "distance culling must use nearest AABB distance rather than center distance");
+}
+
+void TestTemporalHiZOcclusionPolicy()
+{
+    Scene scene;
+    scene.Visibility.GpuOcclusionCulling = true;
+    scene.Visibility.OcclusionConfirmationFrames = 2;
+    scene.Visibility.OcclusionMaxHiddenFrames = 3;
+    scene.AddInstance(std::make_shared<MeshData>(primitives::MakeCube(1.0f)),
+                      Material{}, glm::translate(glm::mat4(1.0f),
+                                                 {0.0f, 0.0f, -5.0f}));
+    Camera camera;
+    camera.Position = {0.0f, 0.0f, 0.0f};
+    camera.Yaw = -90.0f;
+    SceneRenderer renderer;
+    const RenderFrameData frame = renderer.PrepareFrame(scene, camera, 1280, 720);
+    Require(frame.RenderCommands.size() == 1,
+            "Hi-Z policy test requires one CPU-visible candidate");
+    const PreparedRenderCommand& command = frame.RenderCommands.front();
+    const OcclusionQueryRecord record = MakeOcclusionQueryRecord(command);
+    const GpuOcclusionBounds bounds = MakeGpuOcclusionBounds(command, 0.1f);
+    Require(glm::all(glm::lessThan(glm::vec3(bounds.Minimum),
+                                   command.WorldBounds.Minimum)) &&
+                glm::all(glm::greaterThan(glm::vec3(bounds.Maximum),
+                                          command.WorldBounds.Maximum)),
+            "GPU Hi-Z bounds must inflate conservatively on every axis");
+
+    TemporalOcclusionState state;
+    const OcclusionFrameSignature signature = BuildOcclusionFrameSignature(frame);
+    Require(state.BeginFrame(signature, scene.Visibility),
+            "first Hi-Z frame must reset empty temporal history");
+    const uint64_t generation = state.Generation();
+    const std::array<OcclusionQueryRecord, 1> records{record};
+    const std::array<uint32_t, 1> occluded{0u};
+    state.ApplyResults(generation, records, occluded);
+    Require(state.ShouldDraw(record),
+            "one occluded result must not hide an object");
+    Require(!state.BeginFrame(signature, scene.Visibility),
+            "stationary camera and scene must preserve Hi-Z history");
+    state.ApplyResults(generation, records, occluded);
+    Require(!state.ShouldDraw(record),
+            "two confirmed occluded results must suppress the draw");
+    const std::array<uint32_t, 1> visible{1u};
+    state.ApplyResults(generation, records, visible);
+    Require(state.ShouldDraw(record),
+            "a visible GPU result must immediately restore the draw");
+
+    OcclusionQueryRecord transformedRecord = record;
+    ++transformedRecord.TransformHash;
+    state.ApplyResults(generation, records, occluded);
+    state.ApplyResults(generation, records, occluded);
+    Require(state.ShouldDraw(transformedRecord),
+            "an object transform change must invalidate only that object's hidden history");
+
+    OcclusionFrameSignature moved = signature;
+    moved.CameraPosition.x += 0.5f;
+    Require(state.BeginFrame(moved, scene.Visibility) &&
+                state.Generation() != generation,
+            "camera motion beyond the threshold must invalidate Hi-Z history");
+    state.ApplyResults(generation, records, occluded);
+    Require(state.ShouldDraw(record),
+            "stale asynchronous results must be rejected after a history reset");
+
+    // Sub-threshold motion must accumulate against the last accepted camera,
+    // otherwise slow camera movement could keep unsafe history forever.
+    TemporalOcclusionState accumulated;
+    Require(accumulated.BeginFrame(signature, scene.Visibility),
+            "accumulated motion test must initialize history");
+    OcclusionFrameSignature smallMove = signature;
+    smallMove.CameraPosition.x += scene.Visibility.OcclusionCameraPositionThreshold * 0.6f;
+    Require(!accumulated.BeginFrame(smallMove, scene.Visibility),
+            "a single sub-threshold camera move should retain history");
+    smallMove.CameraPosition.x += scene.Visibility.OcclusionCameraPositionThreshold * 0.6f;
+    Require(accumulated.BeginFrame(smallMove, scene.Visibility),
+            "repeated sub-threshold motion must eventually invalidate history");
+
+    scene.Visibility.Enabled = false;
+    Require(accumulated.BeginFrame(signature, scene.Visibility) &&
+                !accumulated.Active() && accumulated.ShouldDraw(record),
+            "disabling scene visibility must disable GPU Hi-Z and draw conservatively");
 }
 
 void TestTaskSystemScheduling()
@@ -1767,6 +1848,54 @@ void TestRenderGraphConfigAndScale()
             "512-pass render graph compile must remain within the regression budget");
 }
 
+void TestRendererHiZFrameGraph()
+{
+    using namespace rendergraph;
+    RenderGraph graph;
+    Config config;
+    config.Validation = true;
+    RendererFrameGraphFeatures features;
+    features.Width = 1920;
+    features.Height = 1080;
+    features.MsaaSamples = 4;
+    features.OcclusionCulling = true;
+    features.OcclusionCandidateCount = 4096;
+    features.HiZMipLevels = 11;
+    RendererFrameGraphCallbacks callbacks;
+    for (auto& callback : callbacks.Passes)
+        callback = [] {};
+    std::string error;
+    Require(BuildRendererFrameGraph(graph, config, features,
+                                    std::move(callbacks), &error),
+            "renderer frame graph must compile with GPU Hi-Z enabled");
+    const auto passIndex = [&](std::string_view id) {
+        const auto found = std::find_if(graph.Passes().begin(), graph.Passes().end(),
+            [id](const CompiledPass& pass) { return pass.Id == id; });
+        return found == graph.Passes().end()
+            ? graph.Passes().size()
+            : static_cast<size_t>(std::distance(graph.Passes().begin(), found));
+    };
+    const size_t cull = passIndex("occlusion_cull");
+    const size_t main = passIndex("main_hdr");
+    const size_t build = passIndex("hiz_build");
+    const size_t post = passIndex("post_process");
+    Require(cull < main && main < build && build < post,
+            "Hi-Z frame graph must query previous depth before drawing and build new depth before post");
+    const auto hiz = std::find_if(graph.Resources().begin(), graph.Resources().end(),
+        [](const CompiledResource& resource) {
+            return resource.Description.Name == "visibility.hiz";
+        });
+    const auto results = std::find_if(graph.Resources().begin(), graph.Resources().end(),
+        [](const CompiledResource& resource) {
+            return resource.Description.Name == "visibility.results";
+        });
+    Require(hiz != graph.Resources().end() &&
+                hiz->Description.MipLevels == features.HiZMipLevels &&
+                results != graph.Resources().end() &&
+                results->Description.Type == ResourceType::Buffer,
+            "Hi-Z graph must expose the mip pyramid and visibility-result buffer to diagnostics");
+}
+
 void TestRuntimePluginDependencies()
 {
     runtime::ComponentRegistry components;
@@ -1802,6 +1931,7 @@ int main()
     TestVulkanMaterialPacking();
     TestSharedSceneRendererFrame();
     TestVisibilityCulling();
+    TestTemporalHiZOcclusionPolicy();
     TestTaskSystemScheduling();
     TestAsyncResourceLoadingAndStreamingBudgets();
     TestAsyncRenderResourceLifetime();
@@ -1821,6 +1951,7 @@ int main()
     TestShaderPermutationAndPipelineReport();
     TestRenderGraphCompilationAndAliasing();
     TestRenderGraphConfigAndScale();
+    TestRendererHiZFrameGraph();
     TestRuntimePluginAndWorld();
     TestRuntimePluginDependencies();
     std::puts("Renderer tests passed");

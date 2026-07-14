@@ -18,6 +18,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/include/engine/render/TemporalAA.h
         ${ENGINE_ROOT}/include/engine/render/TextureFallback.h
         ${ENGINE_ROOT}/include/engine/render/Visibility.h
+        ${ENGINE_ROOT}/include/engine/render/OcclusionCulling.h
         ${ENGINE_ROOT}/src/debug/DebugOverlay.cpp
         ${ENGINE_ROOT}/src/debug/FrameDebugger.cpp
         ${ENGINE_ROOT}/src/render/CascadedShadows.cpp
@@ -33,6 +34,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/src/render/TemporalAA.cpp
         ${ENGINE_ROOT}/src/render/TextureFallback.cpp
         ${ENGINE_ROOT}/src/render/Visibility.cpp
+        ${ENGINE_ROOT}/src/render/OcclusionCulling.cpp
     PUBLIC_DEPS
         engine_foundation
         engine_core

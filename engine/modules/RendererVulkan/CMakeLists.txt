@@ -27,6 +27,7 @@ engine_add_module(engine_renderer_vulkan
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.FrameDebugger.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.FrameResources.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.LocalLights.cpp
+        ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Occlusion.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Performance.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Pipeline.cpp
         ${ENGINE_ROOT}/src/backend/vk/VulkanRenderBackend.Post.cpp

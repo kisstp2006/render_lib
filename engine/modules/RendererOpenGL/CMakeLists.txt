@@ -16,6 +16,7 @@ engine_add_module(engine_renderer_opengl
         ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Frame.cpp
         ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.FrameDebugger.cpp
         ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.LocalLights.cpp
+        ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Occlusion.cpp
         ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Performance.cpp
         ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Post.cpp
         ${ENGINE_ROOT}/src/backend/gl/GLRenderBackend.Targets.cpp

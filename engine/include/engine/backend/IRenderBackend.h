@@ -73,8 +73,16 @@ struct BackendFrameStats
     bool GpuTimingAvailable = false;
     float GpuFrameMilliseconds = 0.0f;
     float GpuShadowMilliseconds = 0.0f;
+    float GpuOcclusionMilliseconds = 0.0f;
     float GpuMainMilliseconds = 0.0f;
     float GpuPostMilliseconds = 0.0f;
+    bool GpuOcclusionActive = false;
+    bool GpuOcclusionHistoryReset = false;
+    uint32_t GpuOcclusionCandidates = 0;
+    uint32_t GpuOcclusionCulled = 0;
+    uint32_t GpuOcclusionResultsConsumed = 0;
+    uint32_t HiZMipLevels = 0;
+    uint32_t OcclusionReadbackLatencyFrames = 0;
 };
 
 // Backend-neutral lifetime counters used by the runtime diagnostics and the

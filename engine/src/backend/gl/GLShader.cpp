@@ -222,6 +222,78 @@ GLShader::GLShader(const std::string& vertPath, const std::string& fragPath,
               " shader program: " + vertPath + " + " + fragPath);
 }
 
+GLShader::GLShader(const std::string& computePath,
+                   const std::vector<ShaderDefine>& defines)
+{
+    const std::vector<std::filesystem::path> includeRoots = {
+        std::filesystem::path(ENGINE_SHADER_DIR),
+        std::filesystem::path(ENGINE_SHADER_DIR) / "gl"
+    };
+    const ShaderSourceDocument document = LoadShaderSource(computePath, includeRoots);
+    const std::vector<ShaderDefine> canonicalDefines = CanonicalizeShaderDefines(defines);
+    const std::string source = ApplyShaderDefines(document.Source, canonicalDefines);
+
+    GLShaderCacheState& cache = ShaderCacheState();
+    const std::string shaderKey = BuildShaderPermutationKey(
+        document.Source, canonicalDefines, "opengl-4.6-compute");
+    const uint64_t programKey = StableShaderHash(shaderKey + ":" + cache.DeviceIdentity);
+    const std::filesystem::path binaryPath = cache.Directory /
+        (ShaderHashHex(programKey) + ".glbin");
+    const auto pipelineBegin = std::chrono::steady_clock::now();
+    bool loadedBinary = false;
+    if (cache.Statistics.Enabled)
+    {
+        uint64_t loadedBytes = 0;
+        loadedBinary = LoadProgramBinary(binaryPath, programKey, m_program, loadedBytes);
+        if (loadedBinary)
+        {
+            cache.Statistics.PersistentCacheLoaded = true;
+            ++cache.Statistics.ShaderPermutationHits;
+            ++cache.Statistics.NativePipelineCacheHits;
+            cache.Statistics.CacheBytesLoaded += loadedBytes;
+            cache.Statistics.ShaderCacheLoadMilliseconds += Milliseconds(pipelineBegin);
+        }
+        else
+            ++cache.Statistics.NativePipelineCacheMisses;
+    }
+
+    if (!loadedBinary)
+    {
+        ++cache.Statistics.ShaderPermutationMisses;
+        const auto compileBegin = std::chrono::steady_clock::now();
+        const unsigned int compute = CompileStage(GL_COMPUTE_SHADER, source, computePath);
+        cache.Statistics.ShaderCompileMilliseconds += Milliseconds(compileBegin);
+        m_program = glCreateProgram();
+        if (cache.Statistics.Enabled)
+            glProgramParameteri(m_program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+        glAttachShader(m_program, compute);
+        glLinkProgram(m_program);
+
+        int success = 0;
+        glGetProgramiv(m_program, GL_LINK_STATUS, &success);
+        if (!success)
+        {
+            int len = 0;
+            glGetProgramiv(m_program, GL_INFO_LOG_LENGTH, &len);
+            std::vector<char> log(len > 0 ? len : 1);
+            glGetProgramInfoLog(m_program, len, nullptr, log.data());
+            glDeleteShader(compute);
+            glDeleteProgram(m_program);
+            m_program = 0;
+            throw std::runtime_error("Compute shader link error (" + computePath + "): " + log.data());
+        }
+        glDeleteShader(compute);
+        if (cache.Statistics.Enabled)
+            SaveProgramBinary(binaryPath, programKey, m_program, cache.Statistics);
+    }
+    ++cache.Statistics.PipelineCreateCalls;
+    cache.Statistics.PipelineCreateMilliseconds += Milliseconds(pipelineBegin);
+    gl_debug::LabelObject(GL_PROGRAM, m_program,
+        "Compute Shader Program: " + std::filesystem::path(computePath).filename().string());
+    log::Info(std::string(loadedBinary ? "Loaded cached" : "Compiled") +
+              " compute shader program: " + computePath);
+}
+
 void GLShader::ConfigureCache(const std::filesystem::path& root,
                               std::string deviceIdentity,
                               bool enabled, bool clear)

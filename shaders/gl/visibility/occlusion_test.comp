@@ -1,0 +1,37 @@
+#version 460 core
+
+#define OCCLUSION_ZERO_TO_ONE 0
+#include "common/hiz_occlusion.glsl"
+
+layout(local_size_x = 64) in;
+
+struct Bounds
+{
+    vec4 Minimum;
+    vec4 Maximum;
+};
+
+layout(std430, binding = 1) readonly buffer CandidateBounds
+{
+    Bounds candidates[];
+};
+layout(std430, binding = 2) writeonly buffer VisibilityResults
+{
+    uint visible[];
+};
+
+layout(binding = 0) uniform sampler2D uHiZ;
+uniform mat4 uViewProjection;
+uniform float uDepthBias;
+uniform int uMaxMip;
+uniform int uCandidateCount;
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= uint(uCandidateCount))
+        return;
+    Bounds bounds = candidates[index];
+    visible[index] = hizBoundsVisible(uViewProjection, bounds.Minimum.xyz,
+        bounds.Maximum.xyz, uHiZ, uDepthBias, uMaxMip) ? 1u : 0u;
+}

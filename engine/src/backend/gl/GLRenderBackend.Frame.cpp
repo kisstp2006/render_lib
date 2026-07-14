@@ -98,6 +98,8 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     const glm::vec3& effectiveSunColor = frame.EffectiveSunColor;
     const bool sunShadowsActive = frame.SunShadowsActive;
     const CascadeShadowData& cascades = frame.Cascades;
+    std::vector<const PreparedRenderCommand*> visibleCommands;
+    PrepareOcclusionFrame(frame, visibleCommands);
 
     const auto environmentPass = [&]() {
         gl_debug::ScopedGroup marker("Environment / IBL Update");
@@ -214,8 +216,9 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     m_pbrShader->SetInt("uEmissiveMap", kUnitEmissive);
     m_pbrShader->SetInt("uOcclusionMap", kUnitOcclusion);
 
-    for (const PreparedRenderCommand& command : frame.RenderCommands)
+    for (const PreparedRenderCommand* commandPointer : visibleCommands)
     {
+        const PreparedRenderCommand& command = *commandPointer;
         const MeshInstance& instance = *command.Source;
         m_pbrShader->SetMat4("uModel", instance.Transform);
         const auto previousTransform = instance.TemporalId != 0
@@ -309,7 +312,10 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         for (const VisibilityDebugBounds& debugBounds : frame.VisibilityDebug)
         {
             glm::vec3 color{0.1f, 3.0f, 0.25f};
-            if (debugBounds.Classification == VisibilityClassification::FrustumCulled)
+            if (scene.Visibility.DebugOcclusion &&
+                m_occlusionCulledInstances.contains(debugBounds.InstanceIndex))
+                color = {2.2f, 0.15f, 3.0f};
+            else if (debugBounds.Classification == VisibilityClassification::FrustumCulled)
                 color = {3.0f, 0.12f, 0.08f};
             else if (debugBounds.Classification == VisibilityClassification::DistanceCulled)
                 color = {3.0f, 1.4f, 0.05f};
@@ -479,6 +485,12 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     EndGpuProfilerPass();
     }
     };
+    const auto occlusionCullPass = [&]() {
+        DispatchOcclusionQueries(frame);
+    };
+    const auto hiZBuildPass = [&]() {
+        BuildHiZPyramid(currentViewProjection);
+    };
     const auto debugUiPass = [&]() {
     BeginGpuProfilerPass(DebugUiPass);
     {
@@ -502,11 +514,16 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     graphFeatures.Bloom = pp.Enabled && !m_bloomChain.empty();
     graphFeatures.Fxaa = pp.Enabled && pp.AntiAliasing == AntiAliasingMode::Fxaa;
     graphFeatures.DebugUi = true;
+    graphFeatures.OcclusionCulling = m_occlusionState.Active();
+    graphFeatures.OcclusionCandidateCount = m_frameStats.GpuOcclusionCandidates;
+    graphFeatures.HiZMipLevels = static_cast<uint32_t>(m_hizMipLevels);
     rendergraph::RendererFrameGraphCallbacks graphCallbacks;
     graphCallbacks[rendergraph::RendererPass::Environment] = environmentPass;
     graphCallbacks[rendergraph::RendererPass::DirectionalShadows] = directionalShadowPass;
     graphCallbacks[rendergraph::RendererPass::LocalShadows] = localShadowPass;
+    graphCallbacks[rendergraph::RendererPass::OcclusionCull] = occlusionCullPass;
     graphCallbacks[rendergraph::RendererPass::MainHdr] = mainHdrPass;
+    graphCallbacks[rendergraph::RendererPass::HiZBuild] = hiZBuildPass;
     graphCallbacks[rendergraph::RendererPass::PostProcess] = postProcessPass;
     graphCallbacks[rendergraph::RendererPass::DebugUi] = debugUiPass;
     std::string graphError;
@@ -516,6 +533,16 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         throw std::runtime_error("OpenGL render graph: " + graphError);
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Prepare, ApplyGraphBarriers);
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Render, ApplyGraphBarriers);
+
+    // Keep every buffered profiler query available even when the optional
+    // visibility passes are absent from this frame's graph.
+    if (!m_occlusionState.Active())
+    {
+        BeginGpuProfilerPass(OcclusionCullPass);
+        EndGpuProfilerPass();
+        BeginGpuProfilerPass(HiZBuildPass);
+        EndGpuProfilerPass();
+    }
 
     EndGpuProfilerFrame(scene);
     glEnable(GL_DEPTH_TEST);

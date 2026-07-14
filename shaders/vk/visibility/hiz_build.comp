@@ -1,0 +1,43 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSource;
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D uTarget;
+
+layout(push_constant) uniform HiZBuildConstants
+{
+    ivec4 Parameters; // source mip, copy source, unused, unused
+} uPush;
+
+void main()
+{
+    ivec2 targetPixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 targetSize = imageSize(uTarget);
+    if (any(greaterThanEqual(targetPixel, targetSize)))
+        return;
+
+    int sourceMip = uPush.Parameters.x;
+    if (uPush.Parameters.y != 0)
+    {
+        imageStore(uTarget, targetPixel,
+                   vec4(texelFetch(uSource, targetPixel, sourceMip).r));
+        return;
+    }
+
+    ivec2 sourceSize = textureSize(uSource, sourceMip);
+    // Mip dimensions round down. Proportional footprints include the final
+    // source row/column for odd-sized targets instead of silently dropping it.
+    ivec2 sourceBegin = targetPixel * sourceSize / targetSize;
+    ivec2 sourceEnd = (targetPixel + 1) * sourceSize / targetSize;
+    float maximumDepth = 0.0;
+    for (int y = sourceBegin.y; y < sourceEnd.y; ++y)
+    {
+        for (int x = sourceBegin.x; x < sourceEnd.x; ++x)
+        {
+            maximumDepth = max(maximumDepth,
+                               texelFetch(uSource, ivec2(x, y), sourceMip).r);
+        }
+    }
+    imageStore(uTarget, targetPixel, vec4(maximumDepth));
+}

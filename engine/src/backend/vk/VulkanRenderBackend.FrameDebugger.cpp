@@ -28,6 +28,7 @@ constexpr uint64_t kCookies = FrameDebugId("light.cookies");
 constexpr uint64_t kHdr = FrameDebugId("scene.hdr");
 constexpr uint64_t kVelocity = FrameDebugId("scene.velocity");
 constexpr uint64_t kDepth = FrameDebugId("scene.depth");
+constexpr uint64_t kHiZ = FrameDebugId("visibility.hiz");
 constexpr uint64_t kPostLdr = FrameDebugId("post.ldr");
 constexpr std::array<uint64_t, 4> kDirectionalShadows{
     FrameDebugId("shadow.directional.0"), FrameDebugId("shadow.directional.1"),
@@ -228,6 +229,8 @@ debug::FrameDebugSnapshot VulkanRenderBackend::GetFrameDebugSnapshot() const
         FrameDebugVisualization::Velocity, m_hasFrameDebugFrame));
     resources.push_back(Resource(kDepth, "Main HDR Depth", m_depthImages[imageIndex],
         FrameDebugVisualization::Depth, m_hasFrameDebugFrame));
+    resources.push_back(Resource(kHiZ, "Visibility Hi-Z Maximum Depth", m_hizImage,
+        FrameDebugVisualization::SingleChannel, m_hasFrameDebugFrame && m_hizValid));
     for (size_t history = 0; history < 2; ++history)
     {
         resources.push_back(Resource(kTaaColor[history],
@@ -286,9 +289,14 @@ bool VulkanRenderBackend::CaptureFrameDebugResource(uint64_t resourceId, uint32_
                   VK_IMAGE_ASPECT_COLOR_BIT, FrameDebugVisualization::Velocity};
     else if (resourceId == kDepth)
         native = {&m_depthImages[imageIndex],
-                  m_lastFrameDebugTaaActive ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                                            : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                  (m_lastFrameDebugTaaActive || m_occlusionState.Active())
+                      ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                      : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_ASPECT_DEPTH_BIT, FrameDebugVisualization::Depth};
+    else if (resourceId == kHiZ && m_hizValid)
+        native = {&m_hizImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_ASPECT_COLOR_BIT,
+                  FrameDebugVisualization::SingleChannel};
     else if (resourceId == kPostLdr && m_lastFrameDebugFxaaActive)
         native = {&m_ldrImages[imageIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     else

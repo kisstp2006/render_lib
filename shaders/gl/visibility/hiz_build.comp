@@ -1,0 +1,33 @@
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D uSource;
+layout(r32f, binding = 1) writeonly uniform image2D uTarget;
+uniform int uSourceMip;
+uniform bool uCopySource;
+
+void main()
+{
+    ivec2 outputPixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = imageSize(uTarget);
+    if (any(greaterThanEqual(outputPixel, outputSize)))
+        return;
+    if (uCopySource)
+    {
+        imageStore(uTarget, outputPixel,
+                   vec4(texelFetch(uSource, outputPixel, 0).r));
+        return;
+    }
+
+    ivec2 sourceSize = textureSize(uSource, uSourceMip);
+    // Mip dimensions round down. Proportional footprints include the final
+    // source row/column for odd-sized targets instead of silently dropping it.
+    ivec2 sourceBegin = outputPixel * sourceSize / outputSize;
+    ivec2 sourceEnd = (outputPixel + 1) * sourceSize / outputSize;
+    float farthest = 0.0;
+    for (int y = sourceBegin.y; y < sourceEnd.y; ++y)
+        for (int x = sourceBegin.x; x < sourceEnd.x; ++x)
+            farthest = max(farthest,
+                texelFetch(uSource, ivec2(x, y), uSourceMip).r);
+    imageStore(uTarget, outputPixel, vec4(farthest));
+}

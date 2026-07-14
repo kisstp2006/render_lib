@@ -17,6 +17,8 @@ class GLShader
 public:
     GLShader(const std::string& vertPath, const std::string& fragPath,
              const std::vector<ShaderDefine>& defines = {});
+    explicit GLShader(const std::string& computePath,
+                      const std::vector<ShaderDefine>& defines = {});
     ~GLShader();
 
     GLShader(const GLShader&) = delete;

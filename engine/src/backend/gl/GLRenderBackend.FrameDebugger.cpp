@@ -27,6 +27,7 @@ constexpr uint64_t kCookies = FrameDebugId("light.cookies");
 constexpr uint64_t kHdr = FrameDebugId("scene.hdr");
 constexpr uint64_t kVelocity = FrameDebugId("scene.velocity");
 constexpr uint64_t kDepth = FrameDebugId("scene.depth");
+constexpr uint64_t kHiZ = FrameDebugId("visibility.hiz");
 constexpr uint64_t kPostLdr = FrameDebugId("post.ldr");
 constexpr std::array<uint64_t, 4> kDirectionalShadows{
     FrameDebugId("shadow.directional.0"), FrameDebugId("shadow.directional.1"),
@@ -154,6 +155,10 @@ debug::FrameDebugSnapshot GLRenderBackend::GetFrameDebugSnapshot() const
     resources.push_back(Resource(kDepth, "Main HDR Depth",
         FrameDebugResourceKind::Texture2D, FrameDebugVisualization::Depth,
         m_width, m_height, 1, 1, 1, "D32F", 4));
+    resources.push_back(Resource(kHiZ, "Visibility Hi-Z Maximum Depth",
+        FrameDebugResourceKind::Texture2D, FrameDebugVisualization::SingleChannel,
+        m_width, m_height, 1, static_cast<uint32_t>(m_hizMipLevels), 1,
+        "R32F", 4, m_hizValid));
     for (size_t history = 0; history < 2; ++history)
     {
         resources.push_back(Resource(kTaaColor[history],
@@ -216,6 +221,11 @@ bool GLRenderBackend::CaptureFrameDebugResource(uint64_t resourceId, uint32_t mi
         native = {m_depthTex, static_cast<uint32_t>(m_width),
                   static_cast<uint32_t>(m_height), 1, 1,
                   FrameDebugVisualization::Depth};
+    else if (resourceId == kHiZ)
+        native = {m_hizTexture, static_cast<uint32_t>(m_width),
+                  static_cast<uint32_t>(m_height), 1,
+                  static_cast<uint32_t>(m_hizMipLevels),
+                  FrameDebugVisualization::SingleChannel};
     else if (resourceId == kPostLdr)
         native = {m_postColorTex, static_cast<uint32_t>(m_width),
                   static_cast<uint32_t>(m_height), 1, 1};
@@ -257,6 +267,12 @@ bool GLRenderBackend::CaptureFrameDebugResource(uint64_t resourceId, uint32_t mi
         ? (native.Visualization == FrameDebugVisualization::Depth ? GL_DEPTH_COMPONENT : GL_RED)
         : (componentCount == 2 ? GL_RG : GL_RGBA);
     std::vector<float> source(static_cast<size_t>(sourceWidth) * sourceHeight * componentCount);
+    GLint previousPixelPackBuffer = 0;
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPixelPackBuffer);
+    // Client pointers passed below are interpreted as byte offsets whenever a
+    // pixel-pack buffer is bound. Isolate frame-debugger readback from async
+    // exposure/screenshot state and restore the caller's binding afterwards.
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     if (native.Cubemap)
     {
         glBindTexture(GL_TEXTURE_CUBE_MAP, native.Texture);
@@ -273,6 +289,8 @@ bool GLRenderBackend::CaptureFrameDebugResource(uint64_t resourceId, uint32_t mi
     // the client-memory destination alive until cubemap readback DMA has fully
     // retired on drivers that defer glGetTexImage work internally.
     glFinish();
+    glBindBuffer(GL_PIXEL_PACK_BUFFER,
+                 static_cast<GLuint>(previousPixelPackBuffer));
     if (glGetError() != GL_NO_ERROR)
     {
         preview.Error = "OpenGL texture readback failed";

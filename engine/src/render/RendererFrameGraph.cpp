@@ -101,6 +101,26 @@ bool BuildRendererFrameGraph(RenderGraph& graph, const Config& config,
     const ResourceHandle depth =
         graph.Create(Texture("scene.depth", "D32F", width, height, 4));
 
+    ResourceHandle hiZ;
+    ResourceHandle occlusionResults;
+    if (features.OcclusionCulling)
+    {
+        auto hiZDesc = Texture("visibility.hiz", "R32F", width, height, 4);
+        hiZDesc.MipLevels = std::max(features.HiZMipLevels, 1u);
+        hiZDesc.InitialState = ResourceState::ShaderRead;
+        hiZDesc.InitialStage = PipelineStage::Compute;
+        hiZ = graph.Import(std::move(hiZDesc));
+
+        ResourceDesc results;
+        results.Name = "visibility.results";
+        results.Type = ResourceType::Buffer;
+        results.ExplicitBytes = std::max(features.OcclusionCandidateCount, 1u)
+                              * sizeof(uint32_t);
+        results.InitialState = ResourceState::ShaderRead;
+        results.InitialStage = PipelineStage::Compute;
+        occlusionResults = graph.Import(std::move(results));
+    }
+
     std::array<ResourceHandle, 2> taaColor{};
     std::array<ResourceHandle, 2> taaDepth{};
     if (features.TemporalAA)
@@ -171,6 +191,16 @@ bool BuildRendererFrameGraph(RenderGraph& graph, const Config& config,
         .Write(pointShadow, ResourceState::DepthWrite, PipelineStage::LateDepth)
         .SetExecute(Callback(callbacks, RendererPass::LocalShadows));
 
+    if (features.OcclusionCulling)
+    {
+        graph.AddPass("occlusion_cull", "Visibility/Hi-Z Occlusion Cull")
+            .SetSideEffect()
+            .Read(hiZ, ResourceState::ShaderRead, PipelineStage::Compute)
+            .Write(occlusionResults, ResourceState::ShaderWrite,
+                   PipelineStage::Compute)
+            .SetExecute(Callback(callbacks, RendererPass::OcclusionCull));
+    }
+
     auto mainPass = graph.AddPass("main_hdr", "Main HDR");
     mainPass.SetSideEffect()
         .After("environment")
@@ -186,6 +216,8 @@ bool BuildRendererFrameGraph(RenderGraph& graph, const Config& config,
                PipelineStage::ColorOutput)
         .Write(depth, ResourceState::DepthWrite, PipelineStage::LateDepth)
         .SetExecute(Callback(callbacks, RendererPass::MainHdr));
+    if (features.OcclusionCulling)
+        mainPass.After("occlusion_cull");
     for (ResourceHandle shadow : directional)
         mainPass.Read(shadow, ResourceState::DepthRead, PipelineStage::Fragment);
     if (msaaHdr.Valid())
@@ -198,12 +230,24 @@ bool BuildRendererFrameGraph(RenderGraph& graph, const Config& config,
             .Write(msaaDepth, ResourceState::DepthWrite, PipelineStage::LateDepth);
     }
 
+    if (features.OcclusionCulling)
+    {
+        graph.AddPass("hiz_build", "Visibility/Build Hi-Z Pyramid")
+            .SetSideEffect()
+            .After("main_hdr")
+            .Read(depth, ResourceState::DepthRead, PipelineStage::Compute)
+            .Write(hiZ, ResourceState::ShaderWrite, PipelineStage::Compute)
+            .SetExecute(Callback(callbacks, RendererPass::HiZBuild));
+    }
+
     auto postPass = graph.AddPass("post_process", "Post process");
     postPass.SetSideEffect()
         .Read(hdr, ResourceState::ShaderRead, PipelineStage::AllShaders)
         .Write(backbuffer, ResourceState::ColorAttachment,
                PipelineStage::ColorOutput)
         .SetExecute(Callback(callbacks, RendererPass::PostProcess));
+    if (features.OcclusionCulling)
+        postPass.After("hiz_build");
     if (features.TemporalAA)
         postPass.Read(velocity).Read(depth, ResourceState::DepthRead,
                                      PipelineStage::Fragment);

@@ -49,6 +49,9 @@ Current feature set (OpenGL backend):
 - **glTF 2.0 scenes**: `.gltf` and `.glb`, hierarchical transforms,
   multi-primitive meshes, metallic-roughness materials, embedded/external
   textures, alpha masking, and generated normals/tangents when absent
+- **GPU Hi-Z visibility**: asynchronous OpenGL/Vulkan compute culling against
+  the previous frame's maximum-depth pyramid, with inflated bounds, delayed
+  confirmation, camera/scene invalidation and periodic hidden-object retests
 - **Render to PNG**: `--screenshot out.png` headless-ish capture or F12 in
   the sandbox — usable as a library for offline rendering
 
@@ -205,7 +208,7 @@ stay small while each can be launched directly:
 | `sample_day_night` | Animated procedural day/sunset/night sky cycle |
 | `sample_post` | Color-grading LUT, FXAA and TAA validation scene |
 | `sample_stability` | Resize/minimize/fullscreen, hot-reload and resource-lifetime stress suite |
-| `sample_visibility` | CPU frustum/distance culling and color-coded world-bounds visualization |
+| `sample_visibility` | CPU frustum/distance plus GPU Hi-Z occlusion culling and color-coded bounds |
 
 For example, on Windows run
 `.\build\examples\sandbox\RelWithDebInfo\sample_lights.exe`. Every focused
@@ -506,7 +509,7 @@ above are not repeated here.
 
 10. **Visibility, batching and GPU-driven rendering (P0)**
     - [x] CPU frustum and distance culling with bounds/debug visualization ([guide](docs/visibility-culling.md))
-    - [ ] GPU Hi-Z occlusion culling with temporal conservatism to prevent popping
+    - [x] GPU Hi-Z occlusion culling with asynchronous readback, temporal conservatism, debug visualization and OpenGL/Vulkan parity ([guide](docs/visibility-culling.md))
     - [ ] GPU instancing and hierarchical instancing (HISM)
     - [ ] Static batching, selective dynamic batching and offline mesh combining
     - [ ] Authored and generated LOD chains with screen-space error selection

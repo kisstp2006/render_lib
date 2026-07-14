@@ -9,10 +9,12 @@
 namespace engine {
 namespace {
 
-constexpr std::array<const char*, 5> kPassNames{
+constexpr std::array<const char*, 7> kPassNames{
     "Shadows/Directional",
     "Shadows/Local lights",
+    "Visibility/Hi-Z Occlusion Cull",
     "Main HDR",
+    "Visibility/Build Hi-Z Pyramid",
     "Post process",
     "Debug UI"
 };
@@ -219,6 +221,8 @@ void VulkanRenderBackend::ReadPerformanceQueries(uint32_t frameIndex)
         m_frameStats.GpuTimingAvailable = true;
         m_frameStats.GpuShadowMilliseconds = passMilliseconds[DirectionalShadowPass]
                                            + passMilliseconds[LocalShadowPass];
+        m_frameStats.GpuOcclusionMilliseconds = passMilliseconds[OcclusionCullPass]
+                                              + passMilliseconds[HiZBuildPass];
         m_frameStats.GpuMainMilliseconds = passMilliseconds[MainHdrPass];
         m_frameStats.GpuPostMilliseconds = passMilliseconds[PostProcessPass];
         m_frameStats.GpuFrameMilliseconds = profile.FrameMilliseconds;

@@ -4,6 +4,7 @@
 #include <glad/gl.h>
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace engine {
@@ -80,6 +81,18 @@ void GLRenderBackend::CreateSceneTargets(int width, int height)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    m_hizMipLevels = 1 + static_cast<int>(std::floor(std::log2(
+        static_cast<float>(std::max(width, height)))));
+    glGenTextures(1, &m_hizTexture);
+    glBindTexture(GL_TEXTURE_2D, m_hizTexture);
+    gl_debug::LabelObject(GL_TEXTURE, m_hizTexture, "Visibility Hi-Z Maximum Depth Pyramid");
+    glTexStorage2D(GL_TEXTURE_2D, m_hizMipLevels, GL_R32F, width, height);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    m_hizValid = false;
 
     glGenTextures(1, &m_velocityTex);
     glBindTexture(GL_TEXTURE_2D, m_velocityTex);
@@ -212,6 +225,8 @@ void GLRenderBackend::DestroySceneTargets()
     if (m_hdrColorTex) { glDeleteTextures(1, &m_hdrColorTex); m_hdrColorTex = 0; }
     if (m_velocityTex) { glDeleteTextures(1, &m_velocityTex); m_velocityTex = 0; }
     if (m_depthTex) { glDeleteTextures(1, &m_depthTex); m_depthTex = 0; }
+    if (m_hizTexture) { glDeleteTextures(1, &m_hizTexture); m_hizTexture = 0; }
+    m_hizValid = false;
     if (m_msaaFbo) { glDeleteFramebuffers(1, &m_msaaFbo); m_msaaFbo = 0; }
     if (m_msaaColorRbo) { glDeleteRenderbuffers(1, &m_msaaColorRbo); m_msaaColorRbo = 0; }
     if (m_msaaVelocityRbo) { glDeleteRenderbuffers(1, &m_msaaVelocityRbo); m_msaaVelocityRbo = 0; }

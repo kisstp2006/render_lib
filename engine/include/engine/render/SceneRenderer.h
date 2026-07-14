@@ -64,6 +64,7 @@ struct PreparedRenderCommand
     const MeshInstance* Source = nullptr;
     uint32_t InstanceIndex = 0;
     uint32_t IndexCount = 0;
+    AxisAlignedBounds WorldBounds;
 };
 
 enum class FrameWorkStage : uint8_t

@@ -1,0 +1,39 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define OCCLUSION_ZERO_TO_ONE 1
+#include "../../common/hiz_occlusion.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uHiZ;
+layout(std430, set = 0, binding = 1) readonly buffer CandidateBounds
+{
+    vec4 Minimum[];
+} uCandidateStorage;
+layout(std430, set = 0, binding = 2) writeonly buffer VisibilityResults
+{
+    uint Visible[];
+} uResults;
+
+layout(push_constant) uniform OcclusionConstants
+{
+    mat4 ViewProjection;
+    vec4 Parameters; // depth bias, maximum mip, candidate count, unused
+} uPush;
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    uint candidateCount = uint(uPush.Parameters.z);
+    if (index >= candidateCount)
+        return;
+
+    // Each CPU candidate is two tightly packed vec4 values.
+    vec3 boundsMin = uCandidateStorage.Minimum[index * 2].xyz;
+    vec3 boundsMax = uCandidateStorage.Minimum[index * 2 + 1].xyz;
+    bool visible = hizBoundsVisible(uPush.ViewProjection, boundsMin, boundsMax,
+                                    uHiZ, uPush.Parameters.x,
+                                    int(uPush.Parameters.y));
+    uResults.Visible[index] = visible ? 1u : 0u;
+}

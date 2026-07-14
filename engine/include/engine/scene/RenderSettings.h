@@ -114,6 +114,20 @@ struct VisibilitySettings
     float MaxDistance = 0.0f;
     bool DebugBounds = false;
     bool DebugCulledBounds = true;
+
+    // GPU Hi-Z results are consumed asynchronously by the CPU submission path.
+    // Motion invalidates history conservatively until a fresh pyramid exists.
+    bool GpuOcclusionCulling = true;
+    uint32_t OcclusionConfirmationFrames = 2;
+    uint32_t OcclusionMaxHiddenFrames = 30;
+    // Bias is expressed in normalized device depth. Perspective depth is
+    // highly non-linear, so this intentionally stays much smaller than a
+    // typical shadow-map bias.
+    float OcclusionDepthBias = 0.0001f;
+    float OcclusionBoundsInflation = 0.08f;
+    float OcclusionCameraPositionThreshold = 0.02f;
+    float OcclusionCameraRotationThresholdDeg = 0.25f;
+    bool DebugOcclusion = false;
 };
 
 } // namespace engine

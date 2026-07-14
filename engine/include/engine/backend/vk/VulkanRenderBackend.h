@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -23,11 +24,13 @@
 #include "engine/scene/Texture.h"
 #include "engine/render/GpuTiming.h"
 #include "engine/render/AsyncRenderResources.h"
+#include "engine/render/OcclusionCulling.h"
 #include "engine/profiling/GpuProfiler.h"
 
 namespace engine {
 
 class Scene;
+struct PreparedRenderCommand;
 
 // Vulkan 1.3 renderer that consumes the same CPU-side Scene/Camera contract as
 // OpenGL. Kept as a separate concrete class (not
@@ -99,6 +102,17 @@ private:
         std::array<VkDescriptorSet, 5> UpsampleSets{};
     };
 
+    struct OcclusionFrameSlot
+    {
+        vulkan::Buffer CandidateBuffer;
+        vulkan::Buffer ResultBuffer;
+        size_t Capacity = 0;
+        uint64_t Generation = 0;
+        uint64_t SubmittedFrame = 0;
+        std::vector<OcclusionQueryRecord> Records;
+        bool Issued = false;
+    };
+
     void CreateInstance();
     void SetupDebugMessenger();
     void CreateSurface(Window& window);
@@ -133,6 +147,17 @@ private:
     void PrepareDebugOverlay(const RenderFrameData& frame);
     void RecordDebugOverlay(VkCommandBuffer commandBuffer,
                             const RenderFrameData& frame, uint32_t imageIndex);
+    void CreateOcclusionInfrastructure();
+    void DestroyOcclusionInfrastructure();
+    void CreateOcclusionTargets();
+    void DestroyOcclusionTargets();
+    void EnsureOcclusionCapacity(uint32_t frameIndex, size_t count);
+    void PrepareOcclusionFrame(
+        const RenderFrameData& frame,
+        std::vector<const PreparedRenderCommand*>& visibleCommands);
+    void DispatchOcclusionQueries(VkCommandBuffer commandBuffer,
+                                  const RenderFrameData& frame);
+    void BuildHiZPyramid(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     const vulkan::Image& RecordTemporalAA(VkCommandBuffer commandBuffer,
                                           const RenderFrameData& frame,
                                           uint32_t imageIndex);
@@ -331,6 +356,29 @@ private:
     glm::vec3 m_previousCameraPosition{0.0f};
     glm::vec3 m_previousCameraForward{0.0f, 0.0f, -1.0f};
     float m_previousCameraFov = 60.0f;
+
+    VkShaderModule m_hizBuildShader = VK_NULL_HANDLE;
+    VkShaderModule m_occlusionTestShader = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_hizBuildDescriptorLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_occlusionDescriptorLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_hizBuildPipelineLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_occlusionPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_hizBuildPipeline = VK_NULL_HANDLE;
+    VkPipeline m_occlusionPipeline = VK_NULL_HANDLE;
+    VkSampler m_hizSampler = VK_NULL_HANDLE;
+    VkDescriptorPool m_occlusionDescriptorPool = VK_NULL_HANDLE;
+    vulkan::Image m_hizImage;
+    std::vector<VkImageView> m_hizMipViews;
+    std::vector<VkDescriptorSet> m_hizCopyDescriptorSets;
+    std::vector<VkDescriptorSet> m_hizReduceDescriptorSets;
+    std::array<VkDescriptorSet, kFramesInFlight> m_occlusionDescriptorSets{};
+    std::array<OcclusionFrameSlot, kFramesInFlight> m_occlusionSlots{};
+    TemporalOcclusionState m_occlusionState;
+    std::unordered_set<uint32_t> m_occlusionCulledInstances;
+    glm::mat4 m_hizViewProjection{1.0f};
+    uint32_t m_hizMipLevels = 1;
+    bool m_hizInitialized = false;
+    bool m_hizValid = false;
     const Scene* m_previousScene = nullptr;
     AntiAliasingMode m_previousAaMode = AntiAliasingMode::None;
     std::unordered_map<uint64_t, glm::mat4> m_previousTransforms;
@@ -415,7 +463,9 @@ private:
     {
         DirectionalShadowPass,
         LocalShadowPass,
+        OcclusionCullPass,
         MainHdrPass,
+        HiZBuildPass,
         PostProcessPass,
         DebugUiPass,
         GpuProfilerPassCount

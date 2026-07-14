@@ -231,6 +231,7 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
             result.Command.Source = &instance;
             result.Command.IndexCount = static_cast<uint32_t>(instance.Mesh->Indices.size());
             result.Bounds = TransformBounds(localBounds[index], instance.Transform);
+            result.Command.WorldBounds = result.Bounds;
             if (!result.Bounds.Valid)
                 return;
 
@@ -255,7 +256,7 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
 
     m_frame.RenderCommands.reserve(instances.size());
     m_frame.ShadowCommands.reserve(instances.size());
-    if (scene.Visibility.DebugBounds)
+    if (scene.Visibility.DebugBounds || scene.Visibility.DebugOcclusion)
         m_frame.VisibilityDebug.reserve(instances.size());
     for (const ClassifiedCommand& result : classified)
     {
@@ -284,7 +285,8 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
             m_frame.ShadowCommands.push_back(result.Command);
             ++m_frame.Visibility.ShadowCasters;
         }
-        if (scene.Visibility.DebugBounds && result.Bounds.Valid &&
+        if ((scene.Visibility.DebugBounds || scene.Visibility.DebugOcclusion) &&
+            result.Bounds.Valid &&
             (scene.Visibility.DebugCulledBounds ||
              result.Classification == VisibilityClassification::Visible))
         {

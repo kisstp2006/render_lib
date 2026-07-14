@@ -20,10 +20,12 @@ constexpr std::array<GLenum, 5> kPipelineTargets{
     GL_COMPUTE_SHADER_INVOCATIONS_ARB
 };
 
-constexpr std::array<const char*, 5> kPassNames{
+constexpr std::array<const char*, 7> kPassNames{
     "Shadows/Directional",
     "Shadows/Local lights",
+    "Visibility/Hi-Z Occlusion Cull",
     "Main HDR",
+    "Visibility/Build Hi-Z Pyramid",
     "Post process",
     "Debug UI"
 };
@@ -88,8 +90,15 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
             stats.DeviceLocalBytes += side * side * side * 3u * sizeof(uint16_t);
         }
     }
+    for (const OcclusionReadbackSlot& slot : m_occlusionSlots)
+    {
+        stats.DeviceLocalBytes += slot.Capacity *
+            (sizeof(GpuOcclusionBounds) + sizeof(uint32_t));
+        stats.HostVisibleBytes += slot.Capacity * sizeof(uint32_t);
+    }
 
     stats.PeakDeviceLocalBytes = stats.DeviceLocalBytes;
+    stats.PeakHostVisibleBytes = stats.HostVisibleBytes;
     stats.MeshResources = m_meshCache.size();
     stats.TextureResources = m_textureCache.size() + m_colorLutCache.size();
     // Frame-debug resources and asset caches are stable logical allocations;
@@ -114,6 +123,14 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
     countHandle(m_cookieAtlas);
     for (const unsigned int handle : m_debugOverlayTextures) countHandle(handle);
     for (const unsigned int handle : m_exposurePbos) countHandle(handle);
+    for (const OcclusionReadbackSlot& slot : m_occlusionSlots)
+    {
+        countHandle(slot.CandidateBuffer);
+        countHandle(slot.ResultBuffer);
+        countHandle(slot.ReadbackBuffer);
+        if (slot.Fence)
+            ++stats.LiveNativeAllocations;
+    }
     for (const auto& frame : m_gpuPassQueries)
         for (const unsigned int handle : frame) countHandle(handle);
     for (const auto& frame : m_gpuPipelineQueries)
@@ -130,6 +147,8 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
         static_cast<uint64_t>(m_postShader != nullptr) +
         static_cast<uint64_t>(m_boundsDebugShader != nullptr) +
         static_cast<uint64_t>(m_debugOverlayShader != nullptr) +
+        static_cast<uint64_t>(m_hizBuildShader != nullptr) +
+        static_cast<uint64_t>(m_occlusionTestShader != nullptr) +
         static_cast<uint64_t>(m_environment != nullptr) +
         static_cast<uint64_t>(m_defaultWhite != nullptr) +
         static_cast<uint64_t>(m_defaultNormal != nullptr);
@@ -236,6 +255,8 @@ void GLRenderBackend::ReadGpuProfilerFrame(uint32_t slot)
     m_frameStats.GpuTimingAvailable = true;
     m_frameStats.GpuShadowMilliseconds = milliseconds[DirectionalShadowPass]
                                        + milliseconds[LocalShadowPass];
+    m_frameStats.GpuOcclusionMilliseconds = milliseconds[OcclusionCullPass]
+                                          + milliseconds[HiZBuildPass];
     m_frameStats.GpuMainMilliseconds = milliseconds[MainHdrPass];
     m_frameStats.GpuPostMilliseconds = milliseconds[PostProcessPass];
     m_frameStats.GpuFrameMilliseconds = profile.FrameMilliseconds;

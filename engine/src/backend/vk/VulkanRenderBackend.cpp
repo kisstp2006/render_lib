@@ -247,6 +247,7 @@ void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config
     CreateShaderInfrastructure();
     CreatePostInfrastructure();
     CreateEnvironmentInfrastructure();
+    CreateOcclusionInfrastructure();
     CreateSwapchain(window.Width(), window.Height());
     CreateImageViews();
     CreateDepthResources();
@@ -254,6 +255,7 @@ void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config
     CreateCommandObjects();
     CreateDefaultResources();
     CreatePostTargets();
+    CreateOcclusionTargets();
     CreateEnvironmentResources();
     CreateShadowResources();
     CreateLocalLightResources();
@@ -891,6 +893,7 @@ void VulkanRenderBackend::RecreateSwapchain(int width, int height)
     vkDeviceWaitIdle(m_device);
     m_hasFrameDebugFrame = false;
     DestroyGraphicsPipeline();
+    DestroyOcclusionTargets();
     DestroyPostTargets();
     DestroySwapchain();
     CreateSwapchain(width, height);
@@ -898,6 +901,7 @@ void VulkanRenderBackend::RecreateSwapchain(int width, int height)
     CreateDepthResources();
     CreateGraphicsPipeline();
     CreatePostTargets();
+    CreateOcclusionTargets();
 }
 
 void VulkanRenderBackend::Resize(int width, int height)
@@ -938,6 +942,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         PrepareLocalLights(frame);
         UpdateFrameUniforms(frame);
     }
+    std::vector<const PreparedRenderCommand*> visibleCommands;
+    PrepareOcclusionFrame(frame, visibleCommands);
 
     uint32_t imageIndex = 0;
     VkResult acquireResult;
@@ -989,9 +995,9 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         return &draw;
     };
     std::vector<PreparedDraw*> draws;
-    draws.reserve(frame.RenderCommands.size());
-    for (const PreparedRenderCommand& command : frame.RenderCommands)
-        draws.push_back(prepareDraw(command));
+    draws.reserve(visibleCommands.size());
+    for (const PreparedRenderCommand* command : visibleCommands)
+        draws.push_back(prepareDraw(*command));
     std::vector<PreparedDraw*> shadowDraws;
     shadowDraws.reserve(frame.ShadowCommands.size());
     for (const PreparedRenderCommand& command : frame.ShadowCommands)
@@ -1042,7 +1048,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         vkCmdResetQueryPool(cmd, m_timestampQueryPool, timestampBase,
                             kTimestampCountPerFrame);
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 0);
+                             m_timestampQueryPool,
+                             timestampBase + DirectionalShadowPass * 2);
     }
     if (recordPipelineStatistics)
     {
@@ -1107,7 +1114,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                              m_timestampQueryPool, timestampBase + 1);
+                              m_timestampQueryPool,
+                              timestampBase + DirectionalShadowPass * 2 + 1);
     }
     };
 
@@ -1115,7 +1123,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                              m_timestampQueryPool, timestampBase + 2);
+                              m_timestampQueryPool,
+                              timestampBase + LocalShadowPass * 2);
     }
     BeginDebugLabel(cmd, "Shadows / Local Lights", {0.75f, 0.35f, 0.75f, 1.0f});
     RecordLocalLightShadows(cmd, scene);
@@ -1123,7 +1132,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 3);
+                             m_timestampQueryPool,
+                             timestampBase + LocalShadowPass * 2 + 1);
     }
     };
 
@@ -1131,7 +1141,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 4);
+                             m_timestampQueryPool,
+                             timestampBase + MainHdrPass * 2);
     }
 
     BeginDebugLabel(cmd, "Main HDR / Geometry + Sky + Resolve",
@@ -1227,7 +1238,10 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
             vulkan::BoundsDebugConstants constants;
             constants.Minimum = glm::vec4(debugBounds.Bounds.Minimum, 0.0f);
             constants.Maximum = glm::vec4(debugBounds.Bounds.Maximum, 0.0f);
-            if (debugBounds.Classification == VisibilityClassification::FrustumCulled)
+            if (scene.Visibility.DebugOcclusion &&
+                m_occlusionCulledInstances.contains(debugBounds.InstanceIndex))
+                constants.Color = {2.2f, 0.15f, 3.0f, 1.0f};
+            else if (debugBounds.Classification == VisibilityClassification::FrustumCulled)
                 constants.Color = {3.0f, 0.12f, 0.08f, 1.0f};
             else if (debugBounds.Classification == VisibilityClassification::DistanceCulled)
                 constants.Color = {3.0f, 1.4f, 0.05f, 1.0f};
@@ -1244,14 +1258,16 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
 
     if (recordGpuTiming)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                              m_timestampQueryPool, timestampBase + 5);
+                              m_timestampQueryPool,
+                              timestampBase + MainHdrPass * 2 + 1);
 
     };
 
     const auto postProcessPass = [&]() {
     if (recordGpuTiming)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                              m_timestampQueryPool, timestampBase + 6);
+                              m_timestampQueryPool,
+                              timestampBase + PostProcessPass * 2);
     BeginDebugLabel(cmd, "Post Process", {0.90f, 0.55f, 0.15f, 1.0f});
     RecordAutoExposure(cmd, frame, imageIndex);
     if (m_taaActive)
@@ -1261,7 +1277,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 7);
+                             m_timestampQueryPool,
+                             timestampBase + PostProcessPass * 2 + 1);
     }
     };
 
@@ -1269,14 +1286,16 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     if (recordGpuTiming)
     {
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 8);
+                             m_timestampQueryPool,
+                             timestampBase + DebugUiPass * 2);
     }
     BeginDebugLabel(cmd, "Debug UI", {0.20f, 0.75f, 0.85f, 1.0f});
     RecordDebugOverlay(cmd, frame, imageIndex);
     EndDebugLabel(cmd);
     if (recordGpuTiming)
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                             m_timestampQueryPool, timestampBase + 9);
+                             m_timestampQueryPool,
+                             timestampBase + DebugUiPass * 2 + 1);
     };
 
     rendergraph::RendererFrameGraphFeatures graphFeatures;
@@ -1294,11 +1313,36 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     graphFeatures.Fxaa = scene.PostProcess.Enabled &&
                          scene.PostProcess.AntiAliasing == AntiAliasingMode::Fxaa;
     graphFeatures.DebugUi = true;
+    graphFeatures.OcclusionCulling = m_occlusionState.Active();
+    graphFeatures.OcclusionCandidateCount = m_frameStats.GpuOcclusionCandidates;
+    graphFeatures.HiZMipLevels = m_hizMipLevels;
     rendergraph::RendererFrameGraphCallbacks graphCallbacks;
     graphCallbacks[rendergraph::RendererPass::Environment] = [] {};
     graphCallbacks[rendergraph::RendererPass::DirectionalShadows] = directionalShadowPass;
     graphCallbacks[rendergraph::RendererPass::LocalShadows] = localShadowPass;
+    graphCallbacks[rendergraph::RendererPass::OcclusionCull] = [&]() {
+        if (recordGpuTiming)
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                 m_timestampQueryPool,
+                                 timestampBase + OcclusionCullPass * 2);
+        DispatchOcclusionQueries(cmd, frame);
+        if (recordGpuTiming)
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 m_timestampQueryPool,
+                                 timestampBase + OcclusionCullPass * 2 + 1);
+    };
     graphCallbacks[rendergraph::RendererPass::MainHdr] = mainHdrPass;
+    graphCallbacks[rendergraph::RendererPass::HiZBuild] = [&]() {
+        if (recordGpuTiming)
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                 m_timestampQueryPool,
+                                 timestampBase + HiZBuildPass * 2);
+        BuildHiZPyramid(cmd, imageIndex);
+        if (recordGpuTiming)
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 m_timestampQueryPool,
+                                 timestampBase + HiZBuildPass * 2 + 1);
+    };
     graphCallbacks[rendergraph::RendererPass::PostProcess] = postProcessPass;
     graphCallbacks[rendergraph::RendererPass::DebugUi] = debugUiPass;
     std::string graphError;
@@ -1377,6 +1421,29 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     };
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Prepare);
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Render, applyGraphBarriers);
+
+    if (recordGpuTiming)
+    {
+        // Optional graph passes still need available timestamp pairs so the
+        // asynchronous profiler can consume the complete fixed query range.
+        const std::array<bool, GpuProfilerPassCount> passEnabled{
+            graphFeatures.SunShadows,
+            graphFeatures.LocalShadows,
+            graphFeatures.OcclusionCulling,
+            true,
+            graphFeatures.OcclusionCulling,
+            true,
+            graphFeatures.DebugUi};
+        for (uint32_t pass = 0; pass < GpuProfilerPassCount; ++pass)
+        {
+            if (passEnabled[pass])
+                continue;
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                 m_timestampQueryPool, timestampBase + pass * 2);
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                 m_timestampQueryPool, timestampBase + pass * 2 + 1);
+        }
+    }
 
     if (recordPipelineStatistics)
         vkCmdEndQuery(cmd, m_pipelineStatisticsQueryPool, m_currentFrame);
@@ -1592,6 +1659,7 @@ void VulkanRenderBackend::Shutdown()
     DestroyShadowResources();
     DestroyPerformanceQueries();
     DestroyGraphicsPipeline();
+    DestroyOcclusionTargets();
     DestroyPostTargets();
 
     for (int i = 0; i < kFramesInFlight; ++i)
@@ -1605,6 +1673,7 @@ void VulkanRenderBackend::Shutdown()
         vkDestroyCommandPool(m_device, m_commandPool, nullptr);
 
     DestroySwapchain();
+    DestroyOcclusionInfrastructure();
     DestroyEnvironmentInfrastructure();
     DestroyPostInfrastructure();
     DestroyShaderInfrastructure();

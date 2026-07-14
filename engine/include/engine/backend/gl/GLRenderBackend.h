@@ -15,6 +15,7 @@
 #include "engine/backend/gl/GLTexture.h"
 #include "engine/render/CascadedShadows.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/render/OcclusionCulling.h"
 #include "engine/profiling/GpuProfiler.h"
 #include "engine/scene/RenderSettings.h"
 
@@ -71,6 +72,11 @@ private:
     void EndGpuProfilerFrame(const Scene& scene);
     void ReadGpuProfilerFrame(uint32_t slot);
     profiling::GpuMemoryStatistics QueryGpuMemory() const;
+    void PrepareOcclusionFrame(const RenderFrameData& frame,
+                               std::vector<const PreparedRenderCommand*>& visibleCommands);
+    void DispatchOcclusionQueries(const RenderFrameData& frame);
+    void BuildHiZPyramid(const glm::mat4& viewProjection);
+    void DestroyOcclusionResources();
 
     GLMesh& GetOrCreateMesh(const std::shared_ptr<MeshData>& data);
     GLTexture& GetOrCreateTexture(const std::shared_ptr<TextureData>& data);
@@ -97,6 +103,8 @@ private:
     std::unique_ptr<GLShader> m_postShader;
     std::unique_ptr<GLShader> m_debugOverlayShader;
     std::unique_ptr<GLShader> m_boundsDebugShader;
+    std::unique_ptr<GLShader> m_hizBuildShader;
+    std::unique_ptr<GLShader> m_occlusionTestShader;
 
     std::unique_ptr<GLEnvironment> m_environment;
 
@@ -147,7 +155,9 @@ private:
     {
         DirectionalShadowPass,
         LocalShadowPass,
+        OcclusionCullPass,
         MainHdrPass,
+        HiZBuildPass,
         PostProcessPass,
         DebugUiPass,
         GpuProfilerPassCount
@@ -194,6 +204,28 @@ private:
     unsigned int m_hdrColorTex = 0;
     unsigned int m_velocityTex = 0;
     unsigned int m_depthTex = 0;
+    unsigned int m_hizTexture = 0;
+    int m_hizMipLevels = 1;
+    bool m_hizValid = false;
+    glm::mat4 m_hizViewProjection{1.0f};
+
+    struct OcclusionReadbackSlot
+    {
+        unsigned int CandidateBuffer = 0;
+        unsigned int ResultBuffer = 0;
+        unsigned int ReadbackBuffer = 0;
+        const uint32_t* ReadbackMapped = nullptr;
+        void* Fence = nullptr;
+        size_t Capacity = 0;
+        uint64_t Generation = 0;
+        uint64_t SubmittedFrame = 0;
+        std::vector<OcclusionQueryRecord> Records;
+    };
+    static constexpr uint32_t kOcclusionReadbackSlots = 3;
+    std::array<OcclusionReadbackSlot, kOcclusionReadbackSlots> m_occlusionSlots{};
+    uint32_t m_occlusionWriteSlot = 0;
+    TemporalOcclusionState m_occlusionState;
+    std::unordered_set<uint32_t> m_occlusionCulledInstances;
 
     std::array<unsigned int, 2> m_taaFbos{};
     std::array<unsigned int, 2> m_taaHistoryColor{};

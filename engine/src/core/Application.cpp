@@ -422,6 +422,22 @@ bool Application::RunOneFrame()
                                         std::to_string(visibility.DistanceCulled));
                 m_debugOverlay.SetValue("VISIBILITY", "SHADOW CASTERS",
                                         std::to_string(visibility.ShadowCasters));
+                m_debugOverlay.SetValue("GPU HI-Z", "ACTIVE",
+                                        metrics.Backend.GpuOcclusionActive ? "YES" : "NO");
+                m_debugOverlay.SetValue("GPU HI-Z", "CANDIDATES",
+                                        std::to_string(metrics.Backend.GpuOcclusionCandidates));
+                m_debugOverlay.SetValue("GPU HI-Z", "CULLED",
+                                        std::to_string(metrics.Backend.GpuOcclusionCulled));
+                m_debugOverlay.SetValue("GPU HI-Z", "RESULTS",
+                                        std::to_string(metrics.Backend.GpuOcclusionResultsConsumed));
+                m_debugOverlay.SetValue("GPU HI-Z", "MIP LEVELS",
+                                        std::to_string(metrics.Backend.HiZMipLevels));
+                m_debugOverlay.SetValue("GPU HI-Z", "LATENCY",
+                                        std::to_string(metrics.Backend.OcclusionReadbackLatencyFrames) + " FR");
+                m_debugOverlay.SetValue("GPU HI-Z", "GPU TIME",
+                                        std::to_string(metrics.Backend.GpuOcclusionMilliseconds) + " MS");
+                m_debugOverlay.SetValue("GPU HI-Z", "HISTORY RESET",
+                                        metrics.Backend.GpuOcclusionHistoryReset ? "YES" : "NO");
                 m_debugOverlay.Update(metrics, profiler.Snapshot(), memoryProfiler.Snapshot(),
                                       gpuProfile);
             }
