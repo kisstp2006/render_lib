@@ -56,4 +56,11 @@ void GLMesh::Draw() const
     glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, nullptr);
 }
 
+void GLMesh::DrawInstanced(uint32_t instanceCount, uint32_t firstInstance) const
+{
+    glBindVertexArray(m_vao);
+    glDrawElementsInstancedBaseInstance(GL_TRIANGLES, m_indexCount,
+        GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(instanceCount), firstInstance);
+}
+
 } // namespace engine

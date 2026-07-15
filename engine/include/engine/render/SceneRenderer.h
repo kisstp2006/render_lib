@@ -10,8 +10,10 @@
 #include <glm/glm.hpp>
 
 #include "engine/render/CascadedShadows.h"
+#include "engine/backend/IRenderBackend.h"
 #include "engine/render/Visibility.h"
 #include "engine/scene/Environment.h"
+#include "engine/scene/DebugDraw.h"
 #include "engine/concurrency/TaskSystem.h"
 
 namespace engine {
@@ -121,6 +123,7 @@ struct RenderFrameData
     std::vector<PreparedRenderCommand> RenderCommands;
     std::vector<PreparedRenderCommand> ShadowCommands;
     std::vector<VisibilityDebugBounds> VisibilityDebug;
+    std::vector<DebugLine> DebugLines;
     VisibilityStatistics Visibility{};
     FramePreparationStatistics Preparation{};
     float TonemapWhitePointScale = 1.0f;
@@ -159,6 +162,26 @@ public:
                                         const debug::DebugOverlayImage* debugOverlay = nullptr,
                                         float timeSeconds = 0.0f,
                                         float deltaSeconds = 1.0f / 60.0f);
+
+    RenderViewportHandle CreateViewport(IRenderBackend& backend,
+                                        const RenderViewportDesc& desc)
+    {
+        return backend.CreateViewport(desc);
+    }
+    bool ResizeViewport(IRenderBackend& backend, RenderViewportHandle viewport,
+                        uint32_t width, uint32_t height)
+    {
+        return backend.ResizeViewport(viewport, width, height);
+    }
+    void DestroyViewport(IRenderBackend& backend, RenderViewportHandle viewport)
+    {
+        backend.DestroyViewport(viewport);
+    }
+    bool RenderViewport(IRenderBackend& backend, RenderViewportHandle viewport,
+                        const Scene& scene, const Camera& camera,
+                        uint32_t width, uint32_t height,
+                        float timeSeconds = 0.0f,
+                        float deltaSeconds = 1.0f / 60.0f);
 
 private:
     struct RegisteredWork

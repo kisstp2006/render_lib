@@ -19,7 +19,9 @@ const vec3 corners[24] = vec3[](
 
 void main()
 {
-    vec3 worldPosition = mix(boundsData.Minimum.xyz, boundsData.Maximum.xyz,
-                             corners[gl_VertexIndex]);
+    vec3 worldPosition = boundsData.Color.w < 0.0
+        ? (gl_VertexIndex == 0 ? boundsData.Minimum.xyz : boundsData.Maximum.xyz)
+        : mix(boundsData.Minimum.xyz, boundsData.Maximum.xyz,
+              corners[gl_VertexIndex]);
     gl_Position = frame.Projection * frame.View * vec4(worldPosition, 1.0);
 }

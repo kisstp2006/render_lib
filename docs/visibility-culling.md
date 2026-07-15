@@ -30,6 +30,11 @@ scene.Visibility.DebugOcclusion = true;
 
 instance.MaxDrawDistance = 35.0f;           // 0 inherits the scene limit
 instance.AlwaysVisible = false;              // bypasses CPU and GPU culling
+instance.AllowInstancing = true;
+
+scene.Instancing.HierarchicalCulling = true;
+scene.Instancing.HismMinimumGroupSize = 32;
+scene.Instancing.HismLeafSize = 8;
 ```
 
 The per-instance draw distance can only reduce the scene limit. This avoids an
@@ -37,6 +42,13 @@ individual object silently extending the configured visibility range. Mesh
 vertex data is treated as immutable after publication; local bounds are cached
 by mesh identity and vertex allocation and transformed conservatively for
 rotation and non-uniform scale.
+
+Large compatible populations are routed through the shared HISM median-split
+AABB hierarchy before leaf testing. A rejected parent classifies its complete
+subtree conservatively, while accepted leaves still use the exact normal
+distance/frustum tests. `VisibilityStatistics` exposes group, node, subtree
+rejection and leaf-test counts under the runtime `HISM` debug group. See the
+[instancing guide](instancing.md) for batching and GPU submission details.
 
 ## GPU Hi-Z pipeline and temporal safety
 

@@ -1,6 +1,7 @@
 #include "engine/backend/gl/GLRenderBackend.h"
 
 #include "engine/core/Log.h"
+#include "engine/debug/DebugOverlay.h"
 
 #include <glad/gl.h>
 
@@ -96,6 +97,16 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
             (sizeof(GpuOcclusionBounds) + sizeof(uint32_t));
         stats.HostVisibleBytes += slot.Capacity * sizeof(uint32_t);
     }
+    stats.DeviceLocalBytes += m_instanceTransformBytes;
+    constexpr uint64_t debugOverlayBytes =
+        static_cast<uint64_t>(debug::DebugOverlayImage::TextureWidth) *
+        debug::DebugOverlayImage::TextureHeight * 4u;
+    for (const unsigned int buffer : m_debugOverlayBuffers)
+        if (buffer != 0)
+            stats.HostVisibleBytes += debugOverlayBytes;
+    for (const FrameDebugReadbackSlot& slot : m_frameDebugReadbackSlots)
+        if (slot.Buffer != 0)
+            stats.HostVisibleBytes += slot.Capacity;
 
     stats.PeakDeviceLocalBytes = stats.DeviceLocalBytes;
     stats.PeakHostVisibleBytes = stats.HostVisibleBytes;
@@ -114,6 +125,7 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
     countHandle(m_emptyVao);
     countHandle(m_boundsDebugVao);
     countHandle(m_boundsDebugVbo);
+    countHandle(m_instanceTransformBuffer);
     countHandle(m_shadowFbo);
     for (const unsigned int handle : m_shadowMaps) countHandle(handle);
     countHandle(m_localShadowAtlasFbo);
@@ -122,6 +134,13 @@ BackendResourceStats GLRenderBackend::GetResourceStats() const
     countHandle(m_pointShadowArray);
     countHandle(m_cookieAtlas);
     for (const unsigned int handle : m_debugOverlayTextures) countHandle(handle);
+    for (const unsigned int handle : m_debugOverlayBuffers) countHandle(handle);
+    for (const FrameDebugReadbackSlot& slot : m_frameDebugReadbackSlots)
+    {
+        countHandle(slot.Buffer);
+        if (slot.Fence)
+            ++stats.LiveNativeAllocations;
+    }
     for (const unsigned int handle : m_exposurePbos) countHandle(handle);
     for (const OcclusionReadbackSlot& slot : m_occlusionSlots)
     {

@@ -10,6 +10,7 @@ engine_add_module(engine_assets
         ${ENGINE_ROOT}/include/engine/asset/ModelAsset.h
         ${ENGINE_ROOT}/include/engine/asset/SceneAsset.h
         ${ENGINE_ROOT}/include/engine/asset/TextureAsset.h
+        ${ENGINE_ROOT}/include/engine/asset/WorldSceneSerialization.h
         ${ENGINE_ROOT}/src/asset/ColorGrading.cpp
         ${ENGINE_ROOT}/src/asset/ColorGradingAsset.cpp
         ${ENGINE_ROOT}/src/asset/BuiltinAssetTypes.cpp
@@ -18,12 +19,14 @@ engine_add_module(engine_assets
         ${ENGINE_ROOT}/src/asset/ModelAsset.cpp
         ${ENGINE_ROOT}/src/asset/SceneAsset.cpp
         ${ENGINE_ROOT}/src/asset/TextureAsset.cpp
+        ${ENGINE_ROOT}/src/asset/WorldSceneSerialization.cpp
     PUBLIC_DEPS
         engine_foundation
         engine_asset_core
         engine_resources
         engine_asset_pipeline
         engine_scene
+        engine_runtime
     PRIVATE_DEPS
         engine_asset_cookers
         engine_third_party

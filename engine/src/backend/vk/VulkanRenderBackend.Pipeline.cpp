@@ -214,6 +214,19 @@ void VulkanRenderBackend::CreateGraphicsPipeline()
     SetDebugName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_boundsDebugPipeline),
                  "Visibility Bounds Debug Pipeline");
 
+    boundsDepth.depthTestEnable = VK_TRUE;
+    boundsDepth.depthWriteEnable = VK_FALSE;
+    boundsDepth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    if (m_pipelineCache.CreateGraphics(1, &pipelineInfo,
+                                       &m_boundsDebugDepthPipeline) != VK_SUCCESS)
+    {
+        DestroyGraphicsPipeline();
+        throw std::runtime_error("Vulkan: failed to create depth-tested debug line pipeline");
+    }
+    SetDebugName(VK_OBJECT_TYPE_PIPELINE,
+                 reinterpret_cast<uint64_t>(m_boundsDebugDepthPipeline),
+                 "Debug Draw Depth-Tested Line Pipeline");
+
     CreatePostPipelines();
 }
 
@@ -228,10 +241,13 @@ void VulkanRenderBackend::DestroyGraphicsPipeline()
         vkDestroyPipeline(m_device, m_pbrPipeline, nullptr);
     if (m_boundsDebugPipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(m_device, m_boundsDebugPipeline, nullptr);
+    if (m_boundsDebugDepthPipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(m_device, m_boundsDebugDepthPipeline, nullptr);
     m_skyPipeline = VK_NULL_HANDLE;
     m_pbrPipeline = VK_NULL_HANDLE;
     m_shadowPipeline = VK_NULL_HANDLE;
     m_boundsDebugPipeline = VK_NULL_HANDLE;
+    m_boundsDebugDepthPipeline = VK_NULL_HANDLE;
 }
 
 } // namespace engine

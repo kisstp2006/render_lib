@@ -4,8 +4,10 @@
 #include "engine/render/SceneRenderer.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include <glad/gl.h>
+#include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 
 namespace engine {
@@ -16,28 +18,73 @@ void GLRenderBackend::RenderDebugOverlay(const RenderFrameData& frame)
         return;
 
     const debug::DebugOverlayImage& overlay = *frame.DebugOverlay;
-    const unsigned int overlayTexture = m_debugOverlayTextures[m_debugOverlayTextureIndex];
-    glBindTexture(GL_TEXTURE_2D, overlayTexture);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    // Give the upload fresh storage. Some drivers keep sampling the previous
-    // atlas for several frames; replacing its contents in-place can therefore
-    // race the outstanding debug draw and intermittently erase fine text.
-    // The debugger is an opt-in diagnostic view, so the small orphaning cost is
-    // preferable to a fence or a permanently mapped staging ring here.
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8,
-                 debug::DebugOverlayImage::Width,
-                 debug::DebugOverlayImage::Height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, overlay.Pixels.data());
+    if (overlay.Revision != m_debugOverlayRevision)
+    {
+        uint32_t uploadIndex = m_debugOverlayTextureIndex;
+        bool slotAvailable = true;
+        if (m_debugOverlayRevision != 0)
+        {
+            uploadIndex = (m_debugOverlayTextureIndex + 1) %
+                static_cast<uint32_t>(m_debugOverlayTextures.size());
+            if (m_debugOverlayFences[uploadIndex])
+            {
+                const GLenum status = glClientWaitSync(
+                    reinterpret_cast<GLsync>(m_debugOverlayFences[uploadIndex]), 0, 0);
+                slotAvailable = status == GL_ALREADY_SIGNALED ||
+                                status == GL_CONDITION_SATISFIED;
+                if (slotAvailable)
+                {
+                    glDeleteSync(reinterpret_cast<GLsync>(
+                        m_debugOverlayFences[uploadIndex]));
+                    m_debugOverlayFences[uploadIndex] = nullptr;
+                }
+            }
+        }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (slotAvailable)
+        {
+            if (m_debugOverlayRevision != 0)
+            {
+                // Retire the texture that was sampled by previous frames. The
+                // fence is checked only when this ring slot is selected again.
+                m_debugOverlayFences[m_debugOverlayTextureIndex] =
+                    reinterpret_cast<void*>(glFenceSync(
+                        GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+                m_debugOverlayTextureIndex = uploadIndex;
+            }
+            uint8_t* mapped = m_debugOverlayMappedBuffers[m_debugOverlayTextureIndex];
+            for (uint32_t index = 0; index < overlay.LayerCount; ++index)
+            {
+                const debug::DebugOverlayLayer& layer = overlay.Layers[index];
+                for (uint32_t row = 0; row < layer.Height; ++row)
+                {
+                    const size_t offset =
+                        (static_cast<size_t>(layer.SourceY + row) *
+                             debug::DebugOverlayImage::TextureWidth +
+                         layer.SourceX) * 4;
+                    std::memcpy(mapped + offset, overlay.Pixels.data() + offset,
+                                static_cast<size_t>(layer.Width) * 4);
+                }
+            }
+            glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT);
+            m_debugOverlayRevision = overlay.Revision;
+        }
+    }
+    const unsigned int overlayTexture = m_debugOverlayTextures[m_debugOverlayTextureIndex];
+
+    glBindFramebuffer(GL_FRAMEBUFFER, m_activeOutputFramebuffer);
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_FRAMEBUFFER_SRGB);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     m_debugOverlayShader->Use();
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, overlayTexture);
+    glBindTexture(GL_TEXTURE_BUFFER, overlayTexture);
     m_debugOverlayShader->SetInt("uOverlay", 0);
+    m_debugOverlayShader->SetVec2(
+        "uAtlasSize",
+        glm::vec2(static_cast<float>(debug::DebugOverlayImage::TextureWidth),
+                  static_cast<float>(debug::DebugOverlayImage::TextureHeight)));
     glBindVertexArray(m_emptyVao);
     for (uint32_t index = 0; index < overlay.LayerCount; ++index)
     {
@@ -62,8 +109,6 @@ void GLRenderBackend::RenderDebugOverlay(const RenderFrameData& frame)
     glDisable(GL_FRAMEBUFFER_SRGB);
     glViewport(0, 0, m_width, m_height);
     glEnable(GL_DEPTH_TEST);
-    m_debugOverlayTextureIndex = (m_debugOverlayTextureIndex + 1) %
-        static_cast<uint32_t>(m_debugOverlayTextures.size());
 }
 
 } // namespace engine

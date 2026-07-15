@@ -269,6 +269,18 @@ class TaskSystem
         if (count == 0)
             return;
         minimumGrain = std::max<size_t>(minimumGrain, 1);
+        // Two tiny chunks cost more to allocate, queue, wake and join than the
+        // inexpensive visibility/light preparation loops they contain. Keep
+        // small ranges on the caller and reserve jobs for batches with enough
+        // work to amortize synchronization.
+        const size_t serialThreshold = minimumGrain > (SIZE_MAX / 2)
+            ? SIZE_MAX : minimumGrain * 2;
+        if (count <= serialThreshold)
+        {
+            for (size_t index = 0; index < count; ++index)
+                function(index);
+            return;
+        }
         const size_t desiredTasks = std::max<size_t>(1, WorkerCount() + 1);
         const size_t grain = std::max(minimumGrain, (count + desiredTasks - 1) / desiredTasks);
         std::vector<TaskHandle> handles;

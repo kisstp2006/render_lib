@@ -417,6 +417,7 @@ void VulkanRenderBackend::EnsureEnvironmentBaked(const RenderFrameData& frame)
     const uint64_t directionSignature = EnvironmentDirectionSignature(scene);
     const bool staticChanged = staticSignature != m_environmentStaticSignature;
     const bool directionChanged = directionSignature != m_environmentDirectionSignature;
+    const bool fastUpdate = !staticChanged && directionChanged && m_environmentImagesInitialized;
     if (!staticChanged && !directionChanged && m_environmentImagesInitialized)
         return;
     const double now = glfwGetTime();
@@ -528,6 +529,9 @@ void VulkanRenderBackend::EnsureEnvironmentBaked(const RenderFrameData& frame)
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_irradiancePipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             m_environmentBakePipelineLayout, 0, 1, &m_irradianceDescriptor, 0, nullptr);
+    constants.BakeParameters.z = fastUpdate ? 0.10f : 0.05f;
+    vkCmdPushConstants(commandBuffer, m_environmentBakePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(constants), &constants);
     vkCmdDispatch(commandBuffer, kIrradianceSize / 8, kIrradianceSize / 8, 6);
     TransitionImage(commandBuffer, m_irradianceCube.Handle, VK_IMAGE_LAYOUT_GENERAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 6);
@@ -536,6 +540,7 @@ void VulkanRenderBackend::EnsureEnvironmentBaked(const RenderFrameData& frame)
     BeginDebugLabel(commandBuffer, "IBL / GGX Prefilter Mip Chain",
                     {0.25f, 0.75f, 0.95f, 1.0f});
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_prefilterPipeline);
+    constants.BakeParameters.z = fastUpdate ? 128.0f : 1024.0f;
     for (uint32_t mip = 0; mip < kPrefilterMipLevels; ++mip)
     {
         const uint32_t size = std::max(kPrefilterSize >> mip, 1u);

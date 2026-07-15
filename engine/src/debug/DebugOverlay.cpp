@@ -265,7 +265,7 @@ bool DebugOverlay::GetFrameDebugCaptureRequest(uint64_t& resourceId, uint32_t& m
 void DebugOverlay::SetFrameDebugPreview(FrameDebugPreview preview)
 {
     m_frameDebugPreview = std::move(preview);
-    m_frameDebugCaptureRequested = false;
+    m_frameDebugCaptureRequested = m_frameDebugPreview.Pending;
 }
 
 void DebugOverlay::SetValue(std::string group, std::string key, std::string value)
@@ -744,11 +744,17 @@ void DebugOverlay::DrawDetailedPanel(const DebugOverlayMetrics& metrics,
 
     Text(14, cursorY + 2, "CPU MEMORY", heading, 1);
     cursorY += 16;
-    const double memoryMegabytes = static_cast<double>(memoryProfile.CurrentBytes) / (1024.0 * 1024.0);
-    const double peakMegabytes = static_cast<double>(memoryProfile.PeakBytes) / (1024.0 * 1024.0);
+    const uint64_t displayedMemory = memoryProfile.ProcessMemoryAvailable
+        ? memoryProfile.ProcessResidentBytes : memoryProfile.CurrentBytes;
+    const uint64_t displayedPeak = memoryProfile.ProcessMemoryAvailable
+        ? memoryProfile.ProcessPeakResidentBytes : memoryProfile.PeakBytes;
+    const double memoryMegabytes = static_cast<double>(displayedMemory) / (1024.0 * 1024.0);
+    const double peakMegabytes = static_cast<double>(displayedPeak) / (1024.0 * 1024.0);
     Text(24, cursorY, Number(memoryMegabytes, 1) + " MB  PEAK " +
-                         Number(peakMegabytes, 1) + " MB  LIVE " +
-                         std::to_string(memoryProfile.LiveAllocations), text, 1);
+                         Number(peakMegabytes, 1) + " MB  " +
+                         (memoryProfile.Enabled
+                              ? "LIVE " + std::to_string(memoryProfile.LiveAllocations)
+                              : "PROCESS"), text, 1);
     cursorY += 14;
     if (!memoryProfile.Tags.empty())
     {
@@ -801,21 +807,34 @@ void DebugOverlay::DrawCpuMemoryMonitor(
     Rectangle(static_cast<int>(kCpuMonitorWidth) - 1, 0, 1,
               static_cast<int>(kCpuMonitorHeight), border);
     Text(10, 10, "CPU MEMORY", accent, 1);
-    Text(220, 10, memoryProfile.Enabled ? "LIVE" : "OFF", dim, 1);
+    Text(220, 10, memoryProfile.Enabled ? "DETAILED"
+                  : memoryProfile.ProcessMemoryAvailable ? "PROCESS" : "OFF", dim, 1);
 
     const double megabyte = 1024.0 * 1024.0;
-    Text(10, 28, "USED " + Number(static_cast<double>(memoryProfile.CurrentBytes) / megabyte, 1) +
-                      " MB  PEAK " + Number(static_cast<double>(memoryProfile.PeakBytes) / megabyte, 1) +
+    const uint64_t displayedMemory = memoryProfile.ProcessMemoryAvailable
+        ? memoryProfile.ProcessResidentBytes : memoryProfile.CurrentBytes;
+    const uint64_t displayedPeak = memoryProfile.ProcessMemoryAvailable
+        ? memoryProfile.ProcessPeakResidentBytes : memoryProfile.PeakBytes;
+    Text(10, 28, "USED " + Number(static_cast<double>(displayedMemory) / megabyte, 1) +
+                      " MB  PEAK " + Number(static_cast<double>(displayedPeak) / megabyte, 1) +
                       " MB", text, 1);
-    Text(10, 44, "ALLOCATIONS " + std::to_string(memoryProfile.LiveAllocations), text, 1);
+    if (memoryProfile.Enabled)
+        Text(10, 44, "ALLOCATIONS " + std::to_string(memoryProfile.LiveAllocations), text, 1);
+    else
+        Text(10, 44, "PRIVATE " +
+            Number(static_cast<double>(memoryProfile.ProcessPrivateBytes) / megabyte, 1) +
+            " MB", text, 1);
     const profiling::MemoryFrameStats* frame = memoryProfile.Frames.empty()
         ? nullptr : &memoryProfile.Frames.back();
     const double allocatedKilobytes = frame
         ? static_cast<double>(frame->AllocatedBytes) / 1024.0 : 0.0;
     const double freedKilobytes = frame
         ? static_cast<double>(frame->FreedBytes) / 1024.0 : 0.0;
-    Text(10, 60, "FRAME +" + Number(allocatedKilobytes, 0) + " / -" +
-                      Number(freedKilobytes, 0) + " KB", dim, 1);
+    if (memoryProfile.Enabled)
+        Text(10, 60, "FRAME +" + Number(allocatedKilobytes, 0) + " / -" +
+                          Number(freedKilobytes, 0) + " KB", dim, 1);
+    else
+        Text(10, 60, "ALLOCATION TRACKING OFF", dim, 1);
     if (!memoryProfile.Tags.empty())
     {
         const profiling::MemoryTagStats& tag = memoryProfile.Tags.front();

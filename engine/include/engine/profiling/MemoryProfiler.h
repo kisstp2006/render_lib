@@ -63,6 +63,10 @@ struct MemoryLeakInfo
 struct MemoryProfileSnapshot
 {
     bool Enabled = false;
+    bool ProcessMemoryAvailable = false;
+    uint64_t ProcessResidentBytes = 0;
+    uint64_t ProcessPeakResidentBytes = 0;
+    uint64_t ProcessPrivateBytes = 0;
     uint64_t CurrentBytes = 0;
     uint64_t PeakBytes = 0;
     uint64_t LiveAllocations = 0;

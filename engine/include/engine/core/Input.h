@@ -16,8 +16,18 @@ public:
 
     bool IsKeyDown(int glfwKeyCode) const;
     bool IsMouseButtonDown(int glfwButton) const;
+    bool IsKeyDownRaw(int glfwKeyCode) const;
+    bool IsMouseButtonDownRaw(int glfwButton) const;
+    void SetUiCapture(bool keyboard, bool mouse)
+    {
+        m_uiCapturesKeyboard = keyboard;
+        m_uiCapturesMouse = mouse;
+    }
 
-    glm::vec2 GetMouseDelta() const { return m_mouseDelta; }
+    glm::vec2 GetMouseDelta() const
+    {
+        return m_uiCapturesMouse ? glm::vec2(0.0f) : m_mouseDelta;
+    }
 
 private:
     GLFWwindow* m_window = nullptr;
@@ -25,6 +35,8 @@ private:
     glm::vec2 m_lastMousePos{0.0f};
     glm::vec2 m_mouseDelta{0.0f};
     bool m_firstFrame = true;
+    bool m_uiCapturesKeyboard = false;
+    bool m_uiCapturesMouse = false;
 };
 
 } // namespace engine

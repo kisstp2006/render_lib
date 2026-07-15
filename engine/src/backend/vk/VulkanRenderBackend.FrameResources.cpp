@@ -185,6 +185,22 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
                      reinterpret_cast<uint64_t>(m_materialDescriptorLayout),
                      "Material Descriptor Layout");
 
+        VkDescriptorSetLayoutBinding instanceBinding{};
+        instanceBinding.binding = vulkan::binding::InstanceTransforms;
+        instanceBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        instanceBinding.descriptorCount = 1;
+        instanceBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        VkDescriptorSetLayoutCreateInfo instanceLayoutInfo{};
+        instanceLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        instanceLayoutInfo.bindingCount = 1;
+        instanceLayoutInfo.pBindings = &instanceBinding;
+        if (vkCreateDescriptorSetLayout(m_device, &instanceLayoutInfo, nullptr,
+                                        &m_instanceDescriptorLayout) != VK_SUCCESS)
+            throw std::runtime_error("Vulkan: failed to create instance descriptor layout");
+        SetDebugName(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                     reinterpret_cast<uint64_t>(m_instanceDescriptorLayout),
+                     "GPU Instance Transform Descriptor Layout");
+
         VkDescriptorSetLayoutBinding shadowBinding{};
         shadowBinding.binding = 0;
         shadowBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -200,18 +216,16 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
                      reinterpret_cast<uint64_t>(m_shadowDescriptorLayout),
                      "Shadow Descriptor Layout");
 
-        const VkDescriptorSetLayout setLayouts[] = {m_frameDescriptorLayout, m_materialDescriptorLayout};
-        VkPushConstantRange objectRange{};
-        objectRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        objectRange.offset = 0;
-        objectRange.size = sizeof(vulkan::ObjectConstants);
+        const VkDescriptorSetLayout setLayouts[] = {
+            m_frameDescriptorLayout, m_materialDescriptorLayout,
+            m_instanceDescriptorLayout};
 
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(std::size(setLayouts));
         pipelineLayoutInfo.pSetLayouts = setLayouts;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &objectRange;
+        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        pipelineLayoutInfo.pPushConstantRanges = nullptr;
         if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pbrPipelineLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create PBR pipeline layout");
         SetDebugName(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
@@ -232,10 +246,13 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
                      reinterpret_cast<uint64_t>(m_boundsDebugPipelineLayout),
                      "Visibility Bounds Debug Pipeline Layout");
 
-        const VkDescriptorSetLayout shadowSetLayouts[] = {m_shadowDescriptorLayout, m_materialDescriptorLayout};
+        const VkDescriptorSetLayout shadowSetLayouts[] = {
+            m_shadowDescriptorLayout, m_materialDescriptorLayout,
+            m_instanceDescriptorLayout};
         pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(std::size(shadowSetLayouts));
         pipelineLayoutInfo.pSetLayouts = shadowSetLayouts;
-        pipelineLayoutInfo.pPushConstantRanges = &objectRange;
+        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        pipelineLayoutInfo.pPushConstantRanges = nullptr;
         if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_shadowPipelineLayout) != VK_SUCCESS)
             throw std::runtime_error("Vulkan: failed to create shadow pipeline layout");
         SetDebugName(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
@@ -245,6 +262,7 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 * 5},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 64},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64},
         };
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -277,6 +295,14 @@ void VulkanRenderBackend::CreateShaderInfrastructure()
             write.pBufferInfo = &bufferInfo;
             vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
         }
+
+        std::array<VkDescriptorSetLayout, kFramesInFlight> instanceLayouts{};
+        instanceLayouts.fill(m_instanceDescriptorLayout);
+        descriptorAllocate.descriptorSetCount = kFramesInFlight;
+        descriptorAllocate.pSetLayouts = instanceLayouts.data();
+        if (vkAllocateDescriptorSets(m_device, &descriptorAllocate,
+                                     m_instanceDescriptorSets.data()) != VK_SUCCESS)
+            throw std::runtime_error("Vulkan: failed to allocate instance descriptor sets");
     }
     catch (...)
     {
@@ -289,6 +315,7 @@ void VulkanRenderBackend::DestroyShaderInfrastructure()
 {
     m_frameDescriptorSets.clear();
     m_frameUniformBuffers.clear();
+    m_instanceDescriptorSets.fill(VK_NULL_HANDLE);
 
     if (m_descriptorPool != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
@@ -303,6 +330,8 @@ void VulkanRenderBackend::DestroyShaderInfrastructure()
         vkDestroyDescriptorSetLayout(m_device, m_shadowDescriptorLayout, nullptr);
     if (m_materialDescriptorLayout != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(m_device, m_materialDescriptorLayout, nullptr);
+    if (m_instanceDescriptorLayout != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(m_device, m_instanceDescriptorLayout, nullptr);
     if (m_frameDescriptorLayout != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(m_device, m_frameDescriptorLayout, nullptr);
     if (m_shadowFragmentShader != VK_NULL_HANDLE)
@@ -327,6 +356,7 @@ void VulkanRenderBackend::DestroyShaderInfrastructure()
     m_boundsDebugPipelineLayout = VK_NULL_HANDLE;
     m_descriptorPool = VK_NULL_HANDLE;
     m_materialDescriptorLayout = VK_NULL_HANDLE;
+    m_instanceDescriptorLayout = VK_NULL_HANDLE;
     m_frameDescriptorLayout = VK_NULL_HANDLE;
     m_shadowDescriptorLayout = VK_NULL_HANDLE;
     m_shadowFragmentShader = VK_NULL_HANDLE;

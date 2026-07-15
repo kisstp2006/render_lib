@@ -7,6 +7,7 @@
 #include "engine/scene/Scene.h"
 #include "engine/scene/Texture.h"
 
+#include <array>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -294,6 +295,11 @@ void PopulateVisibilityShowcase(Application& app)
     scene.Visibility.GpuOcclusionCulling = true;
     scene.Visibility.OcclusionDepthBias = 0.0001f;
     scene.Visibility.DebugOcclusion = true;
+    scene.Instancing.Enabled = true;
+    scene.Instancing.MinimumBatchSize = 2;
+    scene.Instancing.HierarchicalCulling = true;
+    scene.Instancing.HismMinimumGroupSize = 24;
+    scene.Instancing.HismLeafSize = 8;
     scene.Fog.Enabled = false;
     scene.PostProcess.AutoExposure = false;
     scene.PostProcess.Exposure = 1.5f;
@@ -320,17 +326,24 @@ void PopulateVisibilityShowcase(Application& app)
     occluderTransform = glm::scale(occluderTransform, {13.0f, 4.5f, 0.5f});
     scene.AddInstance(occluder, occluderMaterial, occluderTransform);
 
+    std::array<Material, 4> instanceMaterials{};
+    instanceMaterials[0].Albedo = {0.08f, 0.32f, 0.92f};
+    instanceMaterials[1].Albedo = {0.18f, 0.78f, 0.36f};
+    instanceMaterials[2].Albedo = {0.95f, 0.62f, 0.08f};
+    instanceMaterials[3].Albedo = {0.95f, 0.20f, 0.08f};
+    for (size_t index = 0; index < instanceMaterials.size(); ++index)
+    {
+        instanceMaterials[index].Metallic = 0.25f;
+        instanceMaterials[index].Roughness = 0.28f + 0.10f * static_cast<float>(index);
+    }
+
     for (int row = 0; row < 10; ++row)
     {
         const float z = -6.0f - row * 8.0f;
         for (int column = -6; column <= 6; ++column)
         {
-            Material material;
-            const float hue = static_cast<float>(column + 6) / 12.0f;
-            material.Albedo = glm::mix(glm::vec3(0.08f, 0.32f, 0.92f),
-                                       glm::vec3(0.95f, 0.20f, 0.08f), hue);
-            material.Metallic = 0.25f;
-            material.Roughness = 0.28f + 0.05f * static_cast<float>(row % 5);
+            const Material& material = instanceMaterials[
+                static_cast<size_t>((row + column + 6) & 3)];
             glm::mat4 transform = glm::translate(
                 glm::mat4(1.0f), {column * 5.0f, 0.2f + (row % 3) * 0.8f, z});
             transform = glm::rotate(transform, glm::radians(column * 7.0f + row * 11.0f),

@@ -8,6 +8,9 @@ set(application_dependencies
 if(ENGINE_BUILD_VULKAN)
     list(APPEND application_dependencies engine_renderer_vulkan)
 endif()
+if(ENGINE_ENABLE_IMGUI)
+    list(APPEND application_dependencies engine_editor_ui)
+endif()
 
 engine_add_module(engine_application
     FOLDER "Application"

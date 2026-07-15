@@ -64,6 +64,8 @@ void VulkanRenderBackend::PrepareDebugOverlay(const RenderFrameData& frame)
 {
     if (!frame.DebugOverlay || frame.DebugOverlay->LayerCount == 0)
         return;
+    if (m_debugOverlayRevisions[m_currentFrame] == frame.DebugOverlay->Revision)
+        return;
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("PrepareDebugOverlay", "Renderer/Vulkan/Debug");
     const VkDeviceSize byteCount = static_cast<VkDeviceSize>(debug::DebugOverlayImage::Width)
                                  * debug::DebugOverlayImage::Height * 4;
@@ -71,7 +73,21 @@ void VulkanRenderBackend::PrepareDebugOverlay(const RenderFrameData& frame)
     if (vkMapMemory(m_device, m_debugOverlayStaging[m_currentFrame].Memory,
                     0, byteCount, 0, &mapped) != VK_SUCCESS)
         return;
-    std::memcpy(mapped, frame.DebugOverlay->Pixels.data(), static_cast<size_t>(byteCount));
+    auto* destination = static_cast<uint8_t*>(mapped);
+    for (uint32_t index = 0; index < frame.DebugOverlay->LayerCount; ++index)
+    {
+        const debug::DebugOverlayLayer& layer = frame.DebugOverlay->Layers[index];
+        for (uint32_t row = 0; row < layer.Height; ++row)
+        {
+            const size_t offset =
+                (static_cast<size_t>(layer.SourceY + row) *
+                     debug::DebugOverlayImage::TextureWidth +
+                 layer.SourceX) * 4;
+            std::memcpy(destination + offset,
+                        frame.DebugOverlay->Pixels.data() + offset,
+                        static_cast<size_t>(layer.Width) * 4);
+        }
+    }
     vkUnmapMemory(m_device, m_debugOverlayStaging[m_currentFrame].Memory);
 }
 
@@ -84,42 +100,63 @@ void VulkanRenderBackend::RecordDebugOverlay(VkCommandBuffer commandBuffer,
         return;
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("RecordDebugOverlay", "Renderer/Vulkan/Debug");
 
-    vulkan::Image& image = m_debugOverlayImages[m_currentFrame];
-    VkImageMemoryBarrier2 toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    toTransfer.srcStageMask = m_debugOverlayImageInitialized[m_currentFrame]
-        ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE;
-    toTransfer.srcAccessMask = m_debugOverlayImageInitialized[m_currentFrame]
-        ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0;
-    toTransfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    toTransfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    toTransfer.oldLayout = m_debugOverlayImageInitialized[m_currentFrame]
-        ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-    toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toTransfer.image = image.Handle;
-    toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = 1;
-    dependency.pImageMemoryBarriers = &toTransfer;
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    if (m_debugOverlayRevisions[m_currentFrame] != frame.DebugOverlay->Revision)
+    {
+        vulkan::Image& image = m_debugOverlayImages[m_currentFrame];
+        VkImageMemoryBarrier2 toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        toTransfer.srcStageMask = m_debugOverlayImageInitialized[m_currentFrame]
+            ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE;
+        toTransfer.srcAccessMask = m_debugOverlayImageInitialized[m_currentFrame]
+            ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0;
+        toTransfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        toTransfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        toTransfer.oldLayout = m_debugOverlayImageInitialized[m_currentFrame]
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = image.Handle;
+        toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &toTransfer;
+        vkCmdPipelineBarrier2(commandBuffer, &dependency);
 
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = image.Extent;
-    vkCmdCopyBufferToImage(commandBuffer, m_debugOverlayStaging[m_currentFrame].Handle,
-                           image.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        std::array<VkBufferImageCopy, debug::DebugOverlayImage::MaximumLayers> copies{};
+        uint32_t copyCount = 0;
+        for (uint32_t index = 0; index < frame.DebugOverlay->LayerCount; ++index)
+        {
+            const debug::DebugOverlayLayer& layer = frame.DebugOverlay->Layers[index];
+            if (layer.Width == 0 || layer.Height == 0)
+                continue;
+            VkBufferImageCopy& copy = copies[copyCount++];
+            copy.bufferOffset =
+                (static_cast<VkDeviceSize>(layer.SourceY) *
+                     debug::DebugOverlayImage::TextureWidth +
+                 layer.SourceX) * 4;
+            copy.bufferRowLength = debug::DebugOverlayImage::TextureWidth;
+            copy.bufferImageHeight = debug::DebugOverlayImage::TextureHeight;
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageOffset = {static_cast<int32_t>(layer.SourceX),
+                                static_cast<int32_t>(layer.SourceY), 0};
+            copy.imageExtent = {layer.Width, layer.Height, 1};
+        }
+        vkCmdCopyBufferToImage(commandBuffer, m_debugOverlayStaging[m_currentFrame].Handle,
+                               image.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               copyCount, copies.data());
 
-    VkImageMemoryBarrier2 toSample = toTransfer;
-    toSample.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    toSample.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    toSample.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    toSample.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    toSample.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    toSample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    dependency.pImageMemoryBarriers = &toSample;
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
-    m_debugOverlayImageInitialized[m_currentFrame] = true;
+        VkImageMemoryBarrier2 toSample = toTransfer;
+        toSample.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        toSample.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        toSample.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        toSample.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        toSample.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toSample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        dependency.pImageMemoryBarriers = &toSample;
+        vkCmdPipelineBarrier2(commandBuffer, &dependency);
+        m_debugOverlayImageInitialized[m_currentFrame] = true;
+        m_debugOverlayRevisions[m_currentFrame] = frame.DebugOverlay->Revision;
+    }
 
     if (m_swapchainExtent.width == 0 || m_swapchainExtent.height == 0)
         return;

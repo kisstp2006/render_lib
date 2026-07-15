@@ -17,6 +17,9 @@ enum class AntiAliasingMode
 
 struct SkySettings
 {
+    // The environment may continue to light reflections while its visual
+    // background is hidden (editor solid-color/reference viewports).
+    bool VisibleBackground = true;
     glm::vec3 ZenithColor{0.18f, 0.32f, 0.66f};
     glm::vec3 HorizonColor{0.72f, 0.80f, 0.94f};
     glm::vec3 GroundColor{0.23f, 0.21f, 0.19f};
@@ -128,6 +131,21 @@ struct VisibilitySettings
     float OcclusionCameraPositionThreshold = 0.02f;
     float OcclusionCameraRotationThresholdDeg = 0.25f;
     bool DebugOcclusion = false;
+};
+
+struct InstancingSettings
+{
+    // Compatible meshes and materials are submitted with one native
+    // instanced draw. Setting this to false preserves the same instance-data
+    // path but emits one draw per object for diagnostics and comparison.
+    bool Enabled = true;
+    uint32_t MinimumBatchSize = 2;
+
+    // HISM builds a spatial hierarchy per compatible instance group before
+    // leaf-level visibility tests. Small groups stay on the direct path.
+    bool HierarchicalCulling = true;
+    uint32_t HismMinimumGroupSize = 32;
+    uint32_t HismLeafSize = 8;
 };
 
 } // namespace engine

@@ -219,6 +219,11 @@ bool SaveApplicationConfig(const std::filesystem::path& path, const ApplicationD
          << "application.fixed_delta=" << config.FixedDeltaSeconds << '\n'
          << "application.max_fps=" << config.FrameRateLimit << '\n'
          << "application.capture_cursor_on_look=" << config.CaptureCursorOnRightMouse << '\n'
+         << "application.synchronize_world_to_scene=" << config.SynchronizeWorldToScene << '\n'
+         << "application.imgui=" << config.EnableImGui << '\n'
+         << "application.imgui_platform_viewports="
+         << config.EnableImGuiPlatformViewports << '\n'
+         << "application.imgui_ini=" << std::quoted(config.ImGuiIniFilename) << '\n'
          << "diagnostics.runtime_monitors=" << config.EnableRuntimeMonitors << '\n';
     if (!file)
     {
@@ -356,6 +361,14 @@ bool LoadApplicationConfig(const std::filesystem::path& path, ApplicationDesc& c
             valid = ParseDouble(value, parsed.FrameRateLimit) && parsed.FrameRateLimit >= 0.0;
         else if (key == "application.capture_cursor_on_look")
             valid = ParseBool(value, parsed.CaptureCursorOnRightMouse);
+        else if (key == "application.synchronize_world_to_scene")
+            valid = ParseBool(value, parsed.SynchronizeWorldToScene);
+        else if (key == "application.imgui")
+            valid = ParseBool(value, parsed.EnableImGui);
+        else if (key == "application.imgui_platform_viewports")
+            valid = ParseBool(value, parsed.EnableImGuiPlatformViewports);
+        else if (key == "application.imgui_ini")
+            valid = ParseString(value, parsed.ImGuiIniFilename);
         else if (key == "diagnostics.runtime_monitors")
             valid = ParseBool(value, parsed.EnableRuntimeMonitors);
         if (!valid)

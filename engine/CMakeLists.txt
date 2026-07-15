@@ -12,6 +12,7 @@ target_compile_definitions(engine_build_config INTERFACE
     ENGINE_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"
     ENGINE_RENDERER_CACHE_DIR="${CMAKE_BINARY_DIR}/renderer_cache/$<CONFIG>"
     ENGINE_ENABLE_RUNTIME_MONITORS=$<BOOL:${ENGINE_ENABLE_RUNTIME_MONITORS}>
+    ENGINE_ENABLE_IMGUI=$<BOOL:${ENGINE_ENABLE_IMGUI}>
     ENGINE_HAS_VULKAN=$<BOOL:${ENGINE_BUILD_VULKAN}>)
 set_target_properties(engine_build_config PROPERTIES FOLDER "Engine/Build")
 
@@ -33,6 +34,9 @@ add_subdirectory(modules/RendererCore)
 add_subdirectory(modules/RendererOpenGL)
 if(ENGINE_BUILD_VULKAN)
     add_subdirectory(modules/RendererVulkan)
+endif()
+if(ENGINE_ENABLE_IMGUI)
+    add_subdirectory(modules/EditorUi)
 endif()
 add_subdirectory(modules/Application)
 
@@ -58,6 +62,9 @@ target_link_libraries(engine PUBLIC
     engine_application)
 if(ENGINE_BUILD_VULKAN)
     target_link_libraries(engine PUBLIC engine_renderer_vulkan)
+endif()
+if(ENGINE_ENABLE_IMGUI)
+    target_link_libraries(engine PUBLIC engine_editor_ui)
 endif()
 engine_apply_target_defaults(engine "Umbrella")
 add_library(engine::engine ALIAS engine)

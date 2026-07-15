@@ -23,7 +23,10 @@ void APIENTRY GLDebugCallback(GLenum, GLenum type, unsigned int, GLenum severity
 {
     if (severity == GL_DEBUG_SEVERITY_NOTIFICATION)
         return;
-    (type == GL_DEBUG_TYPE_ERROR ? log::Error : log::Warn)(std::string("[GL] ") + message);
+    if (type == GL_DEBUG_TYPE_ERROR)
+        log::Error(std::string("[GL] ") + message);
+    else
+        log::Warn(std::string("[GL] ") + message);
 }
 
 } // namespace
@@ -177,6 +180,9 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     glBindVertexArray(m_emptyVao);
     gl_debug::LabelObject(GL_VERTEX_ARRAY, m_emptyVao, "Fullscreen Triangle VAO");
     glBindVertexArray(0);
+    glCreateBuffers(1, &m_instanceTransformBuffer);
+    gl_debug::LabelObject(GL_BUFFER, m_instanceTransformBuffer,
+                          "Per-frame GPU Instance Transforms");
     constexpr float boundsLines[] = {
         0,0,0, 1,0,0,  1,0,0, 1,1,0,  1,1,0, 0,1,0,  0,1,0, 0,0,0,
         0,0,1, 1,0,1,  1,0,1, 1,1,1,  1,1,1, 0,1,1,  0,1,1, 0,0,1,
@@ -197,18 +203,34 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     m_defaultNormal = std::make_unique<GLTexture>(*flatNormal, m_maxAnisotropy);
     glGenTextures(static_cast<GLsizei>(m_debugOverlayTextures.size()),
                   m_debugOverlayTextures.data());
+    glGenBuffers(static_cast<GLsizei>(m_debugOverlayBuffers.size()),
+                 m_debugOverlayBuffers.data());
+    constexpr GLsizeiptr debugOverlayBytes =
+        static_cast<GLsizeiptr>(debug::DebugOverlayImage::TextureWidth) *
+        debug::DebugOverlayImage::TextureHeight * 4;
+    constexpr GLbitfield debugOverlayMapFlags =
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
     for (size_t index = 0; index < m_debugOverlayTextures.size(); ++index)
     {
-        glBindTexture(GL_TEXTURE_2D, m_debugOverlayTextures[index]);
+        glBindTexture(GL_TEXTURE_BUFFER, m_debugOverlayTextures[index]);
         gl_debug::LabelObject(GL_TEXTURE, m_debugOverlayTextures[index],
-            "Debug UI Atlas " + std::to_string(index));
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, debug::DebugOverlayImage::Width,
-                     debug::DebugOverlayImage::Height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            "Debug UI Pixel Buffer View " + std::to_string(index));
+        glBindBuffer(GL_TEXTURE_BUFFER, m_debugOverlayBuffers[index]);
+        gl_debug::LabelObject(GL_BUFFER, m_debugOverlayBuffers[index],
+            "Debug UI Persistent Pixel Buffer " + std::to_string(index));
+        // The CPU rewrites this small atlas throughout the renderer lifetime.
+        // The fragment shader samples the buffer directly through a texture-
+        // buffer view, avoiding both PBO migration and glTexSubImage traffic.
+        glBufferStorage(GL_TEXTURE_BUFFER, debugOverlayBytes, nullptr,
+                        debugOverlayMapFlags | GL_CLIENT_STORAGE_BIT);
+        m_debugOverlayMappedBuffers[index] = static_cast<uint8_t*>(glMapBufferRange(
+            GL_TEXTURE_BUFFER, 0, debugOverlayBytes, debugOverlayMapFlags));
+        if (!m_debugOverlayMappedBuffers[index])
+            throw std::runtime_error("Failed to persistently map the debug UI pixel buffer");
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, m_debugOverlayBuffers[index]);
     }
+    glBindBuffer(GL_TEXTURE_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
     InitShadowMap();
     InitLocalLightResources();
     CreateSceneTargets(m_width, m_height);
@@ -248,6 +270,7 @@ bool GLRenderBackend::SetPresentMode(PresentMode mode)
 
 void GLRenderBackend::Shutdown()
 {
+    DestroyAllViewports();
     // Hi-Z result buffers may still be the target of asynchronous compute.
     // Complete those writes before deleting their storage during shutdown.
     glFinish();
@@ -280,9 +303,38 @@ void GLRenderBackend::Shutdown()
     if (m_emptyVao) glDeleteVertexArrays(1, &m_emptyVao);
     if (m_boundsDebugVao) glDeleteVertexArrays(1, &m_boundsDebugVao);
     if (m_boundsDebugVbo) glDeleteBuffers(1, &m_boundsDebugVbo);
+    if (m_instanceTransformBuffer) glDeleteBuffers(1, &m_instanceTransformBuffer);
+    for (size_t index = 0; index < m_debugOverlayBuffers.size(); ++index)
+    {
+        if (m_debugOverlayFences[index])
+        {
+            glDeleteSync(reinterpret_cast<GLsync>(m_debugOverlayFences[index]));
+            m_debugOverlayFences[index] = nullptr;
+        }
+        if (m_debugOverlayBuffers[index] && m_debugOverlayMappedBuffers[index])
+            glUnmapNamedBuffer(m_debugOverlayBuffers[index]);
+        m_debugOverlayMappedBuffers[index] = nullptr;
+    }
     glDeleteTextures(static_cast<GLsizei>(m_debugOverlayTextures.size()),
                      m_debugOverlayTextures.data());
     m_debugOverlayTextures.fill(0);
+    glDeleteBuffers(static_cast<GLsizei>(m_debugOverlayBuffers.size()),
+                    m_debugOverlayBuffers.data());
+    m_debugOverlayBuffers.fill(0);
+    m_debugOverlayRevision = 0;
+    m_debugOverlayTextureIndex = 0;
+    for (FrameDebugReadbackSlot& slot : m_frameDebugReadbackSlots)
+    {
+        if (slot.Fence)
+            glDeleteSync(reinterpret_cast<GLsync>(slot.Fence));
+        if (slot.Buffer && slot.Mapped)
+            glUnmapNamedBuffer(slot.Buffer);
+        if (slot.Buffer)
+            glDeleteBuffers(1, &slot.Buffer);
+        slot = {};
+    }
+    m_frameDebugReadbackWriteSlot = 0;
+    m_frameDebugLastPreview = {};
     glDeleteTextures(kShadowCascadeCount, m_shadowMaps.data());
     if (m_shadowFbo) glDeleteFramebuffers(1, &m_shadowFbo);
     glDeleteBuffers(2, m_exposurePbos);
@@ -291,6 +343,8 @@ void GLRenderBackend::Shutdown()
     m_emptyVao = 0;
     m_boundsDebugVao = 0;
     m_boundsDebugVbo = 0;
+    m_instanceTransformBuffer = 0;
+    m_instanceTransformBytes = 0;
     m_shadowMaps.fill(0);
     m_shadowFbo = 0;
     m_width = 0;

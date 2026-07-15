@@ -20,6 +20,7 @@ constexpr uint32_t EnvironmentMap = 8;
 constexpr uint32_t PointShadowMaps = 9;
 constexpr uint32_t LocalShadowAtlas = 10;
 constexpr uint32_t LightCookieAtlas = 11;
+constexpr uint32_t InstanceTransforms = 0;
 
 constexpr uint32_t MaterialUniforms = 0;
 constexpr uint32_t BaseColorMap = 1;
@@ -106,12 +107,6 @@ struct alignas(16) MaterialUniforms
     glm::uvec4 TextureFlags{0u};
 };
 
-struct alignas(16) ObjectConstants
-{
-    glm::mat4 Model{1.0f};
-    glm::mat4 PreviousModel{1.0f};
-};
-
 struct alignas(16) BoundsDebugConstants
 {
     glm::vec4 Minimum{0.0f};
@@ -161,7 +156,6 @@ struct alignas(16) TaaConstants
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 static_assert(sizeof(ShadowUniforms) == 80);
 static_assert(sizeof(MaterialUniforms) == 64);
-static_assert(sizeof(ObjectConstants) == 128);
 static_assert(sizeof(BoundsDebugConstants) == 48);
 static_assert(sizeof(EnvironmentBakeConstants) == 128);
 static_assert(sizeof(PostUniforms) == 112);

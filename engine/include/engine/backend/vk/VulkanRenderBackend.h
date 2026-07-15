@@ -5,10 +5,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -23,6 +25,7 @@
 #include "engine/scene/RenderSettings.h"
 #include "engine/scene/Texture.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/render/Instancing.h"
 #include "engine/render/AsyncRenderResources.h"
 #include "engine/render/OcclusionCulling.h"
 #include "engine/profiling/GpuProfiler.h"
@@ -41,10 +44,25 @@ struct PreparedRenderCommand;
 class VulkanRenderBackend final : public IRenderBackend
 {
 public:
+    VulkanRenderBackend();
+    ~VulkanRenderBackend() override;
     void Init(Window& window, const RenderBackendConfig& config) override;
     void Shutdown() override;
     void Resize(int width, int height) override;
     void RenderFrame(const RenderFrameData& frame) override;
+    RenderViewportHandle CreateViewport(const RenderViewportDesc& desc) override;
+    bool ResizeViewport(RenderViewportHandle viewport, uint32_t width,
+                        uint32_t height) override;
+    void DestroyViewport(RenderViewportHandle viewport) override;
+    bool RenderViewport(RenderViewportHandle viewport,
+                        const RenderFrameData& frame) override;
+    RenderTextureHandle GetViewportTexture(RenderViewportHandle viewport) const override;
+    NativeGraphicsContext GetNativeGraphicsContext() const override;
+    void WaitIdle() override;
+    void SetUiRenderCallback(NativeUiRenderCallback callback) override
+    {
+        m_uiRenderCallback = std::move(callback);
+    }
     void RequestScreenshot(const std::string& path) override { m_screenshotPath = path; }
     void RequestHdrScreenshot(const std::string& path) override { m_hdrScreenshotPath = path; }
     BackendFrameStats GetFrameStats() const override { return m_frameStats; }
@@ -89,6 +107,14 @@ private:
         std::vector<VkDescriptorSet> DescriptorSets;
     };
 
+    struct PreparedGpuInstanceBatch
+    {
+        const GpuMesh* Mesh = nullptr;
+        GpuMaterial* Material = nullptr;
+        uint32_t FirstInstance = 0;
+        uint32_t InstanceCount = 0;
+    };
+
     struct GpuPanorama
     {
         vulkan::Image Image;
@@ -112,6 +138,14 @@ private:
         std::vector<OcclusionQueryRecord> Records;
         bool Issued = false;
     };
+
+    struct ViewTargetState;
+    struct OffscreenViewport;
+    struct ViewportStorage;
+    void SwapViewTargetState(ViewTargetState& state);
+    void CreateViewportTargets(OffscreenViewport& viewport);
+    void DestroyViewportTargets(OffscreenViewport& viewport);
+    void DestroyAllViewports();
 
     void CreateInstance();
     void SetupDebugMessenger();
@@ -175,7 +209,9 @@ private:
     void CreateLocalLightResources();
     void DestroyLocalLightResources();
     void PrepareLocalLights(const RenderFrameData& frame);
-    void RecordLocalLightShadows(VkCommandBuffer commandBuffer, const Scene& scene);
+    void RecordLocalLightShadows(
+        VkCommandBuffer commandBuffer,
+        std::span<const PreparedGpuInstanceBatch> shadowBatches);
     void UpdateFrameUniforms(const RenderFrameData& frame);
     VkCommandBuffer BeginImmediateCommands();
     void EndImmediateCommands(VkCommandBuffer commandBuffer);
@@ -283,6 +319,7 @@ private:
     VkShaderModule m_boundsDebugFragmentShader = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_frameDescriptorLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_materialDescriptorLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_instanceDescriptorLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowDescriptorLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
     VkPipelineLayout m_pbrPipelineLayout = VK_NULL_HANDLE;
@@ -292,6 +329,7 @@ private:
     VkPipeline m_skyPipeline = VK_NULL_HANDLE;
     VkPipeline m_shadowPipeline = VK_NULL_HANDLE;
     VkPipeline m_boundsDebugPipeline = VK_NULL_HANDLE;
+    VkPipeline m_boundsDebugDepthPipeline = VK_NULL_HANDLE;
 
     VkShaderModule m_fullscreenVertexShader = VK_NULL_HANDLE;
     VkShaderModule m_postFragmentShader = VK_NULL_HANDLE;
@@ -342,6 +380,7 @@ private:
     std::array<vulkan::Buffer, kFramesInFlight> m_debugOverlayStaging{};
     std::array<VkDescriptorSet, kFramesInFlight> m_debugOverlayDescriptorSets{};
     std::array<bool, kFramesInFlight> m_debugOverlayImageInitialized{};
+    std::array<uint64_t, kFramesInFlight> m_debugOverlayRevisions{};
     std::unordered_map<std::shared_ptr<ColorGradingLutData>, vulkan::Image> m_colorLutCache;
     std::shared_ptr<ColorGradingLutData> m_defaultColorLut;
     std::shared_ptr<ColorGradingLutData> m_activeColorLut;
@@ -384,6 +423,7 @@ private:
     std::unordered_map<uint64_t, glm::mat4> m_previousTransforms;
     std::vector<vulkan::Buffer> m_frameUniformBuffers;
     std::vector<VkDescriptorSet> m_frameDescriptorSets;
+    std::array<VkDescriptorSet, kFramesInFlight> m_instanceDescriptorSets{};
     std::array<std::array<vulkan::Image, 4>, kFramesInFlight> m_shadowMaps{};
     std::array<std::array<vulkan::Buffer, 4>, kFramesInFlight> m_shadowUniformBuffers{};
     std::array<std::array<VkDescriptorSet, 4>, kFramesInFlight> m_shadowDescriptorSets{};
@@ -506,6 +546,11 @@ private:
     std::vector<vulkan::Buffer> m_frameDebugReadbackBuffers;
     std::string m_screenshotPath;
     std::string m_hdrScreenshotPath;
+    std::unique_ptr<ViewportStorage> m_viewports;
+    uint64_t m_nextViewportId = 1;
+    OffscreenViewport* m_activeOffscreenViewport = nullptr;
+    bool m_activeOffscreenWasInitialized = false;
+    NativeUiRenderCallback m_uiRenderCallback;
 };
 
 } // namespace engine

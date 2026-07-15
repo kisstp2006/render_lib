@@ -166,14 +166,13 @@ plugin. The manager checks this rule and refuses an unsafe unload.
 
 ## UI integration boundary
 
-No ImGui or RmlUi dependency was added by this work. The infrastructure they
-need is now present: runtime modules, dependency ordering, services,
-application events and components. A future UI plugin should own the UI
-library contexts and allocations, register a versioned UI service, subscribe
-through `OnApplicationEvent`, expose 2D/3D canvas components where useful, and
-remove render resources and registrations before its DLL unloads. Actual GPU
-drawing should be added through a backend-neutral render extension/render
-graph interface, rather than reaching directly into OpenGL or Vulkan.
+Dear ImGui is now an optional engine module (`ENGINE_ENABLE_IMGUI`) for editor
+tooling. Runtime UI plugins can still own a different UI library such as RmlUi,
+register a versioned service, subscribe through `OnApplicationEvent`, and
+remove their render resources before DLL unload. They should use a future
+backend-neutral render extension/render-graph interface rather than reaching
+directly into OpenGL or Vulkan. The built-in docking/offscreen viewport path is
+documented in [editor-runtime-foundation.md](editor-runtime-foundation.md).
 
 ## Automated coverage
 

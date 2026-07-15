@@ -54,6 +54,14 @@ struct ApplicationDesc
     // default. Set this to false before constructing Application to disable
     // both collection and rendering for this application.
     bool EnableRuntimeMonitors = ENGINE_ENABLE_RUNTIME_MONITORS != 0;
+    // Editor/runtime worlds may drive the renderer Scene through built-in
+    // render components. Sandbox-style applications that populate Scene
+    // directly keep this disabled.
+    bool SynchronizeWorldToScene = false;
+    // Editor UI is opt-in so runtime samples keep their zero-UI path.
+    bool EnableImGui = false;
+    bool EnableImGuiPlatformViewports = false;
+    std::string ImGuiIniFilename = ".cache/editor/imgui.ini";
 };
 
 } // namespace engine

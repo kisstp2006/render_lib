@@ -156,15 +156,20 @@ TaskHandle TaskSystem::Submit(Task task, TaskPriority priority, CancellationToke
 
 void TaskSystem::Wait(const TaskHandle &handle)
 {
-    if (g_workerSystem != this)
-    {
-        handle.Wait();
-        return;
-    }
+    // A waiting thread is useful CPU capacity. Let both workers and the render
+    // thread drain ready work before sleeping on a task that is already
+    // running elsewhere. Scene preparation submits short batches, so this
+    // avoids a submit -> wake worker -> sleep main-thread round trip for the
+    // common one/two-task case.
     while (!handle.IsReady())
     {
         if (!TryExecuteOne())
-            std::this_thread::yield();
+        {
+            if (g_workerSystem == this)
+                std::this_thread::yield();
+            else
+                handle.Wait();
+        }
     }
 }
 
@@ -227,6 +232,7 @@ void TaskSystem::Execute(QueuedTask &task)
 {
     task.State->Status.store(TaskStatus::Running, std::memory_order_release);
     TaskStatus finalStatus = TaskStatus::Completed;
+    std::exception_ptr failure;
     try
     {
         task.Work(task.State->Token);
@@ -240,18 +246,34 @@ void TaskSystem::Execute(QueuedTask &task)
     catch (...)
     {
         finalStatus = TaskStatus::Failed;
-        std::scoped_lock lock(task.State->Mutex);
-        task.State->Exception = std::current_exception();
+        failure = std::current_exception();
     }
 
-    task.State->Status.store(finalStatus, std::memory_order_release);
+    // TaskHandle::Wait evaluates its predicate while holding State::Mutex.
+    // Publish the terminal state under that same mutex; otherwise a notify can
+    // land between the predicate check and the wait operation and be lost
+    // forever. The render thread hit exactly this race in PrepareFrame while
+    // every worker was already asleep on an empty queue.
+    {
+        std::scoped_lock stateLock(task.State->Mutex);
+        task.State->Exception = failure;
+        task.State->Status.store(finalStatus, std::memory_order_release);
+    }
     if (finalStatus == TaskStatus::Completed)
         m_completed.fetch_add(1, std::memory_order_relaxed);
     else if (finalStatus == TaskStatus::Cancelled)
         m_cancelled.fetch_add(1, std::memory_order_relaxed);
     else
         m_failed.fetch_add(1, std::memory_order_relaxed);
-    m_active.fetch_sub(1, std::memory_order_relaxed);
+    // WaitIdle observes queued/active while holding m_mutex. Publish the final
+    // active transition under the same mutex so a waiter cannot evaluate the
+    // predicate and go to sleep between this transition and the notification.
+    // HISM submits several short parallel batches per frame and made this
+    // pre-existing lost-wakeup window much easier to hit during shutdown.
+    {
+        std::scoped_lock lock(m_mutex);
+        m_active.fetch_sub(1, std::memory_order_relaxed);
+    }
     task.State->Completed.notify_all();
     if (m_queued.load(std::memory_order_acquire) == 0 && m_active.load(std::memory_order_acquire) == 0)
         m_idle.notify_all();

@@ -18,7 +18,7 @@
 namespace engine::plugin
 {
 
-inline constexpr uint32_t kPluginAbiVersion = 2;
+inline constexpr uint32_t kPluginAbiVersion = 3;
 inline constexpr const char* kPluginEntryPoint = "EngineQueryPlugin";
 
 using PluginId = uint64_t;
@@ -52,6 +52,51 @@ struct PluginApplicationEvent
 
 struct PluginHostApi;
 
+enum class PluginPropertyType : uint32_t
+{
+    Boolean,
+    SignedInteger,
+    UnsignedInteger,
+    FloatingPoint,
+    Vector2,
+    Vector3,
+    Vector4,
+    Quaternion,
+    String,
+    AssetGuid,
+    Enumeration
+};
+
+enum PluginPropertyFlags : uint32_t
+{
+    PluginPropertyNone = 0,
+    PluginPropertyReadOnly = 1u << 0u,
+    PluginPropertyColor = 1u << 1u,
+    PluginPropertyAngleDegrees = 1u << 2u,
+    PluginPropertyMultiline = 1u << 3u,
+    PluginPropertyHidden = 1u << 4u,
+    PluginPropertyTransient = 1u << 5u,
+    PluginPropertyHasRange = 1u << 6u
+};
+
+// Plugin properties use a type-tagged textual value at the ABI boundary.
+// Query with output=nullptr to obtain the required byte count (including the
+// terminator), then call again with storage. Returning zero indicates success.
+struct PluginComponentProperty
+{
+    uint32_t StructSize = sizeof(PluginComponentProperty);
+    const char* Name = nullptr;
+    const char* DisplayName = nullptr;
+    PluginPropertyType Type = PluginPropertyType::String;
+    uint32_t Flags = PluginPropertyNone;
+    double Minimum = 0.0;
+    double Maximum = 0.0;
+    double Step = 0.0;
+    const char* EnumValues = nullptr; // Semicolon-separated labels.
+    int32_t (*GetText)(const void* instance, char* output, size_t* inOutBytes) = nullptr;
+    int32_t (*SetText)(void* instance, const char* value, size_t bytes) = nullptr;
+};
+
 struct PluginComponentType
 {
     uint32_t StructSize = sizeof(PluginComponentType);
@@ -64,6 +109,8 @@ struct PluginComponentType
     void (*OnActivate)(void* instance) = nullptr;
     void (*OnDeactivate)(void* instance) = nullptr;
     void (*OnUpdate)(void* instance, float deltaSeconds) = nullptr;
+    const PluginComponentProperty* Properties = nullptr;
+    uint32_t PropertyCount = 0;
 };
 
 struct PluginHostApi

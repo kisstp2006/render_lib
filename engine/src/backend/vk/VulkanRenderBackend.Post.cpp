@@ -433,6 +433,7 @@ void VulkanRenderBackend::CreatePostTargets()
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         m_debugOverlayImageInitialized[frame] = false;
+        m_debugOverlayRevisions[frame] = 0;
         m_resources.SetDebugName(m_postUniformBuffers.back(),
             "Post Uniforms " + std::to_string(frame));
         m_resources.SetDebugName(m_exposureBuffers[frame],
@@ -668,6 +669,7 @@ void VulkanRenderBackend::DestroyPostTargets()
     for (vulkan::Buffer& buffer : m_debugOverlayStaging) m_resources.Destroy(buffer);
     for (vulkan::Image& image : m_debugOverlayImages) m_resources.Destroy(image);
     m_debugOverlayImageInitialized.fill(false);
+    m_debugOverlayRevisions.fill(0);
     m_exposureReadbackValid.fill(false);
     for (BloomChain& chain : m_bloomChains)
         for (vulkan::Image& image : chain.Levels) m_resources.Destroy(image);

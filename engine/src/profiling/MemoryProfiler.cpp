@@ -14,7 +14,12 @@
 #include <thread>
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 #include <malloc.h>
+#include <Psapi.h>
 #endif
 
 namespace engine::profiling
@@ -113,6 +118,24 @@ std::string EscapeJson(std::string_view value)
         }
     }
     return result;
+}
+
+void PopulateProcessMemory(MemoryProfileSnapshot& snapshot) noexcept
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    counters.cb = sizeof(counters);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(),
+            reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters)))
+    {
+        snapshot.ProcessMemoryAvailable = true;
+        snapshot.ProcessResidentBytes = static_cast<uint64_t>(counters.WorkingSetSize);
+        snapshot.ProcessPeakResidentBytes = static_cast<uint64_t>(counters.PeakWorkingSetSize);
+        snapshot.ProcessPrivateBytes = static_cast<uint64_t>(counters.PrivateUsage);
+    }
+#else
+    (void)snapshot;
+#endif
 }
 
 } // namespace
@@ -214,16 +237,19 @@ struct MemoryProfiler::Impl
     AllocationRecord* Insert(void* pointer)
     {
         const size_t first = PointerHash(pointer);
-        AllocationRecord* tombstone = nullptr;
         for (size_t probe = 0; probe < kMaximumTrackedAllocations; ++probe)
         {
             AllocationRecord& record = Allocations[(first + probe) % kMaximumTrackedAllocations];
-            if (record.State == RecordState::Tombstone && !tombstone)
-                tombstone = &record;
-            else if (record.State == RecordState::Empty)
-                return tombstone ? tombstone : &record;
+            // Allocate() can never receive an address that is simultaneously
+            // live, so there is no duplicate key to find later in the probe
+            // chain. Reuse the first tombstone immediately. Scanning onward to
+            // an Empty slot made the fixed table progressively slower as a
+            // runtime session accumulated allocation churn, eventually doing
+            // hundreds of thousands of probes per new/delete operation.
+            if (record.State != RecordState::Occupied)
+                return &record;
         }
-        return tombstone;
+        return nullptr;
     }
 
     AllocationRecord* Find(void* pointer)
@@ -446,6 +472,10 @@ MemoryProfileSnapshot MemoryProfiler::Snapshot(bool includeLeaks) const
 {
     TrackingPause pause;
     MemoryProfileSnapshot result;
+    // The always-on runtime card uses this OS counter even when expensive
+    // allocation-level tracking is disabled. This keeps useful CPU-memory
+    // visibility at negligible overhead.
+    PopulateProcessMemory(result);
     std::scoped_lock lock(m_impl->Mutex);
     result.Enabled = IsEnabled();
     result.CurrentBytes = m_impl->CurrentBytes;
@@ -637,6 +667,13 @@ MemoryTagScope::~MemoryTagScope()
 namespace
 {
 
+#if defined(__STDCPP_DEFAULT_NEW_ALIGNMENT__)
+constexpr std::size_t kDefaultNewAlignment =
+    static_cast<std::size_t>(__STDCPP_DEFAULT_NEW_ALIGNMENT__);
+#else
+constexpr std::size_t kDefaultNewAlignment = alignof(std::max_align_t);
+#endif
+
 void* AllocateCppMemory(std::size_t size, std::size_t alignment)
 {
     for (;;)
@@ -655,12 +692,12 @@ void* AllocateCppMemory(std::size_t size, std::size_t alignment)
 
 void* operator new(std::size_t size)
 {
-    return AllocateCppMemory(size, alignof(std::max_align_t));
+    return AllocateCppMemory(size, kDefaultNewAlignment);
 }
 
 void* operator new[](std::size_t size)
 {
-    return AllocateCppMemory(size, alignof(std::max_align_t));
+    return AllocateCppMemory(size, kDefaultNewAlignment);
 }
 
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept

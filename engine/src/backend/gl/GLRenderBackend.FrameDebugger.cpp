@@ -1,4 +1,5 @@
 #include "engine/backend/gl/GLRenderBackend.h"
+#include "engine/backend/gl/GLDebug.h"
 
 #include <glad/gl.h>
 
@@ -96,6 +97,59 @@ float DisplayColor(float value)
 uint8_t Byte(float value)
 {
     return static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+}
+
+void PopulatePreview(const float* source, uint64_t resourceId,
+                     uint32_t sourceWidth, uint32_t sourceHeight,
+                     uint32_t componentCount, uint32_t mipLevel,
+                     uint32_t layer, FrameDebugVisualization visualization,
+                     debug::FrameDebugPreview& preview)
+{
+    constexpr uint32_t maxWidth = 582;
+    constexpr uint32_t maxHeight = 246;
+    const float scale = std::min(1.0f,
+        std::min(static_cast<float>(maxWidth) / sourceWidth,
+                 static_cast<float>(maxHeight) / sourceHeight));
+    preview = {};
+    preview.ResourceId = resourceId;
+    preview.SourceWidth = sourceWidth;
+    preview.SourceHeight = sourceHeight;
+    preview.Width = std::max(1u, static_cast<uint32_t>(sourceWidth * scale));
+    preview.Height = std::max(1u, static_cast<uint32_t>(sourceHeight * scale));
+    preview.MipLevel = mipLevel;
+    preview.Layer = layer;
+    preview.Pixels.resize(static_cast<size_t>(preview.Width) * preview.Height * 4);
+    for (uint32_t y = 0; y < preview.Height; ++y)
+    for (uint32_t x = 0; x < preview.Width; ++x)
+    {
+        const uint32_t sx = std::min(x * sourceWidth / preview.Width, sourceWidth - 1);
+        const uint32_t sy = sourceHeight - 1 -
+            std::min(y * sourceHeight / preview.Height, sourceHeight - 1);
+        const size_t input = (static_cast<size_t>(sy) * sourceWidth + sx) *
+                             componentCount;
+        const size_t output = (static_cast<size_t>(y) * preview.Width + x) * 4;
+        float red = source[input], green = red, blue = red;
+        if (visualization == FrameDebugVisualization::Color)
+        {
+            green = componentCount > 1 ? source[input + 1] : red;
+            blue = componentCount > 2 ? source[input + 2] : red;
+            red = DisplayColor(red);
+            green = DisplayColor(green);
+            blue = DisplayColor(blue);
+        }
+        else if (visualization == FrameDebugVisualization::Velocity)
+        {
+            red = 0.5f + red * 8.0f;
+            green = 0.5f + source[input + 1] * 8.0f;
+            blue = 0.5f;
+        }
+        else if (visualization == FrameDebugVisualization::Depth)
+            red = green = blue = std::pow(std::clamp(red, 0.0f, 1.0f), 24.0f);
+        preview.Pixels[output] = Byte(red);
+        preview.Pixels[output + 1] = Byte(green);
+        preview.Pixels[output + 2] = Byte(blue);
+        preview.Pixels[output + 3] = 255;
+    }
 }
 
 } // namespace
@@ -266,78 +320,137 @@ bool GLRenderBackend::CaptureFrameDebugResource(uint64_t resourceId, uint32_t mi
     const GLenum format = componentCount == 1
         ? (native.Visualization == FrameDebugVisualization::Depth ? GL_DEPTH_COMPONENT : GL_RED)
         : (componentCount == 2 ? GL_RG : GL_RGBA);
-    std::vector<float> source(static_cast<size_t>(sourceWidth) * sourceHeight * componentCount);
-    GLint previousPixelPackBuffer = 0;
-    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPixelPackBuffer);
-    // Client pointers passed below are interpreted as byte offsets whenever a
-    // pixel-pack buffer is bound. Isolate frame-debugger readback from async
-    // exposure/screenshot state and restore the caller's binding afterwards.
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    if (native.Cubemap)
+    for (FrameDebugReadbackSlot& slot : m_frameDebugReadbackSlots)
     {
-        glBindTexture(GL_TEXTURE_CUBE_MAP, native.Texture);
-        glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + layer,
-                      static_cast<GLint>(mipLevel), format, GL_FLOAT, source.data());
-        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-    }
-    else
-        glGetTextureSubImage(native.Texture, static_cast<GLint>(mipLevel), 0, 0,
-                             static_cast<GLint>(layer), static_cast<GLsizei>(sourceWidth),
-                             static_cast<GLsizei>(sourceHeight), 1, format, GL_FLOAT,
-                             static_cast<GLsizei>(source.size() * sizeof(float)), source.data());
-    // This diagnostic path is deliberately synchronous. In particular, keep
-    // the client-memory destination alive until cubemap readback DMA has fully
-    // retired on drivers that defer glGetTexImage work internally.
-    glFinish();
-    glBindBuffer(GL_PIXEL_PACK_BUFFER,
-                 static_cast<GLuint>(previousPixelPackBuffer));
-    if (glGetError() != GL_NO_ERROR)
-    {
-        preview.Error = "OpenGL texture readback failed";
-        return false;
+        if (!slot.Pending || !slot.Fence)
+            continue;
+        const GLenum status = glClientWaitSync(
+            reinterpret_cast<GLsync>(slot.Fence), 0, 0);
+        if (status == GL_TIMEOUT_EXPIRED)
+            continue;
+        glDeleteSync(reinterpret_cast<GLsync>(slot.Fence));
+        slot.Fence = nullptr;
+        if (status == GL_WAIT_FAILED)
+        {
+            slot.Pending = false;
+            preview.Error = "OpenGL frame-debugger readback fence failed";
+            return false;
+        }
+        PopulatePreview(slot.Mapped, slot.ResourceId, slot.SourceWidth,
+                        slot.SourceHeight, slot.ComponentCount, slot.MipLevel,
+                        slot.Layer, slot.Visualization, m_frameDebugLastPreview);
+        slot.Pending = false;
     }
 
-    constexpr uint32_t maxWidth = 582;
-    constexpr uint32_t maxHeight = 246;
-    const float scale = std::min(1.0f, std::min(static_cast<float>(maxWidth) / sourceWidth,
-                                               static_cast<float>(maxHeight) / sourceHeight));
-    preview.ResourceId = resourceId;
-    preview.SourceWidth = sourceWidth;
-    preview.SourceHeight = sourceHeight;
-    preview.Width = std::max(1u, static_cast<uint32_t>(sourceWidth * scale));
-    preview.Height = std::max(1u, static_cast<uint32_t>(sourceHeight * scale));
-    preview.MipLevel = mipLevel;
-    preview.Layer = layer;
-    preview.Pixels.resize(static_cast<size_t>(preview.Width) * preview.Height * 4);
-    for (uint32_t y = 0; y < preview.Height; ++y)
-    for (uint32_t x = 0; x < preview.Width; ++x)
+    // Consume a completed preview before starting another transfer. This makes
+    // one UI request exactly one asynchronous GPU readback; a later explicit
+    // refresh can issue a new request for the same resource.
+    if (m_frameDebugLastPreview.Valid() &&
+        m_frameDebugLastPreview.ResourceId == resourceId &&
+        m_frameDebugLastPreview.MipLevel == mipLevel &&
+        m_frameDebugLastPreview.Layer == layer)
     {
-        const uint32_t sx = std::min(x * sourceWidth / preview.Width, sourceWidth - 1);
-        const uint32_t sy = sourceHeight - 1 -
-            std::min(y * sourceHeight / preview.Height, sourceHeight - 1);
-        const size_t input = (static_cast<size_t>(sy) * sourceWidth + sx) * componentCount;
-        const size_t output = (static_cast<size_t>(y) * preview.Width + x) * 4;
-        float red = source[input], green = red, blue = red;
-        if (native.Visualization == FrameDebugVisualization::Color)
-        {
-            green = componentCount > 1 ? source[input + 1] : red;
-            blue = componentCount > 2 ? source[input + 2] : red;
-            red = DisplayColor(red); green = DisplayColor(green); blue = DisplayColor(blue);
-        }
-        else if (native.Visualization == FrameDebugVisualization::Velocity)
-        {
-            red = 0.5f + red * 8.0f;
-            green = 0.5f + source[input + 1] * 8.0f;
-            blue = 0.5f;
-        }
-        else if (native.Visualization == FrameDebugVisualization::Depth)
-            red = green = blue = std::pow(std::clamp(red, 0.0f, 1.0f), 24.0f);
-        preview.Pixels[output] = Byte(red);
-        preview.Pixels[output + 1] = Byte(green);
-        preview.Pixels[output + 2] = Byte(blue);
-        preview.Pixels[output + 3] = 255;
+        preview = std::move(m_frameDebugLastPreview);
+        m_frameDebugLastPreview = {};
+        return true;
     }
-    return true;
+
+    const auto sameRequest = [resourceId, mipLevel, layer](
+                                 const FrameDebugReadbackSlot& slot) {
+        return slot.Pending && slot.ResourceId == resourceId &&
+               slot.MipLevel == mipLevel && slot.Layer == layer;
+    };
+    const bool requestAlreadyPending = std::any_of(
+        m_frameDebugReadbackSlots.begin(), m_frameDebugReadbackSlots.end(), sameRequest);
+    if (!requestAlreadyPending)
+    {
+        FrameDebugReadbackSlot* writeSlot = nullptr;
+        for (uint32_t offset = 0; offset < kFrameDebugReadbackSlots; ++offset)
+        {
+            const uint32_t index = (m_frameDebugReadbackWriteSlot + offset) %
+                                   kFrameDebugReadbackSlots;
+            if (!m_frameDebugReadbackSlots[index].Pending)
+            {
+                writeSlot = &m_frameDebugReadbackSlots[index];
+                m_frameDebugReadbackWriteSlot = (index + 1) % kFrameDebugReadbackSlots;
+                break;
+            }
+        }
+
+        if (writeSlot)
+        {
+            const size_t sourceBytes = static_cast<size_t>(sourceWidth) *
+                                       sourceHeight * componentCount * sizeof(float);
+            if (writeSlot->Capacity < sourceBytes)
+            {
+                if (writeSlot->Buffer && writeSlot->Mapped)
+                    glUnmapNamedBuffer(writeSlot->Buffer);
+                if (writeSlot->Buffer)
+                    glDeleteBuffers(1, &writeSlot->Buffer);
+                glCreateBuffers(1, &writeSlot->Buffer);
+                gl_debug::LabelObject(GL_BUFFER, writeSlot->Buffer,
+                                      "Frame Debugger Async Readback");
+                constexpr GLbitfield mapFlags =
+                    GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+                glNamedBufferStorage(writeSlot->Buffer,
+                                     static_cast<GLsizeiptr>(sourceBytes), nullptr,
+                                     mapFlags | GL_CLIENT_STORAGE_BIT);
+                writeSlot->Mapped = static_cast<const float*>(glMapNamedBufferRange(
+                    writeSlot->Buffer, 0, static_cast<GLsizeiptr>(sourceBytes), mapFlags));
+                if (!writeSlot->Mapped)
+                {
+                    preview.Error = "Could not map the OpenGL frame-debugger readback PBO";
+                    return false;
+                }
+                writeSlot->Capacity = sourceBytes;
+            }
+
+            writeSlot->ResourceId = resourceId;
+            writeSlot->SourceWidth = sourceWidth;
+            writeSlot->SourceHeight = sourceHeight;
+            writeSlot->ComponentCount = static_cast<uint32_t>(componentCount);
+            writeSlot->MipLevel = mipLevel;
+            writeSlot->Layer = layer;
+            writeSlot->Visualization = native.Visualization;
+
+            GLint previousPixelPackBuffer = 0;
+            glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPixelPackBuffer);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, writeSlot->Buffer);
+            if (native.Cubemap)
+            {
+                glBindTexture(GL_TEXTURE_CUBE_MAP, native.Texture);
+                glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + layer,
+                              static_cast<GLint>(mipLevel), format, GL_FLOAT, nullptr);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+            }
+            else
+            {
+                glGetTextureSubImage(native.Texture, static_cast<GLint>(mipLevel),
+                    0, 0, static_cast<GLint>(layer), static_cast<GLsizei>(sourceWidth),
+                    static_cast<GLsizei>(sourceHeight), 1, format, GL_FLOAT,
+                    static_cast<GLsizei>(sourceBytes), nullptr);
+            }
+            writeSlot->Fence = reinterpret_cast<void*>(
+                glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+            writeSlot->Pending = true;
+            glBindBuffer(GL_PIXEL_PACK_BUFFER,
+                         static_cast<GLuint>(previousPixelPackBuffer));
+            glFlush();
+            if (glGetError() != GL_NO_ERROR)
+            {
+                if (writeSlot->Fence)
+                    glDeleteSync(reinterpret_cast<GLsync>(writeSlot->Fence));
+                writeSlot->Fence = nullptr;
+                writeSlot->Pending = false;
+                preview.Error = "OpenGL texture readback submission failed";
+                return false;
+            }
+        }
+    }
+
+    preview.Error = "OpenGL frame-debugger readback pending";
+    preview.Pending = true;
+    return false;
 }
 
 } // namespace engine

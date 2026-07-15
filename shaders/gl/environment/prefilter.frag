@@ -11,9 +11,10 @@ uniform mat3 uFaceBasis;
 uniform samplerCube uEnvMap;
 uniform float uRoughness;
 uniform float uEnvResolution;
+uniform int uSampleCount;
 
 const float PI = 3.14159265359;
-const uint SAMPLE_COUNT = 1024u;
+const uint MAX_SAMPLE_COUNT = 1024u;
 
 float DistributionGGX(float NoH, float roughness)
 {
@@ -64,9 +65,10 @@ void main()
     vec3 prefiltered = vec3(0.0);
     float totalWeight = 0.0;
 
-    for (uint i = 0u; i < SAMPLE_COUNT; ++i)
+    uint sampleCount = uint(clamp(uSampleCount, 1, int(MAX_SAMPLE_COUNT)));
+    for (uint i = 0u; i < sampleCount; ++i)
     {
-        vec2 xi = Hammersley(i, SAMPLE_COUNT);
+        vec2 xi = Hammersley(i, sampleCount);
         vec3 H = ImportanceSampleGGX(xi, N, uRoughness);
         vec3 L = normalize(2.0 * dot(V, H) * H - V);
 
@@ -81,7 +83,7 @@ void main()
             float pdf = D * NoH / (4.0 * HoV) + 0.0001;
 
             float saTexel = 4.0 * PI / (6.0 * uEnvResolution * uEnvResolution);
-            float saSample = 1.0 / (float(SAMPLE_COUNT) * pdf + 0.0001);
+            float saSample = 1.0 / (float(sampleCount) * pdf + 0.0001);
             float mipLevel = uRoughness == 0.0 ? 0.0 : 0.5 * log2(saSample / saTexel);
 
             prefiltered += textureLod(uEnvMap, L, mipLevel).rgb * NoL;

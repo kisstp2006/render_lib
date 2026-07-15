@@ -476,29 +476,26 @@ void VulkanRenderBackend::PrepareLocalLights(const RenderFrameData& frame)
     }
 }
 
-void VulkanRenderBackend::RecordLocalLightShadows(VkCommandBuffer commandBuffer, const Scene& scene)
+void VulkanRenderBackend::RecordLocalLightShadows(
+    VkCommandBuffer commandBuffer,
+    std::span<const PreparedGpuInstanceBatch> shadowBatches)
 {
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("RecordLocalLightShadows", "Renderer/Vulkan");
     const auto drawScene = [&](VkPipelineLayout layout) {
-        for (const MeshInstance& instance : scene.Instances())
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                layout, 2, 1,
+                                &m_instanceDescriptorSets[m_currentFrame], 0, nullptr);
+        for (const PreparedGpuInstanceBatch& batch : shadowBatches)
         {
-            if (!instance.CastsShadows || !instance.Mesh)
-                continue;
-            const auto meshFound = m_meshCache.find(instance.Mesh.get());
-            const auto materialFound = m_materialCache.find(&instance.Mat);
-            if (meshFound == m_meshCache.end() || materialFound == m_materialCache.end())
-                throw std::runtime_error("Vulkan: local shadow draw resources were not prepared before recording");
-            const GpuMesh& mesh = meshFound->second;
-            GpuMaterial& material = materialFound->second;
-            const vulkan::ObjectConstants object{instance.Transform};
             const VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, &mesh.VertexBuffer.Handle, &offset);
-            vkCmdBindIndexBuffer(commandBuffer, mesh.IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1,
+                                   &batch.Mesh->VertexBuffer.Handle, &offset);
+            vkCmdBindIndexBuffer(commandBuffer, batch.Mesh->IndexBuffer.Handle,
+                                 0, VK_INDEX_TYPE_UINT32);
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
-                                    1, 1, &material.DescriptorSets[m_currentFrame], 0, nullptr);
-            vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT,
-                               0, sizeof(object), &object);
-            vkCmdDrawIndexed(commandBuffer, mesh.IndexCount, 1, 0, 0, 0);
+                                    1, 1, &batch.Material->DescriptorSets[m_currentFrame], 0, nullptr);
+            vkCmdDrawIndexed(commandBuffer, batch.Mesh->IndexCount,
+                             batch.InstanceCount, 0, 0, batch.FirstInstance);
             ++m_gpuDrawCallsThisFrame;
         }
     };

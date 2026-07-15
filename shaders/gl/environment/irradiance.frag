@@ -8,6 +8,7 @@ out vec4 FragColor;
 
 uniform mat3 uFaceBasis;
 uniform samplerCube uEnvMap;
+uniform float uSampleDelta;
 
 const float PI = 3.14159265359;
 
@@ -22,7 +23,7 @@ void main()
     vec3 irradiance = vec3(0.0);
     int sampleCount = 0;
 
-    const float delta = 0.05;
+    float delta = max(uSampleDelta, 0.025);
     for (float phi = 0.0; phi < 2.0 * PI; phi += delta)
     {
         for (float theta = 0.0; theta < 0.5 * PI; theta += delta)

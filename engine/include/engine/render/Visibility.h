@@ -55,6 +55,11 @@ struct VisibilityStatistics
     uint32_t FrustumCulled = 0;
     uint32_t DistanceCulled = 0;
     uint32_t InvalidBounds = 0;
+    uint32_t HismGroups = 0;
+    uint32_t HismNodesTested = 0;
+    uint32_t HismNodesCulled = 0;
+    uint32_t HismInstancesCulled = 0;
+    uint32_t HismLeafTests = 0;
 };
 
 AxisAlignedBounds ComputeMeshBounds(const MeshData& mesh);

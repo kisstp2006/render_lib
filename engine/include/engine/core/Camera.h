@@ -6,6 +6,12 @@ namespace engine {
 
 class Input;
 
+enum class CameraProjection
+{
+    Perspective,
+    Orthographic
+};
+
 // Simple free-fly camera (Quake/Source style: WASD + mouse look, right-click to
 // engage look in the sandbox app).
 class Camera
@@ -22,6 +28,8 @@ public:
     float MoveSpeed = 6.0f;
     float MouseSensitivity = 0.12f;
     float FovDegrees = 60.0f;
+    CameraProjection Projection = CameraProjection::Perspective;
+    float OrthographicSize = 10.0f;
     float NearPlane = 0.05f;
     float FarPlane = 500.0f;
 

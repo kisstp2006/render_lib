@@ -16,6 +16,7 @@ public:
     GLMesh& operator=(const GLMesh&) = delete;
 
     void Draw() const;
+    void DrawInstanced(uint32_t instanceCount, uint32_t firstInstance) const;
 
 private:
     unsigned int m_vao = 0, m_vbo = 0, m_ebo = 0;

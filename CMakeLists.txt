@@ -30,6 +30,8 @@ option(ENGINE_ENABLE_GPU_PIPELINE_CACHE_TESTS
        "Run cold/warm pipeline-cache stutter benchmarks through CTest" OFF)
 option(ENGINE_ENABLE_RUNTIME_MONITORS
        "Enable the always-on CPU-memory and GPU runtime monitor widgets" ON)
+option(ENGINE_ENABLE_IMGUI
+       "Build the Dear ImGui docking integration used by editor applications" ON)
 
 include(FetchContent)
 
@@ -85,6 +87,15 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
+if(ENGINE_ENABLE_IMGUI)
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.91.9b-docking
+        GIT_SHALLOW    TRUE
+    )
+endif()
+
 set(ASTCENC_CLI OFF CACHE BOOL "" FORCE)
 set(ASTCENC_UNITTEST OFF CACHE BOOL "" FORCE)
 set(ASTCENC_WERROR OFF CACHE BOOL "" FORCE)
@@ -115,6 +126,9 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(glfw glm glad stb cgltf meshoptimizer astc_encoder bc7enc_rdo vhacd)
+if(ENGINE_ENABLE_IMGUI)
+    FetchContent_MakeAvailable(imgui)
+endif()
 
 add_library(engine_bc_encoder STATIC
     ${bc7enc_rdo_SOURCE_DIR}/bc7enc.cpp

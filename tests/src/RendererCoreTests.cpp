@@ -1,4 +1,5 @@
 #include "engine/core/Camera.h"
+#include "engine/core/Log.h"
 #include "engine/concurrency/TaskSystem.h"
 #include "engine/core/ApplicationConfig.h"
 #include "engine/debug/DebugOverlay.h"
@@ -7,8 +8,10 @@
 #include "engine/render/AsyncRenderResources.h"
 #include "engine/render/Exposure.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/render/Instancing.h"
 #include "engine/render/GpuCapabilities.h"
 #include "engine/render/PipelineCache.h"
+#include "engine/render/Picking.h"
 #include "engine/render/RenderGraph.h"
 #include "engine/render/RendererFrameGraph.h"
 #include "engine/render/OcclusionCulling.h"
@@ -21,8 +24,11 @@
 #include "engine/profiling/MemoryProfiler.h"
 #include "engine/plugin/PluginManager.h"
 #include "engine/runtime/World.h"
+#include "engine/runtime/RenderComponents.h"
+#include "engine/runtime/WorldRenderBridge.h"
 #include "engine/testing/VisualRegression.h"
 #include "engine/asset/ColorGrading.h"
+#include "engine/asset/WorldSceneSerialization.h"
 #include "engine/backend/vk/VulkanShaderInterop.h"
 #include "engine/scene/Texture.h"
 #include "engine/scene/Environment.h"
@@ -550,6 +556,104 @@ void TestTemporalHiZOcclusionPolicy()
             "disabling scene visibility must disable GPU Hi-Z and draw conservatively");
 }
 
+void TestGpuInstancingAndHism()
+{
+    const auto cube = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    Material sharedMaterial;
+    sharedMaterial.Albedo = {0.2f, 0.6f, 0.9f};
+    Scene batchScene;
+    batchScene.Visibility.Enabled = false;
+    for (int index = 0; index < 64; ++index)
+        batchScene.AddInstance(cube, sharedMaterial,
+            glm::translate(glm::mat4(1.0f), {static_cast<float>(index), 0.0f, -10.0f}));
+    Material distinctMaterial = sharedMaterial;
+    distinctMaterial.Roughness = 0.9f;
+    batchScene.AddInstance(cube, distinctMaterial,
+                           glm::translate(glm::mat4(1.0f), {0.0f, 2.0f, -10.0f}));
+    batchScene.AddInstance(cube, sharedMaterial,
+                           glm::translate(glm::mat4(1.0f), {0.0f, 4.0f, -10.0f}));
+    batchScene.Instances().back().AllowInstancing = false;
+    Camera camera;
+    camera.Position = {0.0f, 0.0f, 0.0f};
+    camera.Yaw = -90.0f;
+    SceneRenderer renderer;
+    const RenderFrameData& batchFrame = renderer.PrepareFrame(
+        batchScene, camera, 1280, 720);
+    std::vector<const PreparedRenderCommand*> commands;
+    for (const PreparedRenderCommand& command : batchFrame.RenderCommands)
+        commands.push_back(&command);
+    const InstanceBatchBuildResult batches = BuildInstanceBatches(
+        commands, batchScene.Instancing, 7);
+    Require(batches.Statistics.SourceInstances == 66 &&
+                batches.Statistics.DrawBatches == 3 &&
+                batches.Statistics.InstancedBatches == 1 &&
+                batches.Statistics.InstancedInstances == 64 &&
+                batches.Statistics.DrawCallsSaved == 63,
+            "GPU instancing must merge exact mesh/material matches and preserve opt-outs");
+    Require(batches.Batches.front().FirstInstance == 7 &&
+                batches.Batches.front().Commands.size() == 64,
+            "instance batches must preserve the caller's base-instance range");
+    InstancingSettings disabledInstancing = batchScene.Instancing;
+    disabledInstancing.Enabled = false;
+    const InstanceBatchBuildResult singletonBatches = BuildInstanceBatches(
+        commands, disabledInstancing);
+    Require(singletonBatches.Statistics.DrawBatches == commands.size() &&
+                singletonBatches.Statistics.DrawCallsSaved == 0,
+            "disabled GPU instancing must retain the deterministic singleton fallback");
+
+    const ViewFrustum frustum = ExtractViewFrustum(
+        camera.GetProjection(16.0f / 9.0f) * camera.GetView());
+    std::vector<HismCullItem> items;
+    items.reserve(1024);
+    for (uint32_t index = 0; index < 512; ++index)
+    {
+        const glm::vec3 center{
+            static_cast<float>(index % 32) * 0.2f - 3.0f,
+            static_cast<float>((index / 32) % 16) * 0.2f - 1.5f,
+            -12.0f - static_cast<float>(index / 512)};
+        items.push_back({index, {center - glm::vec3(0.05f),
+                                 center + glm::vec3(0.05f), true}});
+    }
+    for (uint32_t index = 0; index < 512; ++index)
+    {
+        const glm::vec3 center{400.0f + static_cast<float>(index % 32),
+                               0.0f, -12.0f};
+        items.push_back({512u + index, {center - glm::vec3(0.05f),
+                                        center + glm::vec3(0.05f), true}});
+    }
+    HismCullStatistics hism;
+    const std::vector<VisibilityClassification> classifications =
+        CullHierarchicalInstances(items, frustum, camera.Position, camera.FarPlane,
+                                  true, false, 8, &hism);
+    for (size_t index = 0; index < items.size(); ++index)
+    {
+        const VisibilityClassification expected = IntersectsFrustum(
+            frustum, items[index].Bounds)
+            ? VisibilityClassification::Visible
+            : VisibilityClassification::FrustumCulled;
+        Require(classifications[index] == expected,
+                "HISM hierarchy must exactly match conservative leaf frustum results");
+    }
+    Require(hism.NodesCulled > 0 && hism.InstancesCulled >= 512 &&
+                hism.LeafTests < items.size(),
+            "HISM must reject coherent clusters before per-instance leaf testing");
+
+    Scene hismScene;
+    hismScene.Visibility.DistanceCulling = false;
+    hismScene.Instancing.HismMinimumGroupSize = 16;
+    hismScene.Instancing.HismLeafSize = 4;
+    for (const HismCullItem& item : items)
+        hismScene.AddInstance(cube, sharedMaterial,
+            glm::translate(glm::mat4(1.0f), item.Bounds.Center()));
+    const RenderFrameData& hismFrame = renderer.PrepareFrame(
+        hismScene, camera, 1280, 720);
+    (void)hismFrame;
+    const VisibilityStatistics& visibility = renderer.GetVisibilityStatistics();
+    Require(visibility.HismGroups == 1 && visibility.HismNodesCulled > 0 &&
+                visibility.HismLeafTests < hismScene.Instances().size(),
+            "SceneRenderer must route large compatible groups through HISM");
+}
+
 void TestTaskSystemScheduling()
 {
     jobs::TaskSystem tasks(1);
@@ -639,6 +743,27 @@ void TestTaskSystemScheduling()
         return child.Get();
     });
     Require(nested.Get() == 17, "worker-side waits must execute queued work instead of deadlocking");
+    // Exercise TaskHandle::Wait directly instead of TaskSystem::Wait so the
+    // condition-variable publication contract remains covered. This used to
+    // lose a completion notification when the worker finished between the
+    // predicate check and the main thread actually sleeping.
+    for (uint32_t round = 0; round < 10'000; ++round)
+    {
+        const jobs::TaskHandle completed = tasks.Submit(
+            [](const jobs::CancellationToken&) {}, jobs::TaskPriority::High);
+        completed.Wait();
+        Require(completed.IsReady(),
+                "direct task waits must always observe terminal publication");
+    }
+    for (uint32_t round = 0; round < 128; ++round)
+    {
+        for (uint32_t task = 0; task < 4; ++task)
+            tasks.Submit([](const jobs::CancellationToken&) {});
+        tasks.WaitIdle();
+        const jobs::TaskSystemStatistics idle = tasks.Statistics();
+        Require(idle.Queued == 0 && idle.Active == 0,
+                "WaitIdle must not miss the final active-task transition");
+    }
     const jobs::TaskSystemStatistics statistics = tasks.Statistics();
     Require(statistics.Completed >= 3 && statistics.Cancelled >= 1 && statistics.Queued == 0,
             "task system statistics must report completed, cancelled and pending work");
@@ -1230,6 +1355,14 @@ void TestFrameDebuggerModelAndNavigation()
     Require(!overlay.GetFrameDebugCaptureRequest(requestId, mip, layer),
             "a completed frozen preview must clear the capture request");
 
+    debug::FrameDebugPreview pendingPreview;
+    pendingPreview.ResourceId = colorId;
+    pendingPreview.Pending = true;
+    overlay.SetFrameDebugPreview(std::move(pendingPreview));
+    Require(overlay.GetFrameDebugCaptureRequest(requestId, mip, layer) &&
+                requestId == colorId,
+            "an asynchronous preview must remain requested until its GPU readback completes");
+
     overlay.MoveFrameDebugResource(1);
     overlay.MoveFrameDebugLayer(1);
     Require(overlay.GetFrameDebugCaptureRequest(requestId, mip, layer) &&
@@ -1269,6 +1402,23 @@ void TestMemoryProfilerDisabledMode()
                 snapshot.Leaks.empty(),
             "disabled memory profiling must not record global C++ allocations");
     delete[] allocation;
+
+    // MSVC's max_align_t can be less strict than the alignment promised by
+    // ordinary operator new. SIMD render payloads whose alignment equals the
+    // default-new alignment therefore still use the non-aligned overload.
+    // Exercise several vector reallocations so the global profiler allocator
+    // must preserve that contract for every returned block.
+    struct alignas(16) SimdPayload
+    {
+        std::array<uint64_t, 2> Words{};
+    };
+    std::vector<SimdPayload> simd;
+    for (uint32_t index = 0; index < 2048; ++index)
+    {
+        simd.push_back({{index, index + 1u}});
+        Require(reinterpret_cast<uintptr_t>(simd.data()) % alignof(SimdPayload) == 0,
+                "global operator new must preserve default SIMD alignment");
+    }
 }
 
 void TestMemoryProfilerTrackingAndExport()
@@ -1896,6 +2046,161 @@ void TestRendererHiZFrameGraph()
             "Hi-Z graph must expose the mip pyramid and visibility-result buffer to diagnostics");
 }
 
+void TestLogSinkApi()
+{
+    std::mutex mutex;
+    std::vector<log::Record> records;
+    const log::SinkId sink = log::AddSink([&](const log::Record& record) {
+        std::scoped_lock lock(mutex);
+        records.push_back(record);
+        // Recursive logging must remain safe and must not recursively invoke
+        // the same sink forever.
+        if (record.Message == "outer")
+            log::Info("Test", "inner");
+    });
+    Require(sink != 0, "log sink registration must return a stable token");
+    log::Warn("Editor", "console message");
+    log::Info("Test", "outer");
+    Require(records.size() == 2 && records[0].Category == "Editor" &&
+                records[0].Severity == log::Level::Warn &&
+                records[0].Message == "console message" &&
+                records[1].Sequence > records[0].Sequence,
+            "log sinks must receive categorized, ordered records exactly once");
+    Require(log::RemoveSink(sink), "registered log sink must be removable");
+    log::Info("Editor", "after removal");
+    Require(records.size() == 2, "removed log sink must not receive records");
+}
+
+void TestWorldReflectionBridgeAndSerialization()
+{
+    runtime::ComponentRegistry registry;
+    std::string error;
+    Require(runtime::RegisterBuiltinRenderComponents(registry, &error),
+            "built-in render components must register with reflection metadata");
+    const auto pointProperties = registry.Properties(
+        std::string(runtime::kPointLightComponent));
+    const auto intensityMetadata = std::find_if(
+        pointProperties.begin(), pointProperties.end(),
+        [](const runtime::PropertyMetadata& property) {
+            return property.Name == "Intensity";
+        });
+    Require(intensityMetadata != pointProperties.end() &&
+                runtime::HasFlag(intensityMetadata->Flags,
+                                 runtime::PropertyFlags::HasRange) &&
+                intensityMetadata->Maximum > intensityMetadata->Minimum,
+            "numeric inspector metadata must distinguish constrained ranges");
+    runtime::World world(registry);
+    const assets::AssetGuid rootGuid{0x101u, 0x201u};
+    const assets::AssetGuid meshGuid{0x102u, 0x202u};
+    const runtime::EntityId root = world.CreateEntityWithGuid(rootGuid, "Root");
+    const runtime::EntityId meshEntity = world.CreateEntityWithGuid(meshGuid, "Mesh");
+    Require(root != runtime::kInvalidEntity && meshEntity != runtime::kInvalidEntity &&
+                world.SetParent(meshEntity, root),
+            "world must create stable-GUID parent-child entities");
+    world.SetLocalTransform(root, {{2.0f, 0.0f, 0.0f}, {}, {1.0f, 1.0f, 1.0f}});
+    world.SetLocalTransform(meshEntity, {{0.0f, 0.0f, -3.0f}, {}, {1.0f, 1.0f, 1.0f}});
+    Require(world.AddComponent(meshEntity, std::string(runtime::kMeshRendererComponent), &error),
+            "mesh renderer component must be constructible");
+    auto* meshRenderer = world.GetComponent<runtime::MeshRendererComponent>(
+        meshEntity, std::string(runtime::kMeshRendererComponent));
+    meshRenderer->Mesh = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    Require(world.SetComponentProperty(meshEntity,
+                std::string(runtime::kMeshRendererComponent), "Metallic", 0.72, &error),
+            "reflected component property must be type-safely writable");
+
+    const runtime::EntityId lightEntity = world.CreateEntity("Point Light");
+    world.SetLocalTransform(lightEntity, {{1.0f, 3.0f, 2.0f}, {}, {1.0f, 1.0f, 1.0f}});
+    Require(world.AddComponent(lightEntity, std::string(runtime::kPointLightComponent), &error) &&
+                world.SetComponentProperty(lightEntity,
+                    std::string(runtime::kPointLightComponent), "Intensity", 77.0, &error),
+            "point-light properties must be reflected");
+
+    const runtime::EntityId cameraEntity = world.CreateEntity("Camera");
+    Require(world.AddComponent(cameraEntity, std::string(runtime::kCameraComponent), &error),
+            "camera component must be constructible");
+    world.GetComponent<runtime::CameraComponent>(
+        cameraEntity, std::string(runtime::kCameraComponent))->Primary = true;
+
+    Scene scene;
+    Camera camera;
+    runtime::WorldRenderBridge bridge;
+    const runtime::WorldRenderSyncResult sync = bridge.Synchronize(world, scene, &camera);
+    Require(sync.MeshRenderers == 1 && sync.PointLights == 1 &&
+                sync.ActiveCamera == cameraEntity && scene.Instances().size() == 1 &&
+                scene.Instances()[0].SourceEntity == meshEntity &&
+                std::abs(scene.Instances()[0].Transform[3].x - 2.0f) < 0.001f &&
+                std::abs(scene.PointLights()[0].Intensity - 77.0f) < 0.001f,
+            "World-to-Scene bridge must immediately propagate hierarchy and render components");
+    Require(world.SetComponentEnabled(lightEntity,
+                std::string(runtime::kPointLightComponent), false),
+            "render components must support editor enable/disable toggles");
+    bridge.Synchronize(world, scene, &camera);
+    Require(scene.PointLights().empty(),
+            "disabled render components must disappear from the Scene immediately");
+    world.SetComponentEnabled(lightEntity, std::string(runtime::kPointLightComponent), true);
+
+    assets::SceneAssetData serialized;
+    Require(assets::SerializeWorld(world, serialized, cameraEntity, &error),
+            "complete World must serialize through reflected properties");
+    runtime::World loaded(registry);
+    runtime::EntityId loadedCamera = runtime::kInvalidEntity;
+    Require(assets::DeserializeWorld(serialized, loaded, &loadedCamera, &error),
+            "serialized World must deserialize without data loss");
+    const runtime::EntityId loadedMesh = loaded.FindEntity(meshGuid);
+    Require(loadedMesh != runtime::kInvalidEntity &&
+                loaded.GetGuid(loaded.GetParent(loadedMesh)) == rootGuid &&
+                loaded.GetGuid(loadedCamera) == world.GetGuid(cameraEntity),
+            "scene round-trip must preserve stable GUID hierarchy and active camera");
+    runtime::PropertyValue metallic;
+    Require(loaded.GetComponentProperty(loadedMesh,
+                std::string(runtime::kMeshRendererComponent), "Metallic", metallic, &error) &&
+                std::abs(std::get<double>(metallic) - 0.72) < 0.001,
+            "scene round-trip must preserve reflected component values");
+
+    const std::filesystem::path scenePath =
+        std::filesystem::temp_directory_path() / "engine_world_roundtrip.sla-scene";
+    std::filesystem::remove(scenePath);
+    Require(assets::SaveWorldScene(scenePath, world, cameraEntity, &error),
+            "World scene must save to the versioned scene descriptor format");
+    runtime::World fileLoaded(registry);
+    runtime::EntityId fileCamera = runtime::kInvalidEntity;
+    Require(assets::LoadWorldScene(scenePath, fileLoaded, &fileCamera, &error) &&
+                fileLoaded.FindEntity(meshGuid) != runtime::kInvalidEntity &&
+                fileLoaded.GetGuid(fileCamera) == world.GetGuid(cameraEntity),
+            "World scene file load must preserve entities and active camera");
+    std::filesystem::remove(scenePath);
+}
+
+void TestPickingSelectionAndDebugDraw()
+{
+    Scene scene;
+    Material material;
+    auto cube = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    scene.AddInstance(cube, material, glm::mat4(1.0f));
+    scene.Instances().back().SourceEntity = 42;
+    scene.Visibility.GpuOcclusionCulling = false;
+    Camera camera;
+    camera.Position = {0.0f, 0.0f, 6.0f};
+    camera.Yaw = -90.0f;
+    camera.Pitch = 0.0f;
+    const PickingResult hit = PickScene(scene, camera, 400.0f, 300.0f, 800, 600);
+    Require(hit.Hit && hit.Entity == 42 && hit.Distance > 0.0f,
+            "viewport center picking ray must resolve the source entity AABB");
+    ApplyPickingSelection(scene, hit);
+    scene.DebugDraw().Grid(2.0f, 1.0f);
+    scene.DebugDraw().Aabb(glm::vec3(-1.0f), glm::vec3(1.0f),
+                           glm::vec3(0.0f, 1.0f, 0.0f));
+    scene.DebugDraw().Icon(DebugIconType::Camera, {0.0f, 2.0f, 0.0f});
+    SceneRenderer renderer;
+    const RenderFrameData& frame = renderer.PrepareFrame(scene, camera, 800, 600);
+    Require(frame.DebugLines.size() >= 40,
+            "debug draw must resolve grid, AABB, icon and selection highlight into render lines");
+    const PickingResult miss = PickScene(scene, camera, 0.0f, 0.0f, 800, 600);
+    ApplyPickingSelection(scene, miss);
+    Require(scene.SelectedEntity == 0,
+            "empty viewport clicks must clear selection");
+}
+
 void TestRuntimePluginDependencies()
 {
     runtime::ComponentRegistry components;
@@ -1932,6 +2237,7 @@ int main()
     TestSharedSceneRendererFrame();
     TestVisibilityCulling();
     TestTemporalHiZOcclusionPolicy();
+    TestGpuInstancingAndHism();
     TestTaskSystemScheduling();
     TestAsyncResourceLoadingAndStreamingBudgets();
     TestAsyncRenderResourceLifetime();
@@ -1952,6 +2258,9 @@ int main()
     TestRenderGraphCompilationAndAliasing();
     TestRenderGraphConfigAndScale();
     TestRendererHiZFrameGraph();
+    TestLogSinkApi();
+    TestWorldReflectionBridgeAndSerialization();
+    TestPickingSelectionAndDebugDraw();
     TestRuntimePluginAndWorld();
     TestRuntimePluginDependencies();
     std::puts("Renderer tests passed");

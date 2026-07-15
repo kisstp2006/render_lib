@@ -3,6 +3,11 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0, rgba16f) uniform writeonly image2DArray outputCube;
 layout(set = 0, binding = 1) uniform samplerCube environmentMap;
+layout(push_constant) uniform EnvironmentBakeConstants
+{
+    vec4 SunDirectionIntensity; vec4 SunColorAngularRadius; vec4 ZenithIntensity; vec4 HorizonCycle;
+    vec4 GroundExposure; vec4 NightZenithIntensity; vec4 NightHorizonGlow; vec4 BakeParameters;
+} pc;
 
 #include "environment/environment_common.glsl"
 
@@ -19,7 +24,7 @@ void main()
     up = normalize(cross(normal, right));
     vec3 irradiance = vec3(0.0);
     int sampleCount = 0;
-    const float delta = 0.05;
+    float delta = max(pc.BakeParameters.z, 0.025);
     for (float phi = 0.0; phi < 2.0 * ENV_PI; phi += delta)
     for (float theta = 0.0; theta < 0.5 * ENV_PI; theta += delta)
     {

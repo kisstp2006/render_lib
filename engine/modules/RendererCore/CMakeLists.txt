@@ -9,7 +9,9 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/include/engine/render/AsyncRenderResources.h
         ${ENGINE_ROOT}/include/engine/render/Exposure.h
         ${ENGINE_ROOT}/include/engine/render/GpuTiming.h
+        ${ENGINE_ROOT}/include/engine/render/Instancing.h
         ${ENGINE_ROOT}/include/engine/render/PipelineCache.h
+        ${ENGINE_ROOT}/include/engine/render/Picking.h
         ${ENGINE_ROOT}/include/engine/render/RenderGraph.h
         ${ENGINE_ROOT}/include/engine/render/RendererFrameGraph.h
         ${ENGINE_ROOT}/include/engine/render/GpuCapabilities.h
@@ -25,7 +27,9 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/src/render/AsyncRenderResources.cpp
         ${ENGINE_ROOT}/src/render/Exposure.cpp
         ${ENGINE_ROOT}/src/render/GpuTiming.cpp
+        ${ENGINE_ROOT}/src/render/Instancing.cpp
         ${ENGINE_ROOT}/src/render/PipelineCache.cpp
+        ${ENGINE_ROOT}/src/render/Picking.cpp
         ${ENGINE_ROOT}/src/render/RenderGraph.cpp
         ${ENGINE_ROOT}/src/render/RendererFrameGraph.cpp
         ${ENGINE_ROOT}/src/render/GpuCapabilities.cpp

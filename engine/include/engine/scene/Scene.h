@@ -11,17 +11,25 @@
 #include "engine/scene/Lights.h"
 #include "engine/scene/Environment.h"
 #include "engine/scene/RenderSettings.h"
+#include "engine/scene/DebugDraw.h"
 
 namespace engine {
 
 struct MeshInstance
 {
     uint64_t TemporalId = 0;
+    // Stable behavior-world entity handle used by picking and editor
+    // selection. Zero denotes a renderer-only instance.
+    uint64_t SourceEntity = 0;
     std::shared_ptr<MeshData> Mesh;
     Material Mat;
     glm::mat4 Transform{1.0f};
     bool CastsShadows = true;
     bool AlwaysVisible = false;
+    bool AllowInstancing = true;
+    // Zero selects automatic grouping. A non-zero value lets callers keep
+    // otherwise compatible spatial populations in separate HISM trees.
+    uint64_t HismGroupId = 0;
     float MaxDrawDistance = 0.0f;
 };
 
@@ -49,6 +57,12 @@ public:
     FogSettings Fog;
     ShadowSettings Shadows;
     VisibilitySettings Visibility;
+    InstancingSettings Instancing;
+    uint64_t SelectedEntity = 0;
+    glm::vec3 SelectionColor{3.0f, 1.25f, 0.08f};
+
+    DebugDrawList& DebugDraw() { return m_debugDraw; }
+    const DebugDrawList& DebugDraw() const { return m_debugDraw; }
 
     void AddInstance(std::shared_ptr<MeshData> mesh, const Material& mat, const glm::mat4& transform);
     void AddPointLight(const PointLight& light);
@@ -61,6 +75,7 @@ private:
     std::vector<PointLight> m_pointLights;
     std::vector<SpotLight> m_spotLights;
     std::vector<AreaLight> m_areaLights;
+    DebugDrawList m_debugDraw;
 };
 
 } // namespace engine

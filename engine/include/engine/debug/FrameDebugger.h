@@ -97,6 +97,9 @@ struct FrameDebugPreview
     uint32_t Layer = 0;
     std::vector<uint8_t> Pixels;
     std::string Error;
+    // The backend accepted the request, but its asynchronous GPU readback has
+    // not completed yet. The overlay keeps polling without stalling the frame.
+    bool Pending = false;
 
     bool Valid() const
     {

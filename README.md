@@ -52,6 +52,13 @@ Current feature set (OpenGL backend):
 - **GPU Hi-Z visibility**: asynchronous OpenGL/Vulkan compute culling against
   the previous frame's maximum-depth pyramid, with inflated bounds, delayed
   confirmation, camera/scene invalidation and periodic hidden-object retests
+- **GPU instancing + HISM**: exact mesh/material batching into base-instance
+  draws, shared current/previous transform buffers, and hierarchical cluster
+  culling for dense instance populations on OpenGL and Vulkan
+- **Editor runtime foundation**: resize-safe, simultaneous OpenGL/Vulkan
+  offscreen scene viewports; Dear ImGui docking/native platform windows;
+  reflected World render components; stable-GUID scene save/load; picking,
+  selection highlighting, debug drawing and structured log sinks
 - **Render to PNG**: `--screenshot out.png` headless-ish capture or F12 in
   the sandbox — usable as a library for offline rendering
 
@@ -69,8 +76,8 @@ Current Vulkan renderer (core OpenGL image parity complete):
   BRDF-LUT compute baking
 - RGBA16F HDR main pass, 4x MSAA resolve, asynchronous auto-exposure, Jimenez
   bloom, Uncharted tonemap, 3D color LUT, FXAA and velocity/depth-history TAA
-- validated shader modules, per-frame-safe material/shadow descriptor sets and
-  per-object push constants
+- validated shader modules, per-frame-safe material/shadow/instance descriptor
+  sets and shared storage-buffer instance transforms
 - backend-owned buffer/image allocator, mipmapped anisotropic material textures,
   per-frame uniforms and resize-safe swapchain-dependent render targets
 - asynchronous OpenGL/Vulkan GPU profiling for directional/local shadows,
@@ -194,7 +201,7 @@ cmake --build build
 ./build/examples/sandbox/sandbox
 ```
 
-The build creates a generic command-line sandbox and eight focused sample
+The build creates a generic command-line sandbox and ten focused sample
 executables. They share the same scene/control implementation, so the samples
 stay small while each can be launched directly:
 
@@ -208,7 +215,9 @@ stay small while each can be launched directly:
 | `sample_day_night` | Animated procedural day/sunset/night sky cycle |
 | `sample_post` | Color-grading LUT, FXAA and TAA validation scene |
 | `sample_stability` | Resize/minimize/fullscreen, hot-reload and resource-lifetime stress suite |
-| `sample_visibility` | CPU frustum/distance plus GPU Hi-Z occlusion culling and color-coded bounds |
+| `sample_visibility` | CPU/HISM visibility, GPU instancing, Hi-Z occlusion and color-coded bounds |
+| `sample_editor_viewports` | Two simultaneous offscreen perspective/orthographic ImGui viewports, resize and picking |
+| `sample_world_editor` | World hierarchy, reflected inspector, scene save/load, picking and log console foundation |
 
 For example, on Windows run
 `.\build\examples\sandbox\RelWithDebInfo\sample_lights.exe`. Every focused
@@ -217,6 +226,8 @@ sample still accepts the common options below, including `--screenshot` and
 
 Every sample is one executable backed by one scene implementation. Use
 `--vulkan` or `--opengl` to select the backend (default is OpenGL).
+The two editor-foundation samples are built when `ENGINE_ENABLE_IMGUI=ON` and
+also accept `--platform-viewports` for native docking windows.
 `sample_stability` runs the shared stability suite automatically. The same
 suite can be enabled on any sample with `--stability-stress`; configure it with
 `--stress-cycles`, `--stress-stage-frames`, `--stress-report`,
@@ -429,6 +440,8 @@ The new `runtime::World` supplies generation-checked entities, name/tag/layer,
 parent-child transforms, inherited active state and component lifecycle. It is
 a behavior layer beside the common renderer `Scene`, not an OpenGL/Vulkan
 scene duplicate. See the complete [runtime plugin and component guide](docs/runtime-cpp-plugins.md).
+The editor-facing render/world/UI APIs are documented in the
+[editor runtime foundation guide](docs/editor-runtime-foundation.md).
 
 Night-sky command-line overrides are `--star-density`, `--star-intensity`,
 `--star-size`, `--star-twinkle`, `--milky-way`, `--night-brightness` and
@@ -510,7 +523,7 @@ above are not repeated here.
 10. **Visibility, batching and GPU-driven rendering (P0)**
     - [x] CPU frustum and distance culling with bounds/debug visualization ([guide](docs/visibility-culling.md))
     - [x] GPU Hi-Z occlusion culling with asynchronous readback, temporal conservatism, debug visualization and OpenGL/Vulkan parity ([guide](docs/visibility-culling.md))
-    - [ ] GPU instancing and hierarchical instancing (HISM)
+    - [x] GPU instancing and hierarchical instancing (HISM) with shared batching, temporal transforms, shadow-pass integration and cluster diagnostics ([guide](docs/instancing.md))
     - [ ] Static batching, selective dynamic batching and offline mesh combining
     - [ ] Authored and generated LOD chains with screen-space error selection
     - [ ] HLOD cluster generation, impostors and streaming integration

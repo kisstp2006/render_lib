@@ -17,6 +17,7 @@ References:
 
 ```text
 Application -> Runtime -> Foundation
+           |-> EditorUi -> RendererCore -> Core
            |-> AssetTools -> AssetPipeline -> Resources -> AssetCore -> Foundation
            |              -> Assets -> AssetCookers -> Scene -> Foundation
            |-> RendererOpenGL -> RendererCore -> Core -> Foundation
@@ -45,9 +46,10 @@ target. Native backends consume the same `Scene`, `Camera` and
 | `engine_asset_cookers` | `engine::asset_cookers` | BC/ASTC encoding, meshoptimizer LOD/geometry optimization and collision BVH/convex cooking |
 | `engine_assets` | `engine::assets` | Texture, color-LUT, cubemap, skybox, material, glTF static-mesh and scene asset types plus compatibility source loaders |
 | `engine_runtime` | `engine::runtime` | World hierarchy, components and runtime C++ plugins |
-| `engine_renderer_core` | `engine::renderer_core` | Shared render graph, CSM, exposure, TAA, parallel frame preparation, CPU visibility and temporal GPU Hi-Z policy, async pipeline/lifetime primitives and debug UI |
+| `engine_renderer_core` | `engine::renderer_core` | Shared render graph, CSM, exposure, TAA, parallel frame preparation, CPU/HISM visibility, GPU instance batching and temporal GPU Hi-Z policy, async pipeline/lifetime primitives and debug UI |
 | `engine_renderer_opengl` | `engine::renderer_opengl` | OpenGL resource ownership, passes and synchronization |
 | `engine_renderer_vulkan` | `engine::renderer_vulkan` | Vulkan resource ownership, pipelines, descriptors and synchronization |
+| `engine_editor_ui` | `engine::editor_ui` | Optional Dear ImGui docking layer, input capture and backend-neutral viewport texture binding |
 | `engine_application` | `engine::application` | Main loop, configuration and backend selection |
 | `engine_render_tools` | `engine::render_tools` | Linear HDR/LDR image comparison and report generation |
 | `engine_third_party` | `engine::third_party` | Third-party implementation translation units |

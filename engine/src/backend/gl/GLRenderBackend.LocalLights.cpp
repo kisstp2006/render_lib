@@ -138,10 +138,11 @@ void GLRenderBackend::UpdateLightCookieAtlas()
     }
 }
 
-void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
+void GLRenderBackend::RenderLocalLightShadows(
+    const RenderFrameData& frame,
+    const InstanceBatchBuildResult& shadowBatches)
 {
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("LocalLightShadows", "Renderer/OpenGL");
-    const Scene& scene = *frame.SceneData;
     m_localLights = {};
     m_localLights.PointShadowSlots.fill(-1);
     m_localLights.PointCookieSlots.fill(0);
@@ -197,19 +198,20 @@ void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
             glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, m_pointShadowArray, 0, pointShadowSlot * 6 + face);
             glClear(GL_DEPTH_BUFFER_BIT);
             m_pointShadowShader->SetMat4("uFaceMatrix", projection * glm::lookAt(light.Position, light.Position + directions[face], ups[face]));
-            for (const MeshInstance& instance : scene.Instances())
+            for (const InstanceDrawBatch& batch : shadowBatches.Batches)
             {
+                const MeshInstance& instance = *batch.Representative->Source;
                 if (!instance.CastsShadows)
                     continue;
                 const Material& material = instance.Mat;
-                m_pointShadowShader->SetMat4("uModel", instance.Transform);
                 m_pointShadowShader->SetBool("uAlphaMasked", material.Alpha == Material::AlphaMode::Mask);
                 m_pointShadowShader->SetBool("uHasAlbedoMap", material.AlbedoMap != nullptr);
                 m_pointShadowShader->SetFloat("uBaseColorAlpha", material.BaseColorAlpha);
                 m_pointShadowShader->SetFloat("uAlphaCutoff", material.AlphaCutoff);
                 m_pointShadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
                 BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-                GetOrCreateMesh(instance.Mesh).Draw();
+                GetOrCreateMesh(instance.Mesh).DrawInstanced(
+                    static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
                 ++m_gpuDrawCallsThisFrame;
             }
         }
@@ -226,19 +228,20 @@ void GLRenderBackend::RenderLocalLightShadows(const RenderFrameData& frame)
         glViewport(static_cast<int>(rect.x * kLocalShadowAtlasSize), static_cast<int>(rect.y * kLocalShadowAtlasSize),
                    kLocalShadowTileSize, kLocalShadowTileSize);
         m_shadowShader->SetMat4("uLightSpaceMatrix", matrix);
-        for (const MeshInstance& instance : scene.Instances())
+        for (const InstanceDrawBatch& batch : shadowBatches.Batches)
         {
+            const MeshInstance& instance = *batch.Representative->Source;
             if (!instance.CastsShadows)
                 continue;
             const Material& material = instance.Mat;
-            m_shadowShader->SetMat4("uModel", instance.Transform);
             m_shadowShader->SetBool("uAlphaMasked", material.Alpha == Material::AlphaMode::Mask);
             m_shadowShader->SetBool("uHasAlbedoMap", material.AlbedoMap != nullptr);
             m_shadowShader->SetFloat("uBaseColorAlpha", material.BaseColorAlpha);
             m_shadowShader->SetFloat("uAlphaCutoff", material.AlphaCutoff);
             m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
             BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-            GetOrCreateMesh(instance.Mesh).Draw();
+            GetOrCreateMesh(instance.Mesh).DrawInstanced(
+                static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
             ++m_gpuDrawCallsThisFrame;
         }
     };

@@ -101,6 +101,51 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     std::vector<const PreparedRenderCommand*> visibleCommands;
     PrepareOcclusionFrame(frame, visibleCommands);
 
+    std::vector<const PreparedRenderCommand*> shadowCommandPointers;
+    shadowCommandPointers.reserve(frame.ShadowCommands.size());
+    for (const PreparedRenderCommand& command : frame.ShadowCommands)
+        shadowCommandPointers.push_back(&command);
+    InstanceBatchBuildResult shadowBatches = BuildInstanceBatches(
+        shadowCommandPointers, scene.Instancing, 0);
+    const uint32_t shadowInstanceCount = shadowBatches.Statistics.SourceInstances;
+    InstanceBatchBuildResult mainBatches = BuildInstanceBatches(
+        visibleCommands, scene.Instancing, shadowInstanceCount);
+
+    std::vector<GpuInstanceData> instanceData;
+    instanceData.reserve(static_cast<size_t>(shadowInstanceCount) +
+                         mainBatches.Statistics.SourceInstances);
+    const auto appendInstances = [&](const InstanceBatchBuildResult& submission,
+                                     bool usePreviousTransform) {
+        for (const InstanceDrawBatch& batch : submission.Batches)
+        for (const PreparedRenderCommand* command : batch.Commands)
+        {
+            const MeshInstance& instance = *command->Source;
+            GpuInstanceData gpu;
+            gpu.Model = instance.Transform;
+            const auto previous = instance.TemporalId != 0
+                ? m_previousTransforms.find(instance.TemporalId)
+                : m_previousTransforms.end();
+            gpu.PreviousModel = usePreviousTransform && taaActive &&
+                m_taaHistoryValid && previous != m_previousTransforms.end()
+                ? previous->second : instance.Transform;
+            instanceData.push_back(gpu);
+        }
+    };
+    appendInstances(shadowBatches, false);
+    appendInstances(mainBatches, true);
+    if (instanceData.empty())
+        instanceData.push_back({});
+    m_instanceTransformBytes = instanceData.size() * sizeof(GpuInstanceData);
+    glNamedBufferData(m_instanceTransformBuffer,
+        static_cast<GLsizeiptr>(m_instanceTransformBytes), instanceData.data(),
+        GL_STREAM_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, m_instanceTransformBuffer);
+    m_frameStats.GpuInstancingActive = scene.Instancing.Enabled;
+    m_frameStats.GpuInstanceCount = mainBatches.Statistics.SourceInstances;
+    m_frameStats.GpuInstanceBatchCount = mainBatches.Statistics.DrawBatches;
+    m_frameStats.GpuInstancedBatchCount = mainBatches.Statistics.InstancedBatches;
+    m_frameStats.GpuDrawCallsSaved = mainBatches.Statistics.DrawCallsSaved;
+
     const auto environmentPass = [&]() {
         gl_debug::ScopedGroup marker("Environment / IBL Update");
         ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment", "Renderer/OpenGL");
@@ -126,12 +171,11 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
                 glViewport(0, 0, m_shadowSizes[cascade], m_shadowSizes[cascade]);
                 glClear(GL_DEPTH_BUFFER_BIT);
                 m_shadowShader->SetMat4("uLightSpaceMatrix", cascades.LightMatrices[cascade]);
-                for (const PreparedRenderCommand& command : frame.ShadowCommands)
+                for (const InstanceDrawBatch& batch : shadowBatches.Batches)
                 {
-                    const MeshInstance& instance = *command.Source;
+                    const MeshInstance& instance = *batch.Representative->Source;
                     if (!instance.CastsShadows)
                         continue;
-                    m_shadowShader->SetMat4("uModel", instance.Transform);
                     const Material& mat = instance.Mat;
                     m_shadowShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
                     m_shadowShader->SetBool("uHasAlbedoMap", mat.AlbedoMap != nullptr);
@@ -139,7 +183,8 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
                     m_shadowShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
                     m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
                     BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-                    GetOrCreateMesh(instance.Mesh).Draw();
+                    GetOrCreateMesh(instance.Mesh).DrawInstanced(
+                        static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
                     ++m_gpuDrawCallsThisFrame;
                 }
             }
@@ -153,7 +198,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     BeginGpuProfilerPass(LocalShadowPass);
     {
         gl_debug::ScopedGroup marker("Shadows / Local Lights");
-        RenderLocalLightShadows(frame);
+        RenderLocalLightShadows(frame, shadowBatches);
     }
     EndGpuProfilerPass();
     };
@@ -216,16 +261,9 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     m_pbrShader->SetInt("uEmissiveMap", kUnitEmissive);
     m_pbrShader->SetInt("uOcclusionMap", kUnitOcclusion);
 
-    for (const PreparedRenderCommand* commandPointer : visibleCommands)
+    for (const InstanceDrawBatch& batch : mainBatches.Batches)
     {
-        const PreparedRenderCommand& command = *commandPointer;
-        const MeshInstance& instance = *command.Source;
-        m_pbrShader->SetMat4("uModel", instance.Transform);
-        const auto previousTransform = instance.TemporalId != 0
-            ? m_previousTransforms.find(instance.TemporalId) : m_previousTransforms.end();
-        m_pbrShader->SetMat4("uPreviousModel", taaActive && m_taaHistoryValid
-            && previousTransform != m_previousTransforms.end() ? previousTransform->second : instance.Transform);
-        m_pbrShader->SetMat4("uNormalMatrix", glm::transpose(glm::inverse(instance.Transform)));
+        const MeshInstance& instance = *batch.Representative->Source;
 
         const Material& mat = instance.Mat;
         m_pbrShader->SetVec3("uAlbedo", mat.Albedo);
@@ -250,11 +288,14 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         BindMaterialTexture(mat.EmissiveMap, kUnitEmissive, *m_defaultWhite);
         BindMaterialTexture(mat.OcclusionMap, kUnitOcclusion, *m_defaultWhite);
 
-        GetOrCreateMesh(instance.Mesh).Draw();
+        GetOrCreateMesh(instance.Mesh).DrawInstanced(
+            static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
         ++m_gpuDrawCallsThisFrame;
     }
 
     // --- Skybox (only fills pixels the geometry left at depth 1.0) ---
+    if (scene.Sky.VisibleBackground)
+    {
     glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_FALSE);
     m_skyShader->Use();
@@ -300,6 +341,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     ++m_gpuDrawCallsThisFrame;
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);
+    }
 
     if (!frame.VisibilityDebug.empty())
     {
@@ -308,6 +350,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         glDisable(GL_CULL_FACE);
         m_boundsDebugShader->Use();
         m_boundsDebugShader->SetMat4("uViewProjection", currentViewProjection);
+        m_boundsDebugShader->SetBool("uLineMode", false);
         glBindVertexArray(m_boundsDebugVao);
         for (const VisibilityDebugBounds& debugBounds : frame.VisibilityDebug)
         {
@@ -325,6 +368,32 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
             glDrawArrays(GL_LINES, 0, 24);
             ++m_gpuDrawCallsThisFrame;
         }
+        glBindVertexArray(0);
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+    }
+
+    if (!frame.DebugLines.empty())
+    {
+        gl_debug::ScopedGroup lineMarker("Debug Draw / Lines");
+        glDisable(GL_CULL_FACE);
+        m_boundsDebugShader->Use();
+        m_boundsDebugShader->SetMat4("uViewProjection", currentViewProjection);
+        m_boundsDebugShader->SetBool("uLineMode", true);
+        glBindVertexArray(m_boundsDebugVao);
+        for (const DebugLine& line : frame.DebugLines)
+        {
+            if (line.Depth == DebugDepthMode::DepthTested)
+                glEnable(GL_DEPTH_TEST);
+            else
+                glDisable(GL_DEPTH_TEST);
+            m_boundsDebugShader->SetVec3("uBoundsMinimum", line.Start);
+            m_boundsDebugShader->SetVec3("uBoundsMaximum", line.End);
+            m_boundsDebugShader->SetVec3("uColor", line.Color);
+            glDrawArrays(GL_LINES, 0, 2);
+            ++m_gpuDrawCallsThisFrame;
+        }
+        m_boundsDebugShader->SetBool("uLineMode", false);
         glBindVertexArray(0);
         glEnable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
@@ -427,7 +496,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     // --- Tonemap/color-grade pass; FXAA consumes an intermediate LDR image. ---
     gl_debug::ScopedGroup outputMarker("Post / Tonemap + Color Grade + AA");
     const bool fxaaActive = pp.Enabled && pp.AntiAliasing == AntiAliasingMode::Fxaa;
-    glBindFramebuffer(GL_FRAMEBUFFER, fxaaActive ? m_postFbo : 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, fxaaActive ? m_postFbo : m_activeOutputFramebuffer);
     glViewport(0, 0, m_width, m_height);
     glDisable(GL_DEPTH_TEST);
 
@@ -468,7 +537,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
 
     if (fxaaActive)
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_activeOutputFramebuffer);
         glViewport(0, 0, m_width, m_height);
         m_fxaaShader->Use();
         glActiveTexture(GL_TEXTURE0);
@@ -496,6 +565,14 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     {
         gl_debug::ScopedGroup marker("Debug UI");
         RenderDebugOverlay(frame);
+        if (!m_renderingOffscreen && m_uiRenderCallback)
+        {
+            glBindFramebuffer(GL_FRAMEBUFFER, m_activeOutputFramebuffer);
+            glViewport(0, 0, m_width, m_height);
+            m_uiRenderCallback({RenderBackendApi::OpenGL, 0, 0,
+                                static_cast<uint32_t>(m_width),
+                                static_cast<uint32_t>(m_height)});
+        }
     }
     EndGpuProfilerPass();
     };

@@ -173,7 +173,7 @@ void GLEnvironment::EnsureBaked(const DirectionalLight& sun, const SkySettings& 
     if (environment.Source == EnvironmentSource::EquirectangularHdr && !environment.Hdri)
         throw EnvironmentLoadError("Equirectangular HDR environment selected, but no HDR image was assigned");
 
-    Bake(sun, sky, environment);
+    Bake(sun, sky, environment, directionOnly);
 
     m_lastBake.SunDir = sun.Direction;
     m_lastBake.SunColor = sun.Color;
@@ -205,7 +205,8 @@ unsigned int GLEnvironment::GetOrCreatePanorama(const std::shared_ptr<HdrImageDa
     return texture;
 }
 
-void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment)
+void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky,
+                         const EnvironmentSettings& environment, bool fastUpdate)
 {
     gl_debug::ScopedGroup marker("Environment / IBL Bake");
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Environment.Bake", "Renderer/OpenGL/IBL");
@@ -266,6 +267,7 @@ void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky, co
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_CUBE_MAP, m_envCubemap);
     m_irradianceShader->SetInt("uEnvMap", 0);
+    m_irradianceShader->SetFloat("uSampleDelta", fastUpdate ? 0.10f : 0.05f);
 
     glViewport(0, 0, kIrradianceSize, kIrradianceSize);
     for (int face = 0; face < 6; ++face)
@@ -279,6 +281,10 @@ void GLEnvironment::Bake(const DirectionalLight& sun, const SkySettings& sky, co
     m_prefilterShader->Use();
     m_prefilterShader->SetInt("uEnvMap", 0);
     m_prefilterShader->SetFloat("uEnvResolution", static_cast<float>(kEnvSize));
+    // Initial/HDRI bakes retain the full offline-quality integration. Only a
+    // moving procedural sun uses the cheaper update, turning the periodic
+    // render-thread spike into a small bounded refresh.
+    m_prefilterShader->SetInt("uSampleCount", fastUpdate ? 128 : 1024);
 
     for (int mip = 0; mip < kPrefilterMips; ++mip)
     {

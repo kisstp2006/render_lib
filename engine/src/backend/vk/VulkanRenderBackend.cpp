@@ -923,6 +923,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
 {
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("Vulkan.RenderFrame", "Renderer/Vulkan");
     const Scene& scene = *frame.SceneData;
+    const bool offscreen = m_activeOffscreenViewport != nullptr;
     ++m_gpuProfileFrameIndex;
     {
         ENGINE_CPU_PROFILE_SCOPE_CATEGORY("WaitFrameFence", "Renderer/Vulkan/Sync");
@@ -946,66 +947,103 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     PrepareOcclusionFrame(frame, visibleCommands);
 
     uint32_t imageIndex = 0;
-    VkResult acquireResult;
+    VkResult acquireResult = VK_SUCCESS;
+    if (!offscreen)
     {
         ENGINE_CPU_PROFILE_SCOPE_CATEGORY("AcquireSwapchain", "Renderer/Vulkan/Sync");
         acquireResult = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
             m_imageAvailable[m_currentFrame], VK_NULL_HANDLE, &imageIndex);
     }
-    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR)
+    if (!offscreen && acquireResult == VK_ERROR_OUT_OF_DATE_KHR)
     {
         RecreateSwapchain(m_window->Width(), m_window->Height());
         return;
     }
-    if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR)
+    if (!offscreen && acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR)
         throw std::runtime_error("Vulkan: failed to acquire swapchain image");
     PreparePost(frame, imageIndex);
     PrepareDebugOverlay(frame);
 
-    struct PreparedDraw
-    {
-        const GpuMesh* Mesh = nullptr;
-        GpuMaterial* Material = nullptr;
-        vulkan::ObjectConstants Object;
-        bool CastsShadows = true;
-    };
     profiling::CpuProfileScope drawPreparationScope("PrepareDraws", "Renderer/Vulkan");
-    std::vector<PreparedDraw> preparedDraws(frame.SceneData->Instances().size());
-    std::vector<uint8_t> preparedFlags(preparedDraws.size(), 0);
-    const auto prepareDraw = [&](const PreparedRenderCommand& command) -> PreparedDraw* {
-        PreparedDraw& draw = preparedDraws[command.InstanceIndex];
-        if (preparedFlags[command.InstanceIndex] != 0)
-            return &draw;
-        preparedFlags[command.InstanceIndex] = 1;
-        const MeshInstance& instance = *command.Source;
-        draw.Mesh = &GetOrCreateMesh(instance.Mesh);
-        draw.Material = &GetOrCreateMaterial(instance.Mat);
-        draw.Object.Model = instance.Transform;
-        const auto previous = instance.TemporalId != 0
-            ? m_previousTransforms.find(instance.TemporalId) : m_previousTransforms.end();
-        draw.Object.PreviousModel = m_taaActive && m_taaHistoryValid
-            && previous != m_previousTransforms.end() ? previous->second : instance.Transform;
-        draw.CastsShadows = instance.CastsShadows;
-        const render::ArenaAllocation objectAllocation = m_frameGpuArena->Allocate(
-            m_currentFrame, sizeof(draw.Object), 16);
-        if (!objectAllocation)
-            throw std::runtime_error("Vulkan: per-frame GPU arena exhausted by object commands");
-        std::memcpy(static_cast<std::byte*>(m_frameArenaMapped) + objectAllocation.Offset,
-                    &draw.Object, sizeof(draw.Object));
-        return &draw;
-    };
-    std::vector<PreparedDraw*> draws;
-    draws.reserve(visibleCommands.size());
-    for (const PreparedRenderCommand* command : visibleCommands)
-        draws.push_back(prepareDraw(*command));
-    std::vector<PreparedDraw*> shadowDraws;
-    shadowDraws.reserve(frame.ShadowCommands.size());
+    std::vector<const PreparedRenderCommand*> shadowCommandPointers;
+    shadowCommandPointers.reserve(frame.ShadowCommands.size());
     for (const PreparedRenderCommand& command : frame.ShadowCommands)
-        shadowDraws.push_back(prepareDraw(command));
+        shadowCommandPointers.push_back(&command);
+    InstanceBatchBuildResult shadowBatches = BuildInstanceBatches(
+        shadowCommandPointers, scene.Instancing, 0);
+    const uint32_t shadowInstanceCount = shadowBatches.Statistics.SourceInstances;
+    InstanceBatchBuildResult mainBatches = BuildInstanceBatches(
+        visibleCommands, scene.Instancing, shadowInstanceCount);
+
+    std::vector<GpuInstanceData> instanceData;
+    instanceData.reserve(static_cast<size_t>(shadowInstanceCount) +
+                         mainBatches.Statistics.SourceInstances);
+    const auto appendInstances = [&](const InstanceBatchBuildResult& submission,
+                                     bool usePreviousTransform) {
+        for (const InstanceDrawBatch& batch : submission.Batches)
+        for (const PreparedRenderCommand* command : batch.Commands)
+        {
+            const MeshInstance& instance = *command->Source;
+            GpuInstanceData gpu;
+            gpu.Model = instance.Transform;
+            const auto previous = instance.TemporalId != 0
+                ? m_previousTransforms.find(instance.TemporalId)
+                : m_previousTransforms.end();
+            gpu.PreviousModel = usePreviousTransform && m_taaActive &&
+                m_taaHistoryValid && previous != m_previousTransforms.end()
+                ? previous->second : instance.Transform;
+            instanceData.push_back(gpu);
+        }
+    };
+    appendInstances(shadowBatches, false);
+    appendInstances(mainBatches, true);
+    if (instanceData.empty())
+        instanceData.push_back({});
+
+    const VkDeviceSize instanceBytes = static_cast<VkDeviceSize>(
+        instanceData.size() * sizeof(GpuInstanceData));
+    const render::ArenaAllocation instanceAllocation = m_frameGpuArena->Allocate(
+        m_currentFrame, instanceBytes, 256);
+    if (!instanceAllocation)
+        throw std::runtime_error(
+            "Vulkan: per-frame GPU arena exhausted by instance transforms");
+    std::memcpy(static_cast<std::byte*>(m_frameArenaMapped) + instanceAllocation.Offset,
+                instanceData.data(), static_cast<size_t>(instanceBytes));
+    const VkDescriptorBufferInfo instanceBufferInfo{
+        m_frameArenaBuffer.Handle, instanceAllocation.Offset, instanceBytes};
+    VkWriteDescriptorSet instanceWrite{};
+    instanceWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    instanceWrite.dstSet = m_instanceDescriptorSets[m_currentFrame];
+    instanceWrite.dstBinding = vulkan::binding::InstanceTransforms;
+    instanceWrite.descriptorCount = 1;
+    instanceWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    instanceWrite.pBufferInfo = &instanceBufferInfo;
+    vkUpdateDescriptorSets(m_device, 1, &instanceWrite, 0, nullptr);
+
+    const auto prepareGpuBatches = [&](const InstanceBatchBuildResult& submission) {
+        std::vector<PreparedGpuInstanceBatch> batches;
+        batches.reserve(submission.Batches.size());
+        for (const InstanceDrawBatch& batch : submission.Batches)
+        {
+            const MeshInstance& instance = *batch.Representative->Source;
+            batches.push_back({&GetOrCreateMesh(instance.Mesh),
+                &GetOrCreateMaterial(instance.Mat), batch.FirstInstance,
+                static_cast<uint32_t>(batch.Commands.size())});
+        }
+        return batches;
+    };
+    std::vector<PreparedGpuInstanceBatch> shadowDraws =
+        prepareGpuBatches(shadowBatches);
+    std::vector<PreparedGpuInstanceBatch> draws = prepareGpuBatches(mainBatches);
+    m_frameStats.GpuInstancingActive = scene.Instancing.Enabled;
+    m_frameStats.GpuInstanceCount = mainBatches.Statistics.SourceInstances;
+    m_frameStats.GpuInstanceBatchCount = mainBatches.Statistics.DrawBatches;
+    m_frameStats.GpuInstancedBatchCount = mainBatches.Statistics.InstancedBatches;
+    m_frameStats.GpuDrawCallsSaved = mainBatches.Statistics.DrawCallsSaved;
     drawPreparationScope.End();
 
     vulkan::Buffer screenshotBuffer;
-    const bool takeScreenshot = !m_screenshotPath.empty();
+    const bool takeScreenshot = !offscreen && !m_screenshotPath.empty();
     if (takeScreenshot)
     {
         screenshotBuffer = m_resources.CreateBuffer(
@@ -1015,7 +1053,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         m_resources.SetDebugName(screenshotBuffer, "Screenshot Readback Buffer");
     }
     vulkan::Buffer hdrScreenshotBuffer;
-    const bool takeHdrScreenshot = !m_hdrScreenshotPath.empty();
+    const bool takeHdrScreenshot = !offscreen && !m_hdrScreenshotPath.empty();
     if (takeHdrScreenshot)
     {
         hdrScreenshotBuffer = m_resources.CreateBuffer(
@@ -1047,9 +1085,6 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     {
         vkCmdResetQueryPool(cmd, m_timestampQueryPool, timestampBase,
                             kTimestampCountPerFrame);
-        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                             m_timestampQueryPool,
-                             timestampBase + DirectionalShadowPass * 2);
     }
     if (recordPipelineStatistics)
     {
@@ -1058,6 +1093,12 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     }
 
     const auto directionalShadowPass = [&]() {
+    if (recordGpuTiming)
+    {
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             m_timestampQueryPool,
+                             timestampBase + DirectionalShadowPass * 2);
+    }
     BeginDebugLabel(cmd, "Shadows / Directional Cascades", {0.55f, 0.35f, 0.85f, 1.0f});
     if (frame.SunShadowsActive)
     {
@@ -1090,18 +1131,18 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
             vkCmdSetScissor(cmd, 0, 1, &shadowScissor);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
                                     0, 1, &m_shadowDescriptorSets[m_currentFrame][cascade], 0, nullptr);
-            for (const PreparedDraw* draw : shadowDraws)
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    m_shadowPipelineLayout, 2, 1,
+                                    &m_instanceDescriptorSets[m_currentFrame], 0, nullptr);
+            for (const PreparedGpuInstanceBatch& draw : shadowDraws)
             {
-                if (!draw->CastsShadows)
-                    continue;
                 const VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &draw->Mesh->VertexBuffer.Handle, &offset);
-                vkCmdBindIndexBuffer(cmd, draw->Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdBindVertexBuffers(cmd, 0, 1, &draw.Mesh->VertexBuffer.Handle, &offset);
+                vkCmdBindIndexBuffer(cmd, draw.Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
-                                        1, 1, &draw->Material->DescriptorSets[m_currentFrame], 0, nullptr);
-                vkCmdPushConstants(cmd, m_shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                                   0, sizeof(draw->Object), &draw->Object);
-                vkCmdDrawIndexed(cmd, draw->Mesh->IndexCount, 1, 0, 0, 0);
+                                        1, 1, &draw.Material->DescriptorSets[m_currentFrame], 0, nullptr);
+                vkCmdDrawIndexed(cmd, draw.Mesh->IndexCount, draw.InstanceCount,
+                                 0, 0, draw.FirstInstance);
                 ++m_gpuDrawCallsThisFrame;
             }
             vkCmdEndRendering(cmd);
@@ -1127,7 +1168,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
                               timestampBase + LocalShadowPass * 2);
     }
     BeginDebugLabel(cmd, "Shadows / Local Lights", {0.75f, 0.35f, 0.75f, 1.0f});
-    RecordLocalLightShadows(cmd, scene);
+    RecordLocalLightShadows(cmd, shadowDraws);
     EndDebugLabel(cmd);
     if (recordGpuTiming)
     {
@@ -1210,20 +1251,25 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbrPipelineLayout,
                             0, 1, &m_frameDescriptorSets[m_currentFrame], 0, nullptr);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyPipeline);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    ++m_gpuDrawCallsThisFrame;
+    if (scene.Sky.VisibleBackground)
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyPipeline);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        ++m_gpuDrawCallsThisFrame;
+    }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbrPipeline);
-    for (const PreparedDraw* draw : draws)
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_pbrPipelineLayout, 2, 1,
+                            &m_instanceDescriptorSets[m_currentFrame], 0, nullptr);
+    for (const PreparedGpuInstanceBatch& draw : draws)
     {
         const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &draw->Mesh->VertexBuffer.Handle, &offset);
-        vkCmdBindIndexBuffer(cmd, draw->Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &draw.Mesh->VertexBuffer.Handle, &offset);
+        vkCmdBindIndexBuffer(cmd, draw.Mesh->IndexBuffer.Handle, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbrPipelineLayout,
-                                1, 1, &draw->Material->DescriptorSets[m_currentFrame], 0, nullptr);
-        vkCmdPushConstants(cmd, m_pbrPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(draw->Object), &draw->Object);
-        vkCmdDrawIndexed(cmd, draw->Mesh->IndexCount, 1, 0, 0, 0);
+                                1, 1, &draw.Material->DescriptorSets[m_currentFrame], 0, nullptr);
+        vkCmdDrawIndexed(cmd, draw.Mesh->IndexCount, draw.InstanceCount,
+                         0, 0, draw.FirstInstance);
         ++m_gpuDrawCallsThisFrame;
     }
     if (!frame.VisibilityDebug.empty())
@@ -1249,6 +1295,37 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(constants), &constants);
             vkCmdDraw(cmd, 24, 1, 0, 0);
+            ++m_gpuDrawCallsThisFrame;
+        }
+        EndDebugLabel(cmd);
+    }
+    if (!frame.DebugLines.empty())
+    {
+        BeginDebugLabel(cmd, "Debug Draw / Lines", {0.95f, 0.65f, 0.15f, 1.0f});
+        VkPipeline activePipeline = VK_NULL_HANDLE;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_boundsDebugPipelineLayout, 0, 1,
+                                &m_frameDescriptorSets[m_currentFrame], 0, nullptr);
+        for (const DebugLine& line : frame.DebugLines)
+        {
+            const VkPipeline requestedPipeline =
+                line.Depth == DebugDepthMode::DepthTested
+                    ? m_boundsDebugDepthPipeline : m_boundsDebugPipeline;
+            if (requestedPipeline != activePipeline)
+            {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  requestedPipeline);
+                activePipeline = requestedPipeline;
+            }
+            vulkan::BoundsDebugConstants constants;
+            constants.Minimum = glm::vec4(line.Start, 0.0f);
+            constants.Maximum = glm::vec4(line.End, 0.0f);
+            constants.Color = glm::vec4(line.Color, -1.0f);
+            vkCmdPushConstants(cmd, m_boundsDebugPipelineLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT |
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(constants), &constants);
+            vkCmdDraw(cmd, 2, 1, 0, 0);
             ++m_gpuDrawCallsThisFrame;
         }
         EndDebugLabel(cmd);
@@ -1350,6 +1427,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
                                                graphFeatures, std::move(graphCallbacks),
                                                &graphError))
         throw std::runtime_error("Vulkan render graph: " + graphError);
+    bool offscreenOutputTransitioned = false;
     const auto applyGraphBarriers = [&](const rendergraph::CompiledPass& pass) {
         std::vector<VkImageMemoryBarrier2> nativeBarriers;
         nativeBarriers.reserve(pass.Barriers.size());
@@ -1405,6 +1483,16 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
             native.dstAccessMask = GraphAccess(barrier.After);
             native.oldLayout = GraphLayout(barrier.Before);
             native.newLayout = GraphLayout(barrier.After);
+            if (name == "output.backbuffer" && offscreen &&
+                !offscreenOutputTransitioned)
+            {
+                native.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                native.srcAccessMask = 0;
+                native.oldLayout = m_activeOffscreenWasInitialized
+                    ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    : VK_IMAGE_LAYOUT_UNDEFINED;
+                offscreenOutputTransitioned = true;
+            }
             native.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             native.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             native.image = image;
@@ -1421,6 +1509,31 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     };
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Prepare);
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Render, applyGraphBarriers);
+
+    // Editor UI is a final load/overlay operation on the main presentation
+    // image. Offscreen scene viewports stay clean and are sampled by this UI.
+    if (!offscreen && m_uiRenderCallback)
+    {
+        BeginDebugLabel(cmd, "Editor UI", {0.25f, 0.65f, 0.95f, 1.0f});
+        VkRenderingAttachmentInfo attachment{
+            VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        attachment.imageView = m_swapchainImageViews[imageIndex];
+        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        rendering.renderArea.extent = m_swapchainExtent;
+        rendering.layerCount = 1;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachments = &attachment;
+        vkCmdBeginRendering(cmd, &rendering);
+        m_uiRenderCallback({RenderBackendApi::Vulkan,
+            reinterpret_cast<uint64_t>(cmd),
+            reinterpret_cast<uint64_t>(m_swapchainImageViews[imageIndex]),
+            m_swapchainExtent.width, m_swapchainExtent.height});
+        vkCmdEndRendering(cmd);
+        EndDebugLabel(cmd);
+    }
 
     if (recordGpuTiming)
     {
@@ -1511,10 +1624,13 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     finishBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     finishBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     finishBarrier.newLayout = takeScreenshot ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-                                             : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        : (offscreen ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                     : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     finishBarrier.dstStageMask = takeScreenshot ? VK_PIPELINE_STAGE_2_TRANSFER_BIT
-                                                : VK_PIPELINE_STAGE_2_NONE;
-    finishBarrier.dstAccessMask = takeScreenshot ? VK_ACCESS_2_TRANSFER_READ_BIT : 0;
+        : (offscreen ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                     : VK_PIPELINE_STAGE_2_NONE);
+    finishBarrier.dstAccessMask = takeScreenshot ? VK_ACCESS_2_TRANSFER_READ_BIT
+        : (offscreen ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0);
     VkDependencyInfo finishDependency{};
     finishDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     finishDependency.imageMemoryBarrierCount = 1;
@@ -1547,16 +1663,21 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     ENGINE_CPU_PROFILE_SCOPE_CATEGORY("SubmitAndPresent", "Renderer/Vulkan/Sync");
     std::array<VkSemaphoreSubmitInfo, 2> waitInfos{};
     waitInfos[0] = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    waitInfos[0].semaphore = m_imageAvailable[m_currentFrame];
-    waitInfos[0].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    uint32_t waitCount = 1;
+    uint32_t waitCount = 0;
+    if (!offscreen)
+    {
+        waitInfos[waitCount] = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        waitInfos[waitCount].semaphore = m_imageAvailable[m_currentFrame];
+        waitInfos[waitCount].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        ++waitCount;
+    }
     if (m_pendingTransferWaitValue != 0)
     {
-        waitInfos[1] = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        waitInfos[1].semaphore = m_transferTimeline;
-        waitInfos[1].value = m_pendingTransferWaitValue;
-        waitInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
-        waitCount = 2;
+        waitInfos[waitCount] = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        waitInfos[waitCount].semaphore = m_transferTimeline;
+        waitInfos[waitCount].value = m_pendingTransferWaitValue;
+        waitInfos[waitCount].stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+        ++waitCount;
     }
     VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     commandInfo.commandBuffer = cmd;
@@ -1568,8 +1689,8 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     submitInfo.pWaitSemaphoreInfos = waitInfos.data();
     submitInfo.commandBufferInfoCount = 1;
     submitInfo.pCommandBufferInfos = &commandInfo;
-    submitInfo.signalSemaphoreInfoCount = 1;
-    submitInfo.pSignalSemaphoreInfos = &signalInfo;
+    submitInfo.signalSemaphoreInfoCount = offscreen ? 0u : 1u;
+    submitInfo.pSignalSemaphoreInfos = offscreen ? nullptr : &signalInfo;
 
     if (vkQueueSubmit2(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS)
         throw std::runtime_error("Vulkan: failed to submit rendered frame");
@@ -1591,17 +1712,21 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         m_hdrScreenshotPath.clear();
     }
 
-    VkPresentInfoKHR presentInfo{};
-    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &m_renderFinished[m_currentFrame];
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &m_swapchain;
-    presentInfo.pImageIndices = &imageIndex;
+    if (!offscreen)
+    {
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = &m_renderFinished[m_currentFrame];
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = &m_swapchain;
+        presentInfo.pImageIndices = &imageIndex;
 
-    VkResult presentResult = vkQueuePresentKHR(m_presentQueue, &presentInfo);
-    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
-        RecreateSwapchain(m_window->Width(), m_window->Height());
+        VkResult presentResult = vkQueuePresentKHR(m_presentQueue, &presentInfo);
+        if (presentResult == VK_ERROR_OUT_OF_DATE_KHR ||
+            presentResult == VK_SUBOPTIMAL_KHR)
+            RecreateSwapchain(m_window->Width(), m_window->Height());
+    }
 
     const Camera& camera = *frame.CameraData;
     m_previousViewProjection = m_currentViewProjection;
@@ -1648,6 +1773,8 @@ void VulkanRenderBackend::Shutdown()
     }
     if (m_device != VK_NULL_HANDLE)
         vkDeviceWaitIdle(m_device);
+
+    DestroyAllViewports();
 
     for (vulkan::Buffer& buffer : m_frameDebugReadbackBuffers)
         m_resources.Destroy(buffer);

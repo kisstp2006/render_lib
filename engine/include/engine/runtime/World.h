@@ -1,9 +1,11 @@
 #pragma once
 
+#include "engine/asset/AssetGuid.h"
 #include "engine/runtime/ComponentRegistry.h"
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -25,12 +27,29 @@ struct Transform
 struct EntityInfo
 {
     EntityId Id = kInvalidEntity;
+    assets::AssetGuid Guid;
     std::string Name;
     std::string Tag;
     uint32_t Layer = 0;
     EntityId Parent = kInvalidEntity;
     bool ActiveSelf = true;
     bool ActiveInHierarchy = true;
+};
+
+struct ComponentView
+{
+    std::string TypeName;
+    uint32_t Version = 1;
+    bool Enabled = true;
+    void* Data = nullptr;
+};
+
+struct ConstComponentView
+{
+    std::string TypeName;
+    uint32_t Version = 1;
+    bool Enabled = true;
+    const void* Data = nullptr;
 };
 
 // A compact behavior world that sits beside the renderer-neutral Scene. Scene
@@ -43,8 +62,12 @@ class World
     ~World();
 
     EntityId CreateEntity(std::string name = "Entity");
+    EntityId CreateEntityWithGuid(assets::AssetGuid guid,
+                                  std::string name = "Entity");
     bool DestroyEntity(EntityId entity);
     bool IsAlive(EntityId entity) const;
+    assets::AssetGuid GetGuid(EntityId entity) const;
+    EntityId FindEntity(assets::AssetGuid guid) const;
     void Clear();
 
     bool SetParent(EntityId child, EntityId parent);
@@ -69,16 +92,38 @@ class World
     bool RemoveComponent(EntityId entity, const std::string& typeName);
     bool HasComponent(EntityId entity, const std::string& typeName) const;
     void* GetComponentData(EntityId entity, const std::string& typeName);
+    const void* GetComponentData(EntityId entity, const std::string& typeName) const;
+    template <typename T> T* GetComponent(EntityId entity, const std::string& typeName)
+    {
+        return static_cast<T*>(GetComponentData(entity, typeName));
+    }
+    template <typename T> const T* GetComponent(EntityId entity,
+                                                const std::string& typeName) const
+    {
+        return static_cast<const T*>(GetComponentData(entity, typeName));
+    }
+    std::vector<ComponentView> ListComponents(EntityId entity);
+    std::vector<ConstComponentView> ListComponents(EntityId entity) const;
+    bool GetComponentProperty(EntityId entity, const std::string& typeName,
+                              std::string_view property, PropertyValue& value,
+                              std::string* error = nullptr) const;
+    bool SetComponentProperty(EntityId entity, const std::string& typeName,
+                              std::string_view property, const PropertyValue& value,
+                              std::string* error = nullptr);
+    bool IsComponentEnabled(EntityId entity, const std::string& typeName) const;
     bool SetComponentEnabled(EntityId entity, const std::string& typeName, bool enabled);
 
     void Update(float deltaSeconds);
     size_t EntityCount() const { return m_entityCount; }
     std::vector<EntityInfo> ListEntities();
+    const ComponentRegistry& Components() const { return m_components; }
+    ComponentRegistry& Components() { return m_components; }
 
   private:
     struct EntityRecord
     {
         EntityId Id = kInvalidEntity;
+        assets::AssetGuid Guid;
         std::string Name;
         std::string Tag;
         uint32_t Layer = 0;
@@ -115,6 +160,7 @@ class World
     std::vector<Slot> m_slots;
     std::vector<uint32_t> m_freeSlots;
     std::vector<EntityId> m_deferredDestroy;
+    std::unordered_map<assets::AssetGuid, EntityId, assets::AssetGuidHash> m_guidToEntity;
     size_t m_entityCount = 0;
     bool m_hierarchyDirty = true;
     bool m_updating = false;

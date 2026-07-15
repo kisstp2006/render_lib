@@ -1,11 +1,13 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "engine/backend/IRenderBackend.h"
@@ -15,6 +17,7 @@
 #include "engine/backend/gl/GLTexture.h"
 #include "engine/render/CascadedShadows.h"
 #include "engine/render/GpuTiming.h"
+#include "engine/render/Instancing.h"
 #include "engine/render/OcclusionCulling.h"
 #include "engine/profiling/GpuProfiler.h"
 #include "engine/scene/RenderSettings.h"
@@ -27,10 +30,25 @@ namespace engine {
 class GLRenderBackend final : public IRenderBackend
 {
 public:
+    GLRenderBackend();
+    ~GLRenderBackend() override;
     void Init(Window& window, const RenderBackendConfig& config) override;
     void Shutdown() override;
     void Resize(int width, int height) override;
     void RenderFrame(const RenderFrameData& frame) override;
+    RenderViewportHandle CreateViewport(const RenderViewportDesc& desc) override;
+    bool ResizeViewport(RenderViewportHandle viewport, uint32_t width,
+                        uint32_t height) override;
+    void DestroyViewport(RenderViewportHandle viewport) override;
+    bool RenderViewport(RenderViewportHandle viewport,
+                        const RenderFrameData& frame) override;
+    RenderTextureHandle GetViewportTexture(RenderViewportHandle viewport) const override;
+    NativeGraphicsContext GetNativeGraphicsContext() const override;
+    void WaitIdle() override;
+    void SetUiRenderCallback(NativeUiRenderCallback callback) override
+    {
+        m_uiRenderCallback = std::move(callback);
+    }
     void RequestScreenshot(const std::string& path) override { m_screenshotPath = path; }
     void RequestHdrScreenshot(const std::string& path) override { m_hdrScreenshotPath = path; }
     BackendFrameStats GetFrameStats() const override { return m_frameStats; }
@@ -49,6 +67,15 @@ public:
     const char* Name() const override { return "OpenGL 4.6"; }
 
 private:
+    struct ViewTargetState;
+    struct OffscreenViewport;
+    struct ViewportStorage;
+    void SwapViewTargetState(ViewTargetState& state);
+    void CreateViewportOutput(OffscreenViewport& viewport);
+    void DestroyViewportOutput(OffscreenViewport& viewport);
+    void CreateViewportResources(OffscreenViewport& viewport);
+    void DestroyViewportResources(OffscreenViewport& viewport);
+    void DestroyAllViewports();
     void InitShadowMap();
     void CreateSceneTargets(int width, int height);
     void DestroySceneTargets();
@@ -60,7 +87,8 @@ private:
     void SaveHdrScreenshot(unsigned int sourceTexture);
     void InitLocalLightResources();
     void DestroyLocalLightResources();
-    void RenderLocalLightShadows(const RenderFrameData& frame);
+    void RenderLocalLightShadows(const RenderFrameData& frame,
+                                 const InstanceBatchBuildResult& shadowBatches);
     void BindLocalLights();
     void UpdateLightCookieAtlas();
     void RenderDebugOverlay(const RenderFrameData& frame);
@@ -188,6 +216,9 @@ private:
     GpuTimingAccumulator m_postTiming;
     BackendFrameStats m_frameStats;
 
+    unsigned int m_instanceTransformBuffer = 0;
+    uint64_t m_instanceTransformBytes = 0;
+
     // Auto-exposure state
     float m_autoExposure = 1.0f;
     double m_lastFrameTime = 0.0;
@@ -255,8 +286,37 @@ private:
     unsigned int m_emptyVao = 0;
     unsigned int m_boundsDebugVao = 0;
     unsigned int m_boundsDebugVbo = 0;
-    std::array<unsigned int, 2> m_debugOverlayTextures{};
+    static constexpr uint32_t kDebugOverlayUploadSlots = 3;
+    std::array<unsigned int, kDebugOverlayUploadSlots> m_debugOverlayTextures{};
+    std::array<unsigned int, kDebugOverlayUploadSlots> m_debugOverlayBuffers{};
+    std::array<uint8_t*, kDebugOverlayUploadSlots> m_debugOverlayMappedBuffers{};
+    // Stored as void* so the public backend header does not expose GLsync.
+    // A fence belongs to a retired texture-buffer view and covers its last draw.
+    std::array<void*, kDebugOverlayUploadSlots> m_debugOverlayFences{};
     uint32_t m_debugOverlayTextureIndex = 0;
+    uint64_t m_debugOverlayRevision = 0;
+
+    struct FrameDebugReadbackSlot
+    {
+        unsigned int Buffer = 0;
+        const float* Mapped = nullptr;
+        void* Fence = nullptr;
+        size_t Capacity = 0;
+        uint64_t ResourceId = 0;
+        uint32_t SourceWidth = 0;
+        uint32_t SourceHeight = 0;
+        uint32_t ComponentCount = 0;
+        uint32_t MipLevel = 0;
+        uint32_t Layer = 0;
+        debug::FrameDebugVisualization Visualization =
+            debug::FrameDebugVisualization::Color;
+        bool Pending = false;
+    };
+    static constexpr uint32_t kFrameDebugReadbackSlots = 3;
+    std::array<FrameDebugReadbackSlot, kFrameDebugReadbackSlots>
+        m_frameDebugReadbackSlots{};
+    uint32_t m_frameDebugReadbackWriteSlot = 0;
+    debug::FrameDebugPreview m_frameDebugLastPreview;
 
     std::unique_ptr<GLTexture> m_defaultWhite;
     std::unique_ptr<GLTexture> m_defaultNormal;
@@ -272,6 +332,11 @@ private:
     std::unordered_map<std::shared_ptr<TextureData>, std::unique_ptr<GLTexture>> m_textureCache;
     std::unordered_set<const TextureData*> m_textureFallbackWarnings;
     std::unordered_map<std::shared_ptr<ColorGradingLutData>, unsigned int> m_colorLutCache;
+    std::unique_ptr<ViewportStorage> m_viewports;
+    uint64_t m_nextViewportId = 1;
+    unsigned int m_activeOutputFramebuffer = 0;
+    bool m_renderingOffscreen = false;
+    NativeUiRenderCallback m_uiRenderCallback;
 };
 
 } // namespace engine

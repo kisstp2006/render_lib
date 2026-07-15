@@ -1,6 +1,8 @@
 #pragma once
 
+#include <compare>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "engine/debug/FrameDebugger.h"
@@ -83,6 +85,11 @@ struct BackendFrameStats
     uint32_t GpuOcclusionResultsConsumed = 0;
     uint32_t HiZMipLevels = 0;
     uint32_t OcclusionReadbackLatencyFrames = 0;
+    bool GpuInstancingActive = false;
+    uint32_t GpuInstanceCount = 0;
+    uint32_t GpuInstanceBatchCount = 0;
+    uint32_t GpuInstancedBatchCount = 0;
+    uint32_t GpuDrawCallsSaved = 0;
 };
 
 // Backend-neutral lifetime counters used by the runtime diagnostics and the
@@ -100,6 +107,73 @@ struct BackendResourceStats
     uint64_t TextureResources = 0;
     uint64_t MaterialResources = 0;
 };
+
+enum class RenderBackendApi : uint8_t
+{
+    OpenGL,
+    Vulkan
+};
+
+struct RenderViewportHandle
+{
+    uint64_t Value = 0;
+    explicit operator bool() const noexcept { return Value != 0; }
+    auto operator<=>(const RenderViewportHandle&) const = default;
+};
+
+struct RenderViewportDesc
+{
+    uint32_t Width = 1;
+    uint32_t Height = 1;
+    std::string Name = "Viewport";
+};
+
+// Backend-neutral token suitable for editor/UI integrations. NativeTexture is
+// a GLuint on GL. Vulkan exposes its image view and sampler separately. The
+// generation changes whenever resize replaces the native resource.
+struct RenderTextureHandle
+{
+    RenderBackendApi Api = RenderBackendApi::OpenGL;
+    RenderViewportHandle Viewport;
+    uint64_t NativeTexture = 0;
+    uint64_t NativeImageView = 0;
+    uint64_t NativeSampler = 0;
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    uint64_t Generation = 0;
+    explicit operator bool() const noexcept
+    {
+        return Width != 0 && Height != 0 &&
+            (NativeTexture != 0 || NativeImageView != 0);
+    }
+};
+
+// Minimal native context required by optional editor UI backends. Handles are
+// intentionally opaque here so RendererCore does not acquire Vulkan headers.
+struct NativeGraphicsContext
+{
+    RenderBackendApi Api = RenderBackendApi::OpenGL;
+    void* Window = nullptr;
+    uint64_t Instance = 0;
+    uint64_t PhysicalDevice = 0;
+    uint64_t Device = 0;
+    uint64_t Queue = 0;
+    uint32_t QueueFamily = 0;
+    uint32_t ColorFormat = 0;
+    uint32_t MinImageCount = 2;
+    uint32_t ImageCount = 2;
+};
+
+struct NativeUiRenderContext
+{
+    RenderBackendApi Api = RenderBackendApi::OpenGL;
+    uint64_t CommandBuffer = 0;
+    uint64_t ColorImageView = 0;
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+};
+
+using NativeUiRenderCallback = std::function<void(const NativeUiRenderContext&)>;
 
 // Shared contract between the OpenGL and Vulkan backends. Kept intentionally
 // small (immediate-mode-ish per-frame calls) rather than a full generic RHI
@@ -120,6 +194,24 @@ class IRenderBackend
     virtual void Resize(int width, int height) = 0;
 
     virtual void RenderFrame(const RenderFrameData& frame) = 0;
+
+    // Persistent offscreen views. Several handles may coexist; rendering one
+    // never invalidates another view's output texture.
+    virtual RenderViewportHandle CreateViewport(const RenderViewportDesc&) { return {}; }
+    virtual bool ResizeViewport(RenderViewportHandle, uint32_t, uint32_t) { return false; }
+    virtual void DestroyViewport(RenderViewportHandle) {}
+    virtual bool RenderViewport(RenderViewportHandle, const RenderFrameData&) { return false; }
+    virtual RenderTextureHandle GetViewportTexture(RenderViewportHandle) const { return {}; }
+
+    virtual NativeGraphicsContext GetNativeGraphicsContext() const { return {}; }
+    // Synchronization point for API-native extensions (such as editor UI)
+    // which must release their GPU objects before backend Shutdown destroys
+    // the device/context.
+    virtual void WaitIdle() {}
+    virtual void SetUiRenderCallback(NativeUiRenderCallback callback)
+    {
+        (void)callback;
+    }
 
     // Saves the next presented frame as a PNG. Default: unsupported no-op.
     virtual void RequestScreenshot(const std::string& /*path*/) {}

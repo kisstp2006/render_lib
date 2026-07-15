@@ -57,7 +57,14 @@ const World::EntityRecord* World::TryGet(EntityId entity) const
 
 EntityId World::CreateEntity(std::string name)
 {
+    return CreateEntityWithGuid(assets::AssetGuid::Generate(), std::move(name));
+}
+
+EntityId World::CreateEntityWithGuid(assets::AssetGuid guid, std::string name)
+{
     ENGINE_MEMORY_TAG_SCOPE("Scene");
+    if (!guid.IsValid() || m_guidToEntity.contains(guid))
+        return kInvalidEntity;
     uint32_t index = 0;
     if (!m_freeSlots.empty())
     {
@@ -74,10 +81,24 @@ EntityId World::CreateEntity(std::string name)
     slot.Occupied = true;
     slot.Record = {};
     slot.Record.Id = MakeId(index, slot.Generation);
+    slot.Record.Guid = guid;
     slot.Record.Name = std::move(name);
+    m_guidToEntity.emplace(guid, slot.Record.Id);
     ++m_entityCount;
     m_hierarchyDirty = true;
     return slot.Record.Id;
+}
+
+assets::AssetGuid World::GetGuid(EntityId entity) const
+{
+    const EntityRecord* record = TryGet(entity);
+    return record ? record->Guid : assets::AssetGuid{};
+}
+
+EntityId World::FindEntity(assets::AssetGuid guid) const
+{
+    const auto found = m_guidToEntity.find(guid);
+    return found == m_guidToEntity.end() ? kInvalidEntity : found->second;
 }
 
 bool World::DestroyEntity(EntityId entity)
@@ -126,6 +147,7 @@ void World::DestroyNow(EntityId entity)
 
     const uint32_t index = IndexOf(entity);
     Slot& slot = m_slots[index];
+    m_guidToEntity.erase(slot.Record.Guid);
     slot.Record = {};
     slot.Occupied = false;
     ++slot.Generation;
@@ -159,6 +181,7 @@ void World::Clear()
             slot.Generation = 1;
     }
     m_freeSlots.clear();
+    m_guidToEntity.clear();
     m_freeSlots.reserve(m_slots.size());
     for (uint32_t i = 0; i < m_slots.size(); ++i)
         m_freeSlots.push_back(i);
@@ -354,6 +377,81 @@ void* World::GetComponentData(EntityId entity, const std::string& typeName)
     return it == record->Components.end() ? nullptr : it->Data;
 }
 
+const void* World::GetComponentData(EntityId entity, const std::string& typeName) const
+{
+    const EntityRecord* record = TryGet(entity);
+    if (!record)
+        return nullptr;
+    const auto it = std::find_if(record->Components.begin(), record->Components.end(),
+                                 [&](const ComponentInstance& item)
+                                 { return item.TypeName == typeName; });
+    return it == record->Components.end() ? nullptr : it->Data;
+}
+
+std::vector<ComponentView> World::ListComponents(EntityId entity)
+{
+    EntityRecord* record = TryGet(entity);
+    std::vector<ComponentView> result;
+    if (!record) return result;
+    result.reserve(record->Components.size());
+    for (ComponentInstance& component : record->Components)
+        result.push_back({component.TypeName, component.Version,
+                          component.Enabled, component.Data});
+    return result;
+}
+
+std::vector<ConstComponentView> World::ListComponents(EntityId entity) const
+{
+    const EntityRecord* record = TryGet(entity);
+    std::vector<ConstComponentView> result;
+    if (!record) return result;
+    result.reserve(record->Components.size());
+    for (const ComponentInstance& component : record->Components)
+        result.push_back({component.TypeName, component.Version,
+                          component.Enabled, component.Data});
+    return result;
+}
+
+bool World::GetComponentProperty(EntityId entity, const std::string& typeName,
+                                 std::string_view property, PropertyValue& value,
+                                 std::string* error) const
+{
+    const void* component = GetComponentData(entity, typeName);
+    if (!component)
+    {
+        if (error) *error = "Entity has no component type '" + typeName + "'";
+        return false;
+    }
+    const auto result = m_components.GetProperty(typeName, component, property, error);
+    if (!result) return false;
+    value = *result;
+    return true;
+}
+
+bool World::SetComponentProperty(EntityId entity, const std::string& typeName,
+                                 std::string_view property, const PropertyValue& value,
+                                 std::string* error)
+{
+    void* component = GetComponentData(entity, typeName);
+    if (!component)
+    {
+        if (error) *error = "Entity has no component type '" + typeName + "'";
+        return false;
+    }
+    return m_components.SetProperty(typeName, component, property, value, error);
+}
+
+bool World::IsComponentEnabled(EntityId entity, const std::string& typeName) const
+{
+    const EntityRecord* record = TryGet(entity);
+    if (!record)
+        return false;
+    const auto it = std::find_if(record->Components.begin(), record->Components.end(),
+                                 [&](const ComponentInstance& item)
+                                 { return item.TypeName == typeName; });
+    return it != record->Components.end() && it->Enabled;
+}
+
 bool World::SetComponentEnabled(EntityId entity, const std::string& typeName, bool enabled)
 {
     EntityRecord* record = TryGet(entity);
@@ -455,7 +553,7 @@ std::vector<EntityInfo> World::ListEntities()
         if (!slot.Occupied)
             continue;
         const EntityRecord& entity = slot.Record;
-        result.push_back({entity.Id, entity.Name, entity.Tag, entity.Layer, entity.Parent,
+        result.push_back({entity.Id, entity.Guid, entity.Name, entity.Tag, entity.Layer, entity.Parent,
                           entity.ActiveSelf, entity.ActiveInHierarchy});
     }
     return result;

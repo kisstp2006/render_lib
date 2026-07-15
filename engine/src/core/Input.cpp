@@ -31,10 +31,20 @@ void Input::NewFrame()
 
 bool Input::IsKeyDown(int glfwKeyCode) const
 {
-    return m_window && glfwGetKey(m_window, glfwKeyCode) == GLFW_PRESS;
+    return !m_uiCapturesKeyboard && IsKeyDownRaw(glfwKeyCode);
 }
 
 bool Input::IsMouseButtonDown(int glfwButton) const
+{
+    return !m_uiCapturesMouse && IsMouseButtonDownRaw(glfwButton);
+}
+
+bool Input::IsKeyDownRaw(int glfwKeyCode) const
+{
+    return m_window && glfwGetKey(m_window, glfwKeyCode) == GLFW_PRESS;
+}
+
+bool Input::IsMouseButtonDownRaw(int glfwButton) const
 {
     return m_window && glfwGetMouseButton(m_window, glfwButton) == GLFW_PRESS;
 }

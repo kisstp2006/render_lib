@@ -5,11 +5,11 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec4 aTangent;
 layout(location = 3) in vec2 aUV;
 
-uniform mat4 uModel;
-uniform mat4 uNormalMatrix;
+#define ENGINE_OPENGL 1
+#include "common/instance_data.glsl"
+
 uniform mat4 uCurrentViewProjection;
 uniform mat4 uPreviousViewProjection;
-uniform mat4 uPreviousModel;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
@@ -20,12 +20,17 @@ out vec4 vPreviousClip;
 
 void main()
 {
-    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    mat4 model = ENGINE_INSTANCE_DATA.Model;
+    mat4 previousModel = ENGINE_INSTANCE_DATA.PreviousModel;
+    vec4 worldPos = model * vec4(aPosition, 1.0);
+    vec3 worldNormal = normalize(transpose(inverse(mat3(model))) * aNormal);
+    vec3 worldTangent = normalize(mat3(model) * aTangent.xyz);
+    worldTangent = normalize(worldTangent - worldNormal * dot(worldNormal, worldTangent));
     vWorldPos = worldPos.xyz;
-    vNormal = normalize(mat3(uNormalMatrix) * aNormal);
-    vTangent = vec4(normalize(mat3(uModel) * aTangent.xyz), aTangent.w);
+    vNormal = worldNormal;
+    vTangent = vec4(worldTangent, aTangent.w);
     vUV = aUV;
     vCurrentClip = uCurrentViewProjection * worldPos;
-    vPreviousClip = uPreviousViewProjection * uPreviousModel * vec4(aPosition, 1.0);
+    vPreviousClip = uPreviousViewProjection * previousModel * vec4(aPosition, 1.0);
     gl_Position = vCurrentClip;
 }

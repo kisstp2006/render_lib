@@ -5,6 +5,9 @@
 #include "engine/profiling/CpuProfiler.h"
 #include "engine/profiling/GpuProfiler.h"
 #include "engine/profiling/MemoryProfiler.h"
+#if ENGINE_ENABLE_IMGUI
+#include "engine/editor/ImGuiLayer.h"
+#endif
 
 #if ENGINE_HAS_VULKAN
 #include "engine/backend/vk/VulkanRenderBackend.h"
@@ -69,7 +72,8 @@ Application::Application(const WindowDesc& desc) : Application(ApplicationDesc{d
 
 Application::Application(const ApplicationDesc& desc)
     : m_desc(desc), m_taskSystem(std::make_unique<concurrency::TaskSystem>()),
-      m_sceneRenderer(m_taskSystem.get())
+      m_sceneRenderer(m_taskSystem.get()),
+      m_worldRenderingEnabled(desc.SynchronizeWorldToScene)
 {
     ENGINE_MEMORY_TAG_SCOPE("Core");
     if (m_desc.FrameCapture.CaptureTitle.empty())
@@ -89,6 +93,11 @@ Application::Application(const ApplicationDesc& desc)
     m_desc.Renderer.MaxAnisotropy = std::max(m_desc.Renderer.MaxAnisotropy, 1.0f);
     profiling::GpuProfiler::Get().SetEnabled(m_desc.Renderer.EnableGpuTiming);
 
+    std::string componentError;
+    if (!runtime::RegisterBuiltinRenderComponents(m_componentRegistry, &componentError))
+        throw std::runtime_error("Failed to register built-in render components: " +
+                                 componentError);
+
     m_window = std::make_unique<Window>(m_desc.Window);
     m_input.Attach(m_window->Handle());
 
@@ -99,6 +108,22 @@ Application::Application(const ApplicationDesc& desc)
                                                                               : "Vulkan");
         m_backend->Init(*m_window, m_desc.Renderer);
     }
+
+#if ENGINE_ENABLE_IMGUI
+    if (m_desc.EnableImGui)
+    {
+        m_imgui = std::make_unique<editor::ImGuiLayer>();
+        editor::ImGuiLayerConfig uiConfig;
+        uiConfig.PlatformViewports = m_desc.EnableImGuiPlatformViewports;
+        uiConfig.IniFilename = m_desc.ImGuiIniFilename;
+        if (!m_imgui->Initialize(*m_window, *m_backend, uiConfig))
+            throw std::runtime_error("Failed to initialize Dear ImGui");
+    }
+#else
+    if (m_desc.EnableImGui)
+        throw std::runtime_error(
+            "Dear ImGui was requested, but ENGINE_ENABLE_IMGUI=OFF in this build");
+#endif
 
     m_window->SetResizeCallback(
         [this](int w, int h)
@@ -159,6 +184,9 @@ Application::~Application()
         m_taskSystem->WaitIdle();
         m_taskSystem.reset();
     }
+#if ENGINE_ENABLE_IMGUI
+    m_imgui.reset();
+#endif
     if (m_backend)
     {
         profiling::MemoryTagScope tag(m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL"
@@ -171,6 +199,15 @@ Application::~Application()
         profiling::MemoryProfiler::Get().SetEnabled(false);
 }
 
+#if ENGINE_ENABLE_IMGUI
+void Application::SetImGuiCallback(std::function<void()> callback)
+{
+    m_imguiCallback = std::move(callback);
+    if (m_imgui)
+        m_imgui->SetBuildCallback(m_imguiCallback);
+}
+#endif
+
 void Application::SetRuntimeMonitorsEnabled(bool enabled)
 {
 #if !ENGINE_ENABLE_RUNTIME_MONITORS
@@ -179,12 +216,11 @@ void Application::SetRuntimeMonitorsEnabled(bool enabled)
     m_desc.EnableRuntimeMonitors = enabled;
     m_debugOverlay.SetRuntimeMonitorsVisible(enabled);
     profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
-    if (enabled && !memoryProfiler.IsEnabled())
-    {
-        memoryProfiler.SetEnabled(true);
-        m_memoryProfilerOwnedByDiagnostics = true;
-    }
-    else if (!enabled && m_memoryProfilerOwnedByDiagnostics)
+    // Always-on monitor cards use the OS process-memory sample exposed by
+    // MemoryProfiler::Snapshot. Full global new/delete tracking remains an
+    // explicit profiler/debug-ui feature because serializing every allocation
+    // behind a shared mutex measurably destroys frame pacing.
+    if (!enabled && m_memoryProfilerOwnedByDiagnostics)
     {
         memoryProfiler.SetEnabled(false);
         m_memoryProfilerOwnedByDiagnostics = false;
@@ -275,6 +311,17 @@ bool Application::RunOneFrame()
             ENGINE_CPU_PROFILE_SCOPE_CATEGORY("PollEvents", "Application");
             m_window->PollEvents();
             m_input.NewFrame();
+#if ENGINE_ENABLE_IMGUI
+            if (m_imgui)
+            {
+                m_imgui->BeginFrame();
+                m_input.SetUiCapture(m_imgui->WantsKeyboard(), m_imgui->WantsMouse());
+            }
+            else
+#endif
+            {
+                m_input.SetUiCapture(false, false);
+            }
         }
 
         const bool focused = m_window->IsFocused();
@@ -355,6 +402,17 @@ bool Application::RunOneFrame()
                 EmitEvent(ApplicationEventType::AfterUpdate, deltaTime);
             }
 
+            if (m_worldRenderingEnabled)
+            {
+                ENGINE_CPU_PROFILE_SCOPE_CATEGORY("WorldRenderBridge", "Scene");
+                m_worldRenderBridge.Synchronize(m_world, m_scene, &m_camera);
+            }
+
+#if ENGINE_ENABLE_IMGUI
+            if (m_imgui)
+                m_imgui->EndFrame();
+#endif
+
             // GLFW reports a zero-sized framebuffer while a window is
             // minimized. Keep simulation and stress-control callbacks alive,
             // but never ask either backend to create or render 0x0 targets.
@@ -362,8 +420,20 @@ bool Application::RunOneFrame()
                                  m_window->Width() <= 0 || m_window->Height() <= 0;
             if (!surfaceUnavailable)
             {
-            if (m_debugOverlay.HasVisibleContent())
+            // Runtime monitor cards do not need to rebuild and snapshot every
+            // frame. Their CPU rasterization and the full memory snapshot
+            // allocate enough temporary data to perturb the timings they are
+            // meant to observe. Detailed/debugger views remain responsive at
+            // 15 Hz; the always-on corner cards update at 5 Hz while the same
+            // cached overlay image is composited every frame.
+            const double overlayInterval =
+                (m_debugOverlay.IsVisible() || m_debugOverlay.FrameDebuggerVisible())
+                    ? (1.0 / 15.0) : 0.2;
+            const bool updateDebugOverlay = m_debugOverlay.HasVisibleContent() &&
+                (frameStart >= m_nextDebugOverlayUpdateTime || m_frameCounter == 0);
+            if (updateDebugOverlay)
             {
+                m_nextDebugOverlayUpdateTime = frameStart + overlayInterval;
                 ENGINE_MEMORY_TAG_SCOPE("Debug");
                 ENGINE_CPU_PROFILE_SCOPE_CATEGORY("DebugOverlay.Update", "Debug");
                 const profiling::GpuProfileSnapshot gpuProfile =
@@ -438,6 +508,26 @@ bool Application::RunOneFrame()
                                         std::to_string(metrics.Backend.GpuOcclusionMilliseconds) + " MS");
                 m_debugOverlay.SetValue("GPU HI-Z", "HISTORY RESET",
                                         metrics.Backend.GpuOcclusionHistoryReset ? "YES" : "NO");
+                m_debugOverlay.SetValue("GPU INSTANCING", "ACTIVE",
+                                        metrics.Backend.GpuInstancingActive ? "YES" : "NO");
+                m_debugOverlay.SetValue("GPU INSTANCING", "INSTANCES",
+                                        std::to_string(metrics.Backend.GpuInstanceCount));
+                m_debugOverlay.SetValue("GPU INSTANCING", "DRAW BATCHES",
+                                        std::to_string(metrics.Backend.GpuInstanceBatchCount));
+                m_debugOverlay.SetValue("GPU INSTANCING", "INSTANCED BATCHES",
+                                        std::to_string(metrics.Backend.GpuInstancedBatchCount));
+                m_debugOverlay.SetValue("GPU INSTANCING", "DRAWS SAVED",
+                                        std::to_string(metrics.Backend.GpuDrawCallsSaved));
+                m_debugOverlay.SetValue("HISM", "GROUPS",
+                                        std::to_string(visibility.HismGroups));
+                m_debugOverlay.SetValue("HISM", "NODES TESTED",
+                                        std::to_string(visibility.HismNodesTested));
+                m_debugOverlay.SetValue("HISM", "NODES CULLED",
+                                        std::to_string(visibility.HismNodesCulled));
+                m_debugOverlay.SetValue("HISM", "INSTANCES CULLED",
+                                        std::to_string(visibility.HismInstancesCulled));
+                m_debugOverlay.SetValue("HISM", "LEAF TESTS",
+                                        std::to_string(visibility.HismLeafTests));
                 m_debugOverlay.Update(metrics, profiler.Snapshot(), memoryProfiler.Snapshot(),
                                       gpuProfile);
             }
@@ -504,6 +594,12 @@ bool Application::RunOneFrame()
             EmitEvent(ApplicationEventType::EndFrame, deltaTime);
         }
     }
+#if ENGINE_ENABLE_IMGUI
+    // Completes a UI frame while the application is background-paused. It is
+    // a no-op when the normal render path already ended it above.
+    if (m_imgui)
+        m_imgui->EndFrame();
+#endif
     profiler.EndFrame();
     memoryProfiler.EndFrame();
     m_lastFrameCpuMilliseconds = (glfwGetTime() - frameStart) * 1000.0;
@@ -559,6 +655,15 @@ void Application::ReloadRenderer()
     ENGINE_MEMORY_TAG_SCOPE("Renderer");
     log::Info(std::string("Reloading render backend: ") + m_backend->Name());
 
+#if ENGINE_ENABLE_IMGUI
+    // The ImGui renderer backend owns API-native pipelines and descriptors,
+    // and its callback points at the current IRenderBackend. Tear it down
+    // before that backend and bind it again after recreation.
+    if (m_imgui)
+    {
+        m_imgui.reset();
+    }
+#endif
     std::unique_ptr<IRenderBackend> previous = std::move(m_backend);
     previous->Shutdown();
     const BackendResourceStats released = previous->GetResourceStats();
@@ -571,6 +676,18 @@ void Application::ReloadRenderer()
     profiling::MemoryTagScope backendTag(
         m_desc.Window.api == GraphicsApi::OpenGL ? "OpenGL" : "Vulkan");
     m_backend->Init(*m_window, m_desc.Renderer);
+#if ENGINE_ENABLE_IMGUI
+    if (m_desc.EnableImGui)
+    {
+        m_imgui = std::make_unique<editor::ImGuiLayer>();
+        editor::ImGuiLayerConfig uiConfig;
+        uiConfig.PlatformViewports = m_desc.EnableImGuiPlatformViewports;
+        uiConfig.IniFilename = m_desc.ImGuiIniFilename;
+        if (!m_imgui->Initialize(*m_window, *m_backend, uiConfig))
+            throw std::runtime_error("Failed to reinitialize Dear ImGui after renderer reload");
+        m_imgui->SetBuildCallback(m_imguiCallback);
+    }
+#endif
     m_sceneRenderer.ResetFrameHistory();
 
     const BackendCapabilities capabilities = m_backend->GetCapabilities();

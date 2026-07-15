@@ -131,4 +131,20 @@ template <typename T> plugin::PluginComponentType MakeComponentType(const char* 
     return type;
 }
 
+// Engine-owned POD/data components do not need plugin lifecycle hooks. This
+// descriptor keeps them in the same registry/storage/reflection path as
+// behavior components so inspectors and serializers never need a side table.
+template <typename T> plugin::PluginComponentType MakeDataComponentType(const char* typeName)
+{
+    static_assert(std::is_default_constructible_v<T>);
+    plugin::PluginComponentType type;
+    type.TypeName = typeName;
+    type.Create = [](plugin::EntityId, const plugin::PluginHostApi*) -> void* {
+        try { return new T(); }
+        catch (...) { return nullptr; }
+    };
+    type.Destroy = [](void* instance) { delete static_cast<T*>(instance); };
+    return type;
+}
+
 } // namespace engine::runtime

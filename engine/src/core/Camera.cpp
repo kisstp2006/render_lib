@@ -53,6 +53,13 @@ glm::mat4 Camera::GetView() const
 
 glm::mat4 Camera::GetProjection(float aspectRatio) const
 {
+    if (Projection == CameraProjection::Orthographic)
+    {
+        const float halfHeight = glm::max(OrthographicSize * 0.5f, 0.001f);
+        const float halfWidth = halfHeight * glm::max(aspectRatio, 0.001f);
+        return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight,
+                          NearPlane, FarPlane);
+    }
     return glm::perspective(glm::radians(FovDegrees), aspectRatio, NearPlane, FarPlane);
 }
 

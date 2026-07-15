@@ -42,7 +42,8 @@ public:
     static constexpr int kPrefilterMips = 5;
 
 private:
-    void Bake(const DirectionalLight& sun, const SkySettings& sky, const EnvironmentSettings& environment);
+    void Bake(const DirectionalLight& sun, const SkySettings& sky,
+              const EnvironmentSettings& environment, bool fastUpdate);
     unsigned int GetOrCreatePanorama(const std::shared_ptr<HdrImageData>& image);
 
     unsigned int m_envCubemap = 0;        // 256^2, mipmapped for prefilter source
