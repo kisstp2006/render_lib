@@ -528,6 +528,34 @@ bool Application::RunOneFrame()
                                         std::to_string(visibility.HismInstancesCulled));
                 m_debugOverlay.SetValue("HISM", "LEAF TESTS",
                                         std::to_string(visibility.HismLeafTests));
+                const GeometryBatchingStatistics& batching =
+                    m_sceneRenderer.GetBatchingStatistics();
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "SOURCE INSTANCES",
+                                        std::to_string(batching.SourceInstances));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "EFFECTIVE INSTANCES",
+                                        std::to_string(batching.EffectiveInstances));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "STATIC BATCHES",
+                                        std::to_string(batching.StaticBatches));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "DYNAMIC BATCHES",
+                                        std::to_string(batching.DynamicBatches));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "DRAWS SAVED",
+                                        std::to_string(batching.DrawCallsSaved));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "CACHE HITS",
+                                        std::to_string(batching.CacheHits));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "REBUILT",
+                                        std::to_string(batching.RebuiltBatches));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "REJECTED",
+                                        std::to_string(batching.RejectedBatches));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "RECYCLED",
+                                        std::to_string(batching.RecycledBatches));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "TO INSTANCING",
+                                        std::to_string(batching.DeferredToInstancing));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "VERTICES",
+                                        std::to_string(batching.CombinedVertices));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "INDICES",
+                                        std::to_string(batching.CombinedIndices));
+                m_debugOverlay.SetValue("GEOMETRY BATCHING", "CPU TIME",
+                                        std::to_string(batching.BuildMilliseconds) + " MS");
                 m_debugOverlay.Update(metrics, profiler.Snapshot(), memoryProfiler.Snapshot(),
                                       gpuProfile);
             }

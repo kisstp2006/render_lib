@@ -29,6 +29,7 @@ engine_add_module(engine_renderer_opengl
         engine_scene
         engine_renderer_core
     PRIVATE_DEPS
+        engine_shader_compiler
         engine_render_tools
         engine_third_party
         glad_gl_core46)

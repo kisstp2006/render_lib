@@ -105,6 +105,42 @@ endif()
 
 add_test(NAME engine_renderer_core COMMAND engine_tests)
 
+find_program(ENGINE_DXC_EXECUTABLE NAMES dxc
+    HINTS "$ENV{VULKAN_SDK}/Bin")
+if(WIN32)
+    file(GLOB ENGINE_WINDOWS_SDK_X64_BIN_DIRS
+        "C:/Program Files (x86)/Windows Kits/10/bin/*/x64")
+    find_program(ENGINE_FXC_EXECUTABLE NAMES fxc
+        HINTS ${ENGINE_WINDOWS_SDK_X64_BIN_DIRS})
+endif()
+if(ENGINE_DXC_EXECUTABLE)
+    set(HLSL_VALIDATION_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ValidateHlsl.cmake)
+    set(HLSL_VALIDATION_OUTPUT ${CMAKE_BINARY_DIR}/hlsl-validation)
+    set(HLSL_VALIDATION_COMMAND
+        ${CMAKE_COMMAND}
+        -DHLSL_ROOT=${CMAKE_SOURCE_DIR}/shaders/hlsl
+        -DOUTPUT_DIR=${HLSL_VALIDATION_OUTPUT}
+        -DDXC_EXECUTABLE=${ENGINE_DXC_EXECUTABLE})
+    if(ENGINE_FXC_EXECUTABLE)
+        list(APPEND HLSL_VALIDATION_COMMAND -DFXC_EXECUTABLE=${ENGINE_FXC_EXECUTABLE})
+    endif()
+    list(APPEND HLSL_VALIDATION_COMMAND -P ${HLSL_VALIDATION_SCRIPT})
+
+    add_custom_target(validate_hlsl
+        COMMAND ${HLSL_VALIDATION_COMMAND}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        USES_TERMINAL
+        COMMENT "Validating all HLSL entry points for DirectX 11 and DirectX 12")
+    set_target_properties(validate_hlsl PROPERTIES FOLDER "Tests/Shaders")
+    add_test(NAME engine_hlsl_validation COMMAND ${HLSL_VALIDATION_COMMAND})
+    set_tests_properties(engine_hlsl_validation PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        LABELS "shader;hlsl;directx"
+        TIMEOUT 180)
+else()
+    message(STATUS "DXC not found; DirectX HLSL validation target is disabled")
+endif()
+
 add_executable(engine_editor_foundation_tests src/EditorFoundationTests.cpp)
 set_target_properties(engine_editor_foundation_tests PROPERTIES FOLDER "Tests")
 target_link_libraries(engine_editor_foundation_tests PRIVATE engine)

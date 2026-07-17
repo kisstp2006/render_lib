@@ -3,6 +3,7 @@
 #include "engine/asset/AssetFileSystem.h"
 #include "engine/asset/GltfLoader.h"
 #include "engine/resource/BinaryIO.h"
+#include "engine/scene/MeshCombiner.h"
 #include "engine/scene/Scene.h"
 
 #include <cgltf.h>
@@ -16,6 +17,7 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 namespace engine::assets
 {
@@ -1230,6 +1232,7 @@ bool RegisterModelAssetTypes(AssetTypeRegistry &registry, resources::ResourceMan
         double cacheAcmrBefore = 0.0;
         double cacheAcmrAfter = 0.0;
         uint64_t optimizedParts = 0;
+        std::vector<Material> partMaterials;
         for (const MeshInstance &instance : scene.Instances())
         {
             if (!instance.Mesh || instance.Mesh->Vertices.empty() || instance.Mesh->Indices.empty())
@@ -1255,7 +1258,7 @@ bool RegisterModelAssetTypes(AssetTypeRegistry &registry, resources::ResourceMan
                 }
                 part.Transform = glm::mat4(1);
             }
-            if (settings.OptimizeIndices || settings.WeldVertices)
+            if (!settings.MergeMeshes && (settings.OptimizeIndices || settings.WeldVertices))
             {
                 cook::MeshOptimizationReport report;
                 if (!cook::OptimizeMesh(*part.Mesh, settings.WeldVertices, &report, transformError))
@@ -1264,7 +1267,7 @@ bool RegisterModelAssetTypes(AssetTypeRegistry &registry, resources::ResourceMan
                 cacheAcmrAfter += report.VertexCacheAcmrAfter;
                 ++optimizedParts;
             }
-            if (settings.GenerateLods && settings.LodCount > 1)
+            if (!settings.MergeMeshes && settings.GenerateLods && settings.LodCount > 1)
             {
                 std::vector<cook::MeshLod> lods;
                 if (!cook::GenerateMeshLods(*part.Mesh, settings.LodCount, settings.LodTriangleRatio,
@@ -1293,6 +1296,7 @@ bool RegisterModelAssetTypes(AssetTypeRegistry &registry, resources::ResourceMan
                 }
             }
             data.Parts.push_back(std::move(part));
+            partMaterials.push_back(instance.Mat);
             ++partIndex;
         }
         if (data.Parts.empty())
@@ -1300,6 +1304,108 @@ bool RegisterModelAssetTypes(AssetTypeRegistry &registry, resources::ResourceMan
             if (transformError)
                 *transformError = "Model contains no triangle primitives";
             return false;
+        }
+        const uint64_t sourcePartCount = data.Parts.size();
+        if (settings.MergeMeshes)
+        {
+            std::vector<std::vector<size_t>> groups;
+            std::unordered_map<uint64_t, std::vector<size_t>> groupBuckets;
+            for (size_t index = 0; index < data.Parts.size(); ++index)
+            {
+                const uint64_t materialHash = MaterialRenderStateHash(partMaterials[index]);
+                size_t groupIndex = groups.size();
+                if (const auto found = groupBuckets.find(materialHash);
+                    found != groupBuckets.end())
+                {
+                    for (size_t candidate : found->second)
+                    {
+                        if (MaterialRenderStatesEqual(
+                                partMaterials[groups[candidate].front()], partMaterials[index]))
+                        {
+                            groupIndex = candidate;
+                            break;
+                        }
+                    }
+                }
+                if (groupIndex == groups.size())
+                {
+                    groups.push_back({});
+                    groupBuckets[materialHash].push_back(groupIndex);
+                }
+                groups[groupIndex].push_back(index);
+            }
+
+            std::vector<StaticMeshPart> mergedParts;
+            mergedParts.reserve(groups.size());
+            for (const std::vector<size_t> &group : groups)
+            {
+                StaticMeshPart merged;
+                if (group.size() == 1)
+                    merged = std::move(data.Parts[group.front()]);
+                else
+                {
+                    merged.Material = data.Parts[group.front()].Material;
+                    merged.MaterialSlot = data.Parts[group.front()].MaterialSlot;
+                    std::vector<MeshCombineSource> sources;
+                    sources.reserve(group.size());
+                    for (size_t index : group)
+                        sources.push_back({data.Parts[index].Mesh.get(),
+                                           data.Parts[index].Transform});
+                    MeshData combined;
+                    if (!CombineMeshes(sources, combined, nullptr, transformError))
+                        return false;
+                    merged.Mesh = std::make_shared<MeshData>(std::move(combined));
+                    merged.Transform = glm::mat4(1.0f);
+                    merged.Lods.clear();
+                }
+                mergedParts.push_back(std::move(merged));
+            }
+            data.Parts = std::move(mergedParts);
+
+            for (StaticMeshPart &part : data.Parts)
+            {
+                if (settings.OptimizeIndices || settings.WeldVertices)
+                {
+                    cook::MeshOptimizationReport report;
+                    if (!cook::OptimizeMesh(*part.Mesh, settings.WeldVertices,
+                                            &report, transformError))
+                        return false;
+                    cacheAcmrBefore += report.VertexCacheAcmrBefore;
+                    cacheAcmrAfter += report.VertexCacheAcmrAfter;
+                    ++optimizedParts;
+                }
+                if (settings.GenerateLods && settings.LodCount > 1)
+                {
+                    std::vector<cook::MeshLod> lods;
+                    if (!cook::GenerateMeshLods(*part.Mesh, settings.LodCount,
+                                                settings.LodTriangleRatio,
+                                                settings.LodTargetError,
+                                                settings.LodAggressive, lods,
+                                                transformError))
+                        return false;
+                    if (lods.size() > 1)
+                        part.Lods.assign(std::make_move_iterator(lods.begin() + 1),
+                                         std::make_move_iterator(lods.end()));
+                }
+            }
+
+            first = true;
+            for (const StaticMeshPart &part : data.Parts)
+                for (const Vertex &vertex : part.Mesh->Vertices)
+                {
+                    const glm::vec3 position = glm::vec3(
+                        part.Transform * glm::vec4(vertex.Position, 1.0f));
+                    if (first)
+                    {
+                        data.BoundsMinimum = data.BoundsMaximum = position;
+                        first = false;
+                    }
+                    else
+                    {
+                        data.BoundsMinimum = glm::min(data.BoundsMinimum, position);
+                        data.BoundsMaximum = glm::max(data.BoundsMaximum, position);
+                    }
+                }
         }
         if (settings.Collision != cook::CollisionType::None)
         {
@@ -1324,6 +1430,8 @@ bool RegisterModelAssetTypes(AssetTypeRegistry &registry, resources::ResourceMan
         output.Payload = EncodeMesh(data);
         output.AssetDependencies = descriptor.AssetDependencies;
         output.Statistics["parts"] = data.Parts.size();
+        output.Statistics["source_parts"] = sourcePartCount;
+        output.Statistics["merged_parts"] = sourcePartCount - data.Parts.size();
         uint64_t vertices = 0, triangles = 0;
         uint64_t lodVertices = 0, lodTriangles = 0;
         uint64_t maximumLodLevels = 1;

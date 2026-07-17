@@ -130,6 +130,10 @@ WorldRenderSyncResult WorldRenderBridge::Synchronize(World& world, Scene& scene,
                 instance.CastsShadows = component->CastsShadows;
                 instance.AlwaysVisible = component->AlwaysVisible;
                 instance.AllowInstancing = component->AllowInstancing;
+                instance.Mobility = component->Static
+                    ? MeshMobility::Static : MeshMobility::Movable;
+                instance.AllowBatching = component->AllowBatching;
+                instance.BatchGroupId = component->BatchGroupId;
                 instance.MaxDrawDistance = component->MaxDrawDistance;
                 ++result.MeshRenderers;
             }

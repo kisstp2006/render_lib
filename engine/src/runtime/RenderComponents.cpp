@@ -85,6 +85,10 @@ bool RegisterBuiltinRenderComponents(ComponentRegistry& registry, std::string* e
         MakeProperty("CastsShadows", &MeshRendererComponent::CastsShadows),
         MakeProperty("AlwaysVisible", &MeshRendererComponent::AlwaysVisible),
         MakeProperty("AllowInstancing", &MeshRendererComponent::AllowInstancing),
+        MakeProperty("Static", &MeshRendererComponent::Static),
+        MakeProperty("AllowBatching", &MeshRendererComponent::AllowBatching),
+        MakeProperty("BatchGroupId", &MeshRendererComponent::BatchGroupId,
+                     Range("Batch group", 0.0, 4294967295.0, 1.0)),
         MakeProperty("MaxDrawDistance", &MeshRendererComponent::MaxDrawDistance,
                      Range("Maximum draw distance", 0.0, 100000.0, 1.0))
     }, error)) return false;

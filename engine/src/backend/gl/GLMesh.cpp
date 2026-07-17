@@ -9,7 +9,6 @@
 namespace engine {
 
 GLMesh::GLMesh(const MeshData& data)
-    : m_indexCount(static_cast<int>(data.Indices.size()))
 {
     glGenVertexArrays(1, &m_vao);
     glGenBuffers(1, &m_vbo);
@@ -22,11 +21,9 @@ GLMesh::GLMesh(const MeshData& data)
 
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     gl_debug::LabelObject(GL_BUFFER, m_vbo, baseName + " Vertex Buffer");
-    glBufferData(GL_ARRAY_BUFFER, static_cast<long long>(data.Vertices.size() * sizeof(Vertex)), data.Vertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
     gl_debug::LabelObject(GL_BUFFER, m_ebo, baseName + " Index Buffer");
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<long long>(data.Indices.size() * sizeof(uint32_t)), data.Indices.data(), GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, Position)));
@@ -40,6 +37,7 @@ GLMesh::GLMesh(const MeshData& data)
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, UV)));
 
+    Upload(data);
     glBindVertexArray(0);
 }
 
@@ -59,8 +57,33 @@ void GLMesh::Draw() const
 void GLMesh::DrawInstanced(uint32_t instanceCount, uint32_t firstInstance) const
 {
     glBindVertexArray(m_vao);
-    glDrawElementsInstancedBaseInstance(GL_TRIANGLES, m_indexCount,
-        GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(instanceCount), firstInstance);
+    // HLSL has no portable OpenGL BaseInstance semantic. The native SPIR-V
+    // vertex shaders receive firstInstance through their small constant block.
+    (void)firstInstance;
+    glDrawElementsInstanced(GL_TRIANGLES, m_indexCount,
+        GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(instanceCount));
+}
+
+void GLMesh::EnsureUpToDate(const MeshData& data)
+{
+    if (m_revision != data.Revision)
+        Upload(data);
+}
+
+void GLMesh::Upload(const MeshData& data)
+{
+    const GLenum usage = data.RuntimeMutable ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
+    glBindVertexArray(m_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(data.Vertices.size() * sizeof(Vertex)),
+        data.Vertices.data(), usage);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(data.Indices.size() * sizeof(uint32_t)),
+        data.Indices.data(), usage);
+    m_indexCount = static_cast<int>(data.Indices.size());
+    m_revision = data.Revision;
 }
 
 } // namespace engine

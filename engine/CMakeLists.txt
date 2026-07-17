@@ -31,6 +31,7 @@ add_subdirectory(modules/Assets)
 add_subdirectory(modules/Runtime)
 add_subdirectory(modules/RenderTools)
 add_subdirectory(modules/RendererCore)
+add_subdirectory(modules/ShaderCompiler)
 add_subdirectory(modules/RendererOpenGL)
 if(ENGINE_BUILD_VULKAN)
     add_subdirectory(modules/RendererVulkan)
@@ -58,6 +59,7 @@ target_link_libraries(engine PUBLIC
     engine_runtime
     engine_render_tools
     engine_renderer_core
+    engine_shader_compiler
     engine_renderer_opengl
     engine_application)
 if(ENGINE_BUILD_VULKAN)

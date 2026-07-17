@@ -31,9 +31,9 @@ struct SandboxSceneConfig
     float FxaaSubpixel = 0.75f;
     float FxaaEdgeThreshold = 0.125f;
     float FxaaEdgeThresholdMin = 0.0312f;
-    float TaaHistoryWeight = 0.92f;
-    float TaaSharpen = 0.12f;
-    float TaaJitterScale = 1.0f;
+    float TaaHistoryWeight = 0.95f;
+    float TaaSharpen = 0.06f;
+    float TaaJitterScale = 0.5f;
     float TaaDepthThreshold = 0.0025f;
     float SunAzimuthDegrees = 255.0f;
     float SunElevationDegrees = 15.0f;

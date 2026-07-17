@@ -156,24 +156,24 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
-    const std::string shaderDir = ENGINE_SHADER_DIR;
-    const std::string fullscreen = shaderDir + "/gl/common/fullscreen.vert";
-    m_pbrShader = std::make_unique<GLShader>(shaderDir + "/gl/lighting/pbr.vert", shaderDir + "/gl/lighting/pbr.frag");
-    m_shadowShader = std::make_unique<GLShader>(shaderDir + "/gl/lighting/shadow.vert", shaderDir + "/gl/lighting/shadow.frag");
-    m_pointShadowShader = std::make_unique<GLShader>(shaderDir + "/gl/lighting/point_shadow.vert", shaderDir + "/gl/lighting/point_shadow.frag");
-    m_skyShader = std::make_unique<GLShader>(shaderDir + "/gl/environment/sky.vert", shaderDir + "/gl/environment/sky.frag");
-    m_bloomDownShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/post/bloom_downsample.frag");
-    m_bloomUpShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/post/bloom_upsample.frag");
-    m_taaShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/post/taa_resolve.frag");
-    m_fxaaShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/post/fxaa.frag");
-    m_postShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/post/post.frag");
-    m_debugOverlayShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/gl/debug/overlay.frag");
-    m_boundsDebugShader = std::make_unique<GLShader>(shaderDir + "/gl/debug/bounds.vert",
-                                                     shaderDir + "/gl/debug/bounds.frag");
+    const std::string shaderDir = std::string(ENGINE_SHADER_DIR) + "/hlsl/opengl";
+    const std::string fullscreen = shaderDir + "/common/fullscreen.vert.hlsl";
+    m_pbrShader = std::make_unique<GLShader>(shaderDir + "/lighting/pbr.vert.hlsl", shaderDir + "/lighting/pbr.frag.hlsl");
+    m_shadowShader = std::make_unique<GLShader>(shaderDir + "/lighting/shadow.vert.hlsl", shaderDir + "/lighting/shadow.frag.hlsl");
+    m_pointShadowShader = std::make_unique<GLShader>(shaderDir + "/lighting/point_shadow.vert.hlsl", shaderDir + "/lighting/point_shadow.frag.hlsl");
+    m_skyShader = std::make_unique<GLShader>(shaderDir + "/environment/sky.vert.hlsl", shaderDir + "/environment/sky.frag.hlsl");
+    m_bloomDownShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/post/bloom_downsample.frag.hlsl");
+    m_bloomUpShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/post/bloom_upsample.frag.hlsl");
+    m_taaShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/post/taa_resolve.frag.hlsl");
+    m_fxaaShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/post/fxaa.frag.hlsl");
+    m_postShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/post/post.frag.hlsl");
+    m_debugOverlayShader = std::make_unique<GLShader>(fullscreen, shaderDir + "/debug/overlay.frag.hlsl");
+    m_boundsDebugShader = std::make_unique<GLShader>(shaderDir + "/debug/bounds.vert.hlsl",
+                                                     shaderDir + "/debug/bounds.frag.hlsl");
     m_hizBuildShader = std::make_unique<GLShader>(
-        shaderDir + "/gl/visibility/hiz_build.comp");
+        shaderDir + "/visibility/hiz_build.comp.hlsl");
     m_occlusionTestShader = std::make_unique<GLShader>(
-        shaderDir + "/gl/visibility/occlusion_test.comp");
+        shaderDir + "/visibility/occlusion_test.comp.hlsl");
     m_environment = std::make_unique<GLEnvironment>(shaderDir);
 
     glGenVertexArrays(1, &m_emptyVao);
@@ -364,7 +364,10 @@ void GLRenderBackend::Resize(int width, int height)
 GLMesh& GLRenderBackend::GetOrCreateMesh(const std::shared_ptr<MeshData>& data)
 {
     if (const auto found = m_meshCache.find(data); found != m_meshCache.end())
+    {
+        found->second->EnsureUpToDate(*data);
         return *found->second;
+    }
     auto mesh = std::make_unique<GLMesh>(*data);
     GLMesh& result = *mesh;
     m_meshCache.emplace(data, std::move(mesh));

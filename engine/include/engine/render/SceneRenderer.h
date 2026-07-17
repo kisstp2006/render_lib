@@ -10,6 +10,7 @@
 #include <glm/glm.hpp>
 
 #include "engine/render/CascadedShadows.h"
+#include "engine/render/Batching.h"
 #include "engine/backend/IRenderBackend.h"
 #include "engine/render/Visibility.h"
 #include "engine/scene/Environment.h"
@@ -125,6 +126,7 @@ struct RenderFrameData
     std::vector<VisibilityDebugBounds> VisibilityDebug;
     std::vector<DebugLine> DebugLines;
     VisibilityStatistics Visibility{};
+    GeometryBatchingStatistics Batching{};
     FramePreparationStatistics Preparation{};
     float TonemapWhitePointScale = 1.0f;
     const debug::DebugOverlayImage* DebugOverlay = nullptr;
@@ -147,6 +149,7 @@ public:
     void ResetFrameHistory()
     {
         m_frame = {};
+        m_batcher.Reset();
     }
     void SetTaskSystem(concurrency::TaskSystem* tasks)
     {
@@ -155,6 +158,10 @@ public:
     const VisibilityStatistics& GetVisibilityStatistics() const noexcept
     {
         return m_frame.Visibility;
+    }
+    const GeometryBatchingStatistics& GetBatchingStatistics() const noexcept
+    {
+        return m_frame.Batching;
     }
 
     const RenderFrameData& PrepareFrame(const Scene& scene, const Camera& camera,
@@ -197,6 +204,7 @@ private:
         std::weak_ptr<MeshData> Owner;
         const void* VertexData = nullptr;
         size_t VertexCount = 0;
+        uint64_t Revision = 0;
         AxisAlignedBounds Bounds;
     };
 
@@ -208,6 +216,7 @@ private:
     std::vector<RegisteredWork> m_registeredWork;
     uint64_t m_nextWorkToken = 1;
     std::unordered_map<const MeshData*, CachedMeshBounds> m_boundsCache;
+    SceneBatcher m_batcher;
     RenderFrameData m_frame;
 };
 

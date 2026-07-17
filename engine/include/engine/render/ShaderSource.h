@@ -12,7 +12,7 @@ struct ShaderSourceDocument
     std::vector<std::filesystem::path> Dependencies;
 };
 
-// Loads a GLSL source tree and expands quoted #include directives. Include
+// Loads a shader source tree and expands quoted #include directives. Include
 // paths are resolved relative to the including file first, then against the
 // supplied roots. Both graphics backends use this so include behavior and
 // diagnostics stay identical.

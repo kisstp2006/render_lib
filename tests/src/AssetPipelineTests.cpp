@@ -424,6 +424,13 @@ void WriteTriangleGltf(const std::filesystem::path &directory)
         R"({"asset":{"version":"2.0"},"buffers":[{"uri":"triangle.bin","byteLength":102}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":24},{"buffer":0,"byteOffset":96,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},{"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}],"images":[{"uri":"triangle.ppm"}],"textures":[{"source":0}],"materials":[{"name":"TriangleMaterial","pbrMetallicRoughness":{"baseColorTexture":{"index":0},"metallicFactor":0.2,"roughnessFactor":0.6}}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})");
 }
 
+void WriteCombinedTriangleGltf(const std::filesystem::path &directory)
+{
+    WriteText(
+        directory / "combined.gltf",
+        R"({"asset":{"version":"2.0"},"buffers":[{"uri":"triangle.bin","byteLength":102}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":24},{"buffer":0,"byteOffset":96,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},{"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}],"images":[{"uri":"triangle.ppm"}],"textures":[{"source":0}],"materials":[{"name":"CombinedMaterial","pbrMetallicRoughness":{"baseColorTexture":{"index":0},"metallicFactor":0.2,"roughnessFactor":0.6}}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],"nodes":[{"mesh":0},{"mesh":0,"translation":[2,0,0]}],"scenes":[{"nodes":[0,1]}],"scene":0})");
+}
+
 AssetGuid TestModel(TestContext &context)
 {
     const glm::mat4 identity =
@@ -496,6 +503,44 @@ AssetGuid TestModel(TestContext &context)
                 runtime->Parts[0].Mesh->Indices.size() == 3 && runtime->Collision.Meshes.size() == 1 &&
                 !runtime->Collision.Meshes.front().Bvh.empty(),
             "runtime static mesh must load optimized geometry and versioned collision BVH payload");
+
+    WriteCombinedTriangleGltf(context.Root / "Source");
+    const ImportResult combinedImport = context.Pipeline.CreateAssetFromSource(
+        context.Root / "Source/combined.gltf", {}, kStaticMeshAssetType);
+    AssetGuid combinedGuid;
+    for (const ImportedAsset &asset : combinedImport.GeneratedAssets)
+        if (asset.Descriptor.Type == kStaticMeshAssetType)
+            combinedGuid = asset.Descriptor.Guid;
+    Require(combinedImport.Succeeded && combinedGuid.IsValid(),
+            "offline mesh-combining test model must import");
+    auto combinedRecord = context.Database.Find(combinedGuid);
+    Require(combinedRecord.has_value(), "combined mesh descriptor must be indexed");
+    StaticMeshAssetSettings combinedSettings =
+        ReadStaticMeshAssetSettings(combinedRecord->Descriptor);
+    combinedSettings.MergeMeshes = true;
+    combinedSettings.OptimizeIndices = true;
+    WriteStaticMeshAssetSettings(combinedRecord->Descriptor, combinedSettings);
+    Require(SaveAssetDescriptor(combinedRecord->DescriptorPath,
+                                combinedRecord->Descriptor, &error) &&
+                context.Database.AddOrUpdate(combinedRecord->DescriptorPath,
+                                             combinedRecord->Descriptor, &error),
+            error.c_str());
+    const AssetTransformResult combinedTransform =
+        context.Pipeline.TransformAsset(combinedGuid);
+    Require(combinedTransform.Succeeded &&
+                combinedTransform.Statistics.at("source_parts") == 2 &&
+                combinedTransform.Statistics.at("parts") == 1 &&
+                combinedTransform.Statistics.at("merged_parts") == 1,
+            "Merge Meshes must collapse compatible transformed primitives offline");
+    const auto combinedRuntime =
+        context.Resources.Load<StaticMeshData>(combinedGuid, &error);
+    Require(combinedRuntime && combinedRuntime->Parts.size() == 1 &&
+                combinedRuntime->Parts[0].Mesh->Vertices.size() == 6 &&
+                combinedRuntime->Parts[0].Mesh->Indices.size() == 6 &&
+                std::abs(combinedRuntime->Parts[0].Transform[0][0] - 1.0f) < 1.0e-6f &&
+                glm::length(glm::vec3(combinedRuntime->Parts[0].Transform[3])) < 1.0e-6f &&
+                combinedRuntime->BoundsMaximum.x > 2.9f,
+            "cooked combined geometry must bake node transforms and round-trip");
     return mesh;
 }
 

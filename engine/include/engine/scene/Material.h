@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 #include <glm/glm.hpp>
@@ -34,5 +35,12 @@ struct Material
     AlphaMode Alpha = AlphaMode::Opaque;
     float AlphaCutoff = 0.5f;
 };
+
+// Exact render-state identity shared by geometry batching, GPU instancing and
+// offline asset combining. Pointer identity is intentional for texture slots:
+// GPU resource caches use the same shared CPU texture objects.
+uint64_t MaterialRenderStateHash(const Material& material) noexcept;
+bool MaterialRenderStatesEqual(const Material& left,
+                               const Material& right) noexcept;
 
 } // namespace engine

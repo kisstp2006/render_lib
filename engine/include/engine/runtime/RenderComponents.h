@@ -31,6 +31,9 @@ struct MeshRendererComponent
     bool CastsShadows = true;
     bool AlwaysVisible = false;
     bool AllowInstancing = true;
+    bool Static = true;
+    bool AllowBatching = true;
+    uint64_t BatchGroupId = 0;
     float MaxDrawDistance = 0.0f;
     // Runtime resolver cache keys; intentionally not reflected/serialized.
     assets::AssetGuid ResolvedMeshAsset;

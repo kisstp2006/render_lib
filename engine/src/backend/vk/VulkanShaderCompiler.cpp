@@ -3,8 +3,7 @@
 #include "engine/backend/vk/VulkanResources.h"
 #include "engine/core/Log.h"
 #include "engine/render/ShaderSource.h"
-
-#include <shaderc/shaderc.hpp>
+#include "engine/shader/HlslCompiler.h"
 
 #include <fstream>
 #include <chrono>
@@ -13,15 +12,15 @@
 namespace engine::vulkan {
 namespace {
 
-shaderc_shader_kind ShaderKind(const std::filesystem::path& path)
+shader::Stage ShaderStage(const std::filesystem::path& path)
 {
-    const std::string extension = path.extension().string();
-    if (extension == ".vert")
-        return shaderc_vertex_shader;
-    if (extension == ".frag")
-        return shaderc_fragment_shader;
-    if (extension == ".comp")
-        return shaderc_compute_shader;
+    const std::string filename = path.filename().string();
+    if (filename.ends_with(".vert.hlsl"))
+        return shader::Stage::Vertex;
+    if (filename.ends_with(".frag.hlsl"))
+        return shader::Stage::Fragment;
+    if (filename.ends_with(".comp.hlsl"))
+        return shader::Stage::Compute;
     throw std::runtime_error("Vulkan: unsupported runtime shader stage: " + path.string());
 }
 
@@ -46,7 +45,7 @@ bool CacheIsValid(const std::filesystem::path& cachePath)
 }
 
 void WriteSpirv(const std::filesystem::path& cachePath,
-                const shaderc::SpvCompilationResult& result)
+                const std::vector<uint32_t>& spirv)
 {
     std::error_code error;
     std::filesystem::create_directories(cachePath.parent_path(), error);
@@ -58,7 +57,7 @@ void WriteSpirv(const std::filesystem::path& cachePath,
     if (!output)
         throw std::runtime_error("Vulkan: cannot write runtime shader cache: "
                                  + cachePath.string());
-    for (const uint32_t word : result)
+    for (const uint32_t word : spirv)
         output.write(reinterpret_cast<const char*>(&word), sizeof(word));
     if (!output)
         throw std::runtime_error("Vulkan: failed while writing runtime shader cache: "
@@ -83,8 +82,9 @@ VkShaderModule CompileAndLoadShaderModule(
 #else
     constexpr std::string_view buildMode = "debug";
 #endif
-    const std::string target = "vulkan-1.3-spirv-1.6-performance-" + std::string(buildMode) +
-        "-" + sourcePath.extension().string();
+    const shader::Stage stage = ShaderStage(sourcePath);
+    const std::string target = "vulkan-1.3-spirv-1.6-performance-hlsl-" +
+        std::string(buildMode) + "-" + shader::StageName(stage);
     const std::string permutationKey = BuildShaderPermutationKey(
         source.Source, canonicalDefines, target);
     const std::filesystem::path keyedCachePath = cachePath.parent_path() /
@@ -111,27 +111,17 @@ VkShaderModule CompileAndLoadShaderModule(
     if (!cacheHit)
     {
         const auto compileBegin = std::chrono::steady_clock::now();
-        shaderc::Compiler compiler;
-        shaderc::CompileOptions options;
-        options.SetSourceLanguage(shaderc_source_language_glsl);
-        options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-        options.SetTargetSpirv(shaderc_spirv_version_1_6);
-        options.SetOptimizationLevel(shaderc_optimization_level_performance);
+        shader::HlslCompileRequest request;
+        request.SourcePath = sourcePath;
+        request.ShaderStage = stage;
+        request.Target = shader::SpirvTarget::Vulkan13;
+        request.Defines = canonicalDefines;
+        request.Optimize = true;
 #ifndef NDEBUG
-        options.SetGenerateDebugInfo();
+        request.GenerateDebugInfo = true;
 #endif
-
-        const std::string sourceName = sourcePath.string();
-        const std::string permutationSource = ApplyShaderDefines(source.Source, canonicalDefines);
-        const shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
-            permutationSource, ShaderKind(sourcePath), sourceName.c_str(), "main", options);
-        if (result.GetCompilationStatus() != shaderc_compilation_status_success)
-        {
-            throw std::runtime_error("Vulkan runtime shader compile error ("
-                                     + sourceName + "):\n" + result.GetErrorMessage());
-        }
-
-        WriteSpirv(keyedCachePath, result);
+        const shader::HlslCompileResult result = shader::CompileHlslToSpirv(request);
+        WriteSpirv(keyedCachePath, result.Spirv);
         if (statistics)
         {
             statistics->ShaderCompileMilliseconds +=
@@ -142,7 +132,7 @@ VkShaderModule CompileAndLoadShaderModule(
             if (!sizeError)
                 statistics->CacheBytesSaved += size;
         }
-        log::Info("Runtime-compiled Vulkan shader: " + sourceName);
+        log::Info("Runtime-compiled Vulkan HLSL shader: " + sourcePath.string());
     }
 
     VkShaderModule module = LoadShaderModule(device, keyedCachePath);

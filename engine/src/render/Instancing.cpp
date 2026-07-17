@@ -1,5 +1,6 @@
 #include "engine/render/Instancing.h"
 
+#include "engine/render/Batching.h"
 #include "engine/render/SceneRenderer.h"
 #include "engine/scene/Material.h"
 #include "engine/scene/RenderSettings.h"
@@ -16,7 +17,6 @@ namespace engine
 namespace
 {
 
-constexpr uint64_t kFnvOffset = 1469598103934665603ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 
 void HashWord(uint64_t& hash, uint64_t value) noexcept
@@ -28,51 +28,11 @@ void HashWord(uint64_t& hash, uint64_t value) noexcept
     }
 }
 
-void HashFloat(uint64_t& hash, float value) noexcept
+uint64_t InstanceBatchHash(const MeshInstance& instance) noexcept
 {
-    HashWord(hash, std::bit_cast<uint32_t>(value));
-}
-
-void HashVector(uint64_t& hash, const glm::vec3& value) noexcept
-{
-    HashFloat(hash, value.x);
-    HashFloat(hash, value.y);
-    HashFloat(hash, value.z);
-}
-
-uint64_t MaterialBatchHash(const MeshInstance& instance) noexcept
-{
-    const Material& material = instance.Mat;
-    uint64_t hash = kFnvOffset;
+    uint64_t hash = MaterialRenderStateHash(instance.Mat);
     HashWord(hash, reinterpret_cast<uintptr_t>(instance.Mesh.get()));
-    HashVector(hash, material.Albedo);
-    HashFloat(hash, material.BaseColorAlpha);
-    HashFloat(hash, material.Metallic);
-    HashFloat(hash, material.Roughness);
-    HashVector(hash, material.Emissive);
-    HashFloat(hash, material.AmbientOcclusion);
-    HashFloat(hash, material.SpecularF0);
-    HashWord(hash, reinterpret_cast<uintptr_t>(material.AlbedoMap.get()));
-    HashWord(hash, reinterpret_cast<uintptr_t>(material.NormalMap.get()));
-    HashWord(hash, reinterpret_cast<uintptr_t>(material.MetallicRoughnessMap.get()));
-    HashWord(hash, reinterpret_cast<uintptr_t>(material.OcclusionMap.get()));
-    HashWord(hash, reinterpret_cast<uintptr_t>(material.EmissiveMap.get()));
-    HashWord(hash, reinterpret_cast<uintptr_t>(material.MraoMap.get()));
-    HashWord(hash, static_cast<uint64_t>(material.Alpha));
-    HashFloat(hash, material.AlphaCutoff);
     return hash;
-}
-
-bool EqualVector(const glm::vec3& left, const glm::vec3& right) noexcept
-{
-    return std::bit_cast<uint32_t>(left.x) == std::bit_cast<uint32_t>(right.x) &&
-           std::bit_cast<uint32_t>(left.y) == std::bit_cast<uint32_t>(right.y) &&
-           std::bit_cast<uint32_t>(left.z) == std::bit_cast<uint32_t>(right.z);
-}
-
-bool EqualFloat(float left, float right) noexcept
-{
-    return std::bit_cast<uint32_t>(left) == std::bit_cast<uint32_t>(right);
 }
 
 bool BatchCompatible(const PreparedRenderCommand& left,
@@ -80,23 +40,8 @@ bool BatchCompatible(const PreparedRenderCommand& left,
 {
     const MeshInstance& a = *left.Source;
     const MeshInstance& b = *right.Source;
-    const Material& x = a.Mat;
-    const Material& y = b.Mat;
     return a.Mesh.get() == b.Mesh.get() &&
-           EqualVector(x.Albedo, y.Albedo) &&
-           EqualFloat(x.BaseColorAlpha, y.BaseColorAlpha) &&
-           EqualFloat(x.Metallic, y.Metallic) &&
-           EqualFloat(x.Roughness, y.Roughness) &&
-           EqualVector(x.Emissive, y.Emissive) &&
-           EqualFloat(x.AmbientOcclusion, y.AmbientOcclusion) &&
-           EqualFloat(x.SpecularF0, y.SpecularF0) &&
-           x.AlbedoMap.get() == y.AlbedoMap.get() &&
-           x.NormalMap.get() == y.NormalMap.get() &&
-           x.MetallicRoughnessMap.get() == y.MetallicRoughnessMap.get() &&
-           x.OcclusionMap.get() == y.OcclusionMap.get() &&
-           x.EmissiveMap.get() == y.EmissiveMap.get() &&
-           x.MraoMap.get() == y.MraoMap.get() &&
-           x.Alpha == y.Alpha && EqualFloat(x.AlphaCutoff, y.AlphaCutoff);
+           MaterialRenderStatesEqual(a.Mat, b.Mat);
 }
 
 AxisAlignedBounds UnionBounds(const AxisAlignedBounds& left,
@@ -180,7 +125,7 @@ InstanceBatchBuildResult BuildInstanceBatches(
             groups.push_back({command, {command}});
             continue;
         }
-        const uint64_t hash = MaterialBatchHash(*command->Source);
+        const uint64_t hash = InstanceBatchHash(*command->Source);
         size_t groupIndex = SIZE_MAX;
         if (const auto found = buckets.find(hash); found != buckets.end())
         {

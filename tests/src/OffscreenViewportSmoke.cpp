@@ -15,6 +15,8 @@
 #include <memory>
 #include <string_view>
 
+#include <glm/gtc/matrix_transform.hpp>
+
 using namespace engine;
 
 int main(int argc, char** argv)
@@ -40,15 +42,24 @@ int main(int argc, char** argv)
     else
         backend = std::make_unique<GLRenderBackend>();
     RenderBackendConfig config;
-    config.EnableValidation = false;
+    config.EnableValidation = true;
     config.EnableGpuTiming = false;
     backend->Init(window, config);
 
     Scene scene;
     scene.PostProcess.AutoExposure = false;
+    scene.PostProcess.AntiAliasing = AntiAliasingMode::None;
     scene.Visibility.GpuOcclusionCulling = false;
-    scene.AddInstance(std::make_shared<MeshData>(primitives::MakeCube(1.0f)),
-                      Material{}, glm::mat4(1.0f));
+    scene.Batching.MinimumDynamicBatchSize = 2;
+    scene.Batching.PreferInstancingForRepeatedMeshes = false;
+    const auto cube = std::make_shared<MeshData>(primitives::MakeCube(1.0f));
+    for (int index = 0; index < 2; ++index)
+    {
+        scene.AddInstance(cube, Material{}, glm::translate(
+            glm::mat4(1.0f), {index == 0 ? -1.1f : 1.1f, 0.0f, 0.0f}));
+        scene.Instances().back().Mobility = MeshMobility::Movable;
+        scene.Instances().back().TemporalId = static_cast<uint64_t>(index + 1);
+    }
     Camera camera;
     camera.Position = {0.0f, 0.0f, 5.0f};
     camera.Yaw = -90.0f;
@@ -70,6 +81,9 @@ int main(int argc, char** argv)
     if (!renderer.RenderViewport(*backend, first, scene, camera, 320, 180) ||
         !renderer.RenderViewport(*backend, second, scene, camera, 128, 128))
         return 3;
+    scene.Instances()[0].Transform[3].y += 0.35f;
+    if (!renderer.RenderViewport(*backend, first, scene, camera, 320, 180))
+        return 17;
     const RenderTextureHandle firstTexture = backend->GetViewportTexture(first);
     const RenderTextureHandle secondTexture = backend->GetViewportTexture(second);
     if (!firstTexture || !secondTexture || firstTexture.Width != 320 ||

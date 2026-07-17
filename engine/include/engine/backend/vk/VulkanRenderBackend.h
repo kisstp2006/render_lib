@@ -90,9 +90,11 @@ private:
 
     struct GpuMesh
     {
+        std::shared_ptr<MeshData> Owner;
         vulkan::Buffer VertexBuffer;
         vulkan::Buffer IndexBuffer;
         uint32_t IndexCount = 0;
+        uint64_t Revision = 0;
     };
 
     struct GpuTexture

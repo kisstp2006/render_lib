@@ -78,9 +78,11 @@ struct PostProcessSettings
     float FxaaSubpixel = 0.75f;
     float FxaaEdgeThreshold = 0.125f;
     float FxaaEdgeThresholdMin = 0.0312f;
-    float TaaHistoryWeight = 0.92f;
-    float TaaSharpen = 0.12f;
-    float TaaJitterScale = 1.0f;
+    // Conservative defaults: the Halton sequence remains effective without
+    // introducing visible sub-pixel motion in static editor or sandbox views.
+    float TaaHistoryWeight = 0.95f;
+    float TaaSharpen = 0.06f;
+    float TaaJitterScale = 0.5f;
     float TaaDepthThreshold = 0.0025f;
     bool LogPerformance = false;
 };
@@ -146,6 +148,29 @@ struct InstancingSettings
     bool HierarchicalCulling = true;
     uint32_t HismMinimumGroupSize = 32;
     uint32_t HismLeafSize = 8;
+};
+
+struct GeometryBatchingSettings
+{
+    bool Enabled = true;
+    bool StaticBatching = true;
+    bool DynamicBatching = true;
+    bool PreferInstancingForRepeatedMeshes = true;
+    uint32_t MinimumStaticBatchSize = 2;
+    uint32_t MinimumDynamicBatchSize = 3;
+    // Dynamic batching is deliberately limited to small source meshes. Large
+    // meshes keep their individual culling and GPU-instancing path.
+    uint32_t DynamicMaxSourceVertices = 512;
+    uint32_t MaximumVerticesPerBatch = 65'536;
+    uint32_t MaximumIndicesPerBatch = 196'608;
+    uint32_t MaximumCachedBatches = 2'048;
+    // Spatial cells retain useful frustum/Hi-Z granularity after geometry is
+    // combined. Non-positive values disable spatial partitioning.
+    float SpatialCellSize = 32.0f;
+    // With TAA active, movable objects must remain unchanged for this many
+    // frames before they are safely baked into a dynamic batch.
+    uint32_t DynamicStabilityFrames = 2;
+    bool PreserveMotionVectors = true;
 };
 
 } // namespace engine

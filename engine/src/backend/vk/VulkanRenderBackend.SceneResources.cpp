@@ -174,13 +174,16 @@ const VulkanRenderBackend::GpuMesh& VulkanRenderBackend::GetOrCreateMesh(const s
 {
     if (!mesh || mesh->Vertices.empty() || mesh->Indices.empty())
         throw std::runtime_error("Vulkan: cannot upload an empty mesh");
-    if (const auto found = m_meshCache.find(mesh.get()); found != m_meshCache.end())
+    const auto found = m_meshCache.find(mesh.get());
+    if (found != m_meshCache.end() && found->second.Revision == mesh->Revision)
         return found->second;
 
     const VkDeviceSize vertexBytes = mesh->Vertices.size() * sizeof(Vertex);
     const VkDeviceSize indexBytes = mesh->Indices.size() * sizeof(uint32_t);
 
     GpuMesh gpuMesh;
+    gpuMesh.Owner = mesh;
+    gpuMesh.Revision = mesh->Revision;
     const size_t meshId = m_meshCache.size();
     try
     {
@@ -208,7 +211,18 @@ const VulkanRenderBackend::GpuMesh& VulkanRenderBackend::GetOrCreateMesh(const s
         throw;
     }
 
-    return m_meshCache.emplace(mesh.get(), std::move(gpuMesh)).first->second;
+    if (found == m_meshCache.end())
+        return m_meshCache.emplace(mesh.get(), std::move(gpuMesh)).first->second;
+
+    GpuMesh previous = std::move(found->second);
+    found->second = std::move(gpuMesh);
+    m_deferredRelease.Enqueue(m_gpuProfileFrameIndex + kFramesInFlight,
+        [this, vertex = previous.VertexBuffer,
+         index = previous.IndexBuffer]() mutable {
+            m_resources.Destroy(vertex);
+            m_resources.Destroy(index);
+        });
+    return found->second;
 }
 
 const VulkanRenderBackend::GpuTexture& VulkanRenderBackend::GetOrCreateTexture(

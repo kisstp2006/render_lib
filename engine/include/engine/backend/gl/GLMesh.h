@@ -17,10 +17,13 @@ public:
 
     void Draw() const;
     void DrawInstanced(uint32_t instanceCount, uint32_t firstInstance) const;
+    void EnsureUpToDate(const MeshData& data);
 
 private:
+    void Upload(const MeshData& data);
     unsigned int m_vao = 0, m_vbo = 0, m_ebo = 0;
     int m_indexCount = 0;
+    uint64_t m_revision = 0;
 };
 
 } // namespace engine

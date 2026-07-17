@@ -40,9 +40,9 @@ an application config file.
 ## Adding a permutation
 
 Pass a list of `ShaderDefine` values to `GLShader` or `LoadShader`. The common
-code sorts and validates the definitions before key generation and injects
-them immediately after GLSL's `#version` directive. Call-site order therefore
-does not create duplicate permutations.
+code sorts and validates the definitions before key generation and prepends
+them to HLSL source before compilation. Call-site order therefore does not
+create duplicate permutations.
 
 ```cpp
 const std::vector<engine::ShaderDefine> defines = {

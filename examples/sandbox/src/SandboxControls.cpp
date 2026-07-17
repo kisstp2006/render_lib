@@ -33,6 +33,7 @@ SandboxControls::SandboxControls(Application& app, bool flashlightOn, bool manag
     {
         AnimatedInstanceId = scene.Instances().back().TemporalId;
         AnimatedBaseTransform = scene.Instances().back().Transform;
+        scene.Instances().back().Mobility = MeshMobility::Movable;
     }
 }
 

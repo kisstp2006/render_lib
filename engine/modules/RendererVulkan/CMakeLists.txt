@@ -1,17 +1,3 @@
-find_path(ENGINE_SHADERC_INCLUDE_DIR shaderc/shaderc.hpp
-    HINTS ${Vulkan_INCLUDE_DIRS} "$ENV{VULKAN_SDK}/Include")
-find_library(ENGINE_SHADERC_LIBRARY_RELEASE shaderc_combined
-    HINTS "$ENV{VULKAN_SDK}/Lib")
-find_library(ENGINE_SHADERC_LIBRARY_DEBUG shaderc_combinedd
-    HINTS "$ENV{VULKAN_SDK}/Lib")
-if(NOT ENGINE_SHADERC_INCLUDE_DIR OR NOT ENGINE_SHADERC_LIBRARY_RELEASE)
-    message(FATAL_ERROR
-        "ENGINE_BUILD_VULKAN=ON requires the Vulkan SDK shaderc library for runtime GLSL compilation.")
-endif()
-if(NOT ENGINE_SHADERC_LIBRARY_DEBUG)
-    set(ENGINE_SHADERC_LIBRARY_DEBUG ${ENGINE_SHADERC_LIBRARY_RELEASE})
-endif()
-
 engine_add_module(engine_renderer_vulkan
     FOLDER "Renderer/RendererVulkan"
     ALIAS renderer_vulkan
@@ -45,9 +31,7 @@ engine_add_module(engine_renderer_vulkan
         engine_renderer_core
         Vulkan::Vulkan
     PRIVATE_DEPS
+        engine_shader_compiler
         engine_render_tools
         engine_third_party
-        optimized ${ENGINE_SHADERC_LIBRARY_RELEASE}
-        debug ${ENGINE_SHADERC_LIBRARY_DEBUG}
-    PRIVATE_INCLUDE_DIRS
-        ${ENGINE_SHADERC_INCLUDE_DIR})
+        )

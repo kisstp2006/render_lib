@@ -30,11 +30,13 @@ VkShaderModule VulkanRenderBackend::LoadShader(
     if (m_validationEnabled)
         validationLock.lock();
     const std::filesystem::path shaderRoot =
-        std::filesystem::path(ENGINE_SHADER_DIR) / "vk";
+        std::filesystem::path(ENGINE_SHADER_DIR) / "hlsl" / "vulkan";
+    std::filesystem::path hlslRelativePath = relativePath;
+    hlslRelativePath += ".hlsl";
     const std::filesystem::path cachePath =
         m_shaderCacheDirectory / (relativePath.string() + ".spv");
     VkShaderModule module = vulkan::CompileAndLoadShaderModule(
-        m_device, shaderRoot / relativePath, cachePath,
+        m_device, shaderRoot / hlslRelativePath, cachePath,
         { shaderRoot, std::filesystem::path(ENGINE_SHADER_DIR) }, defines,
         m_config.EnablePipelineCache, statistics ? statistics : &m_pipelineCacheStats);
     SetDebugName(VK_OBJECT_TYPE_SHADER_MODULE, reinterpret_cast<uint64_t>(module),

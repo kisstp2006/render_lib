@@ -24,15 +24,16 @@ namespace engine {
 
 namespace {
 
-constexpr int kUnitAlbedo = 1;
-constexpr int kUnitNormal = 2;
-constexpr int kUnitMrao = 3;
-constexpr int kUnitIrradiance = 4;
-constexpr int kUnitPrefilter = 5;
-constexpr int kUnitBrdfLut = 6;
-constexpr int kUnitEmissive = 8;
-constexpr int kUnitOcclusion = 9;
-constexpr std::array<int, kShadowCascadeCount> kUnitCascades{0, 10, 11, 12};
+constexpr int kUnitAlbedo = 0;
+constexpr int kUnitNormal = 1;
+constexpr int kUnitMrao = 2;
+constexpr int kUnitMetallicRoughness = 15;
+constexpr int kUnitEmissive = 3;
+constexpr int kUnitOcclusion = 4;
+constexpr int kUnitIrradiance = 5;
+constexpr int kUnitPrefilter = 6;
+constexpr int kUnitBrdfLut = 7;
+constexpr std::array<int, kShadowCascadeCount> kUnitCascades{8, 9, 10, 11};
 
 void ApplyGraphBarriers(const rendergraph::CompiledPass& pass)
 {
@@ -182,6 +183,8 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
                     m_shadowShader->SetFloat("uBaseColorAlpha", mat.BaseColorAlpha);
                     m_shadowShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
                     m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
+                    m_shadowShader->SetInt("uBaseInstance",
+                                           static_cast<int>(batch.FirstInstance));
                     BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
                     GetOrCreateMesh(instance.Mesh).DrawInstanced(
                         static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
@@ -257,7 +260,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     m_pbrShader->SetInt("uAlbedoMap", kUnitAlbedo);
     m_pbrShader->SetInt("uNormalMap", kUnitNormal);
     m_pbrShader->SetInt("uMraoMap", kUnitMrao);
-    m_pbrShader->SetInt("uMetallicRoughnessMap", kUnitMrao);
+    m_pbrShader->SetInt("uMetallicRoughnessMap", kUnitMetallicRoughness);
     m_pbrShader->SetInt("uEmissiveMap", kUnitEmissive);
     m_pbrShader->SetInt("uOcclusionMap", kUnitOcclusion);
 
@@ -282,9 +285,13 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         m_pbrShader->SetBool("uHasEmissiveMap", mat.EmissiveMap != nullptr);
         m_pbrShader->SetBool("uAlphaMasked", mat.Alpha == Material::AlphaMode::Mask);
         m_pbrShader->SetFloat("uAlphaCutoff", mat.AlphaCutoff);
+        m_pbrShader->SetInt("uBaseInstance",
+                            static_cast<int>(batch.FirstInstance));
         BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
         BindMaterialTexture(mat.NormalMap, kUnitNormal, *m_defaultNormal);
-        BindMaterialTexture(mat.MetallicRoughnessMap ? mat.MetallicRoughnessMap : mat.MraoMap, kUnitMrao, *m_defaultWhite);
+        BindMaterialTexture(mat.MraoMap, kUnitMrao, *m_defaultWhite);
+        BindMaterialTexture(mat.MetallicRoughnessMap, kUnitMetallicRoughness,
+                            *m_defaultWhite);
         BindMaterialTexture(mat.EmissiveMap, kUnitEmissive, *m_defaultWhite);
         BindMaterialTexture(mat.OcclusionMap, kUnitOcclusion, *m_defaultWhite);
 

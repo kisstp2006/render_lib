@@ -8,7 +8,7 @@
 
 namespace engine::vulkan {
 
-// Stable descriptor contract shared conceptually with shaders/vk. Keeping
+// Stable descriptor contract shared with shaders/hlsl/vulkan. Keeping
 // these indices named prevents pipeline code from scattering magic numbers.
 namespace binding {
 constexpr uint32_t FrameUniforms = 0;

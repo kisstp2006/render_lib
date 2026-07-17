@@ -6,6 +6,7 @@
 #include "engine/debug/RenderDocCapture.h"
 #include "engine/render/CascadedShadows.h"
 #include "engine/render/AsyncRenderResources.h"
+#include "engine/render/Batching.h"
 #include "engine/render/Exposure.h"
 #include "engine/render/GpuTiming.h"
 #include "engine/render/Instancing.h"
@@ -32,7 +33,9 @@
 #include "engine/backend/vk/VulkanShaderInterop.h"
 #include "engine/scene/Texture.h"
 #include "engine/scene/Environment.h"
+#include "engine/scene/MeshCombiner.h"
 #include "engine/scene/Scene.h"
+#include "engine/shader/HlslCompiler.h"
 #include "engine/resource/ResourceManager.h"
 #include "engine/resource/ResourceStreaming.h"
 #include "TestRuntimePluginShared.h"
@@ -286,6 +289,12 @@ void TestColorGradingLut()
 
 void TestTemporalSamplingAndCuts()
 {
+    const PostProcessSettings defaults;
+    Require(std::abs(defaults.TaaJitterScale - 0.5f) < 1e-6f &&
+                std::abs(defaults.TaaHistoryWeight - 0.95f) < 1e-6f &&
+                std::abs(defaults.TaaSharpen - 0.06f) < 1e-6f,
+            "TAA defaults must prioritize a stable static image");
+
     glm::vec2 average(0.0f);
     for (uint64_t i = 0; i < 8; ++i)
     {
@@ -562,6 +571,7 @@ void TestGpuInstancingAndHism()
     Material sharedMaterial;
     sharedMaterial.Albedo = {0.2f, 0.6f, 0.9f};
     Scene batchScene;
+    batchScene.Batching.Enabled = false;
     batchScene.Visibility.Enabled = false;
     for (int index = 0; index < 64; ++index)
         batchScene.AddInstance(cube, sharedMaterial,
@@ -639,6 +649,7 @@ void TestGpuInstancingAndHism()
             "HISM must reject coherent clusters before per-instance leaf testing");
 
     Scene hismScene;
+    hismScene.Batching.Enabled = false;
     hismScene.Visibility.DistanceCulling = false;
     hismScene.Instancing.HismMinimumGroupSize = 16;
     hismScene.Instancing.HismLeafSize = 4;
@@ -652,6 +663,114 @@ void TestGpuInstancingAndHism()
     Require(visibility.HismGroups == 1 && visibility.HismNodesCulled > 0 &&
                 visibility.HismLeafTests < hismScene.Instances().size(),
             "SceneRenderer must route large compatible groups through HISM");
+}
+
+void TestGeometryCombiningAndBatching()
+{
+    const MeshData cube = primitives::MakeCube(0.5f);
+    const std::array<MeshCombineSource, 2> sources{{
+        {&cube, glm::translate(glm::mat4(1.0f), {-2.0f, 0.0f, 0.0f})},
+        {&cube, glm::scale(glm::translate(glm::mat4(1.0f),
+                                         {2.0f, 0.0f, 0.0f}),
+                           {-1.0f, 1.0f, 1.0f})}}};
+    MeshData combined;
+    MeshCombineReport report;
+    std::string error;
+    Require(CombineMeshes(sources, combined, &report, &error), error.c_str());
+    Require(combined.Vertices.size() == cube.Vertices.size() * 2u &&
+                combined.Indices.size() == cube.Indices.size() * 2u &&
+                report.SourceMeshes == 2 && report.MirroredMeshes == 1,
+            "mesh combining must bake transforms and retain mirrored triangle geometry");
+    for (const Vertex& vertex : combined.Vertices)
+    {
+        Require(std::abs(glm::length(vertex.Normal) - 1.0f) < 0.001f &&
+                    std::abs(glm::dot(vertex.Normal, glm::vec3(vertex.Tangent))) < 0.001f,
+                "combined normals and tangents must remain normalized and orthogonal");
+    }
+
+    auto sharedCube = std::make_shared<MeshData>(cube);
+    Material material;
+    material.Albedo = {0.2f, 0.6f, 0.9f};
+    Scene scene;
+    scene.Visibility.Enabled = false;
+    scene.Batching.MinimumStaticBatchSize = 2;
+    scene.Batching.PreferInstancingForRepeatedMeshes = false;
+    scene.Batching.MaximumCachedBatches = 1;
+    scene.Batching.SpatialCellSize = 100.0f;
+    for (int index = 0; index < 4; ++index)
+    {
+        scene.AddInstance(sharedCube, material,
+            glm::translate(glm::mat4(1.0f), {static_cast<float>(index), 0.0f, -5.0f}));
+        scene.Instances().back().TemporalId = 100u + static_cast<uint64_t>(index);
+    }
+    SceneBatcher batcher;
+    const SceneBatchBuildResult& first = batcher.Build(scene, 1);
+    Require(first.Instances.size() == 1 && first.Statistics.StaticBatches == 1 &&
+                first.Statistics.StaticBatchedInstances == 4 &&
+                first.Statistics.DrawCallsSaved == 3 &&
+                first.Instances.front()->Mesh->Vertices.size() == cube.Vertices.size() * 4u,
+            "static batching must replace compatible cell geometry with one cached mesh");
+    const uint64_t staticRevision = first.Instances.front()->Mesh->Revision;
+    const SceneBatchBuildResult& cached = batcher.Build(scene, 2);
+    Require(cached.Statistics.CacheHits == 1 &&
+                cached.Instances.front()->Mesh->Revision == staticRevision,
+            "unchanged static geometry must hit the batch cache without GPU revision churn");
+    const std::shared_ptr<MeshData> cachedStaticMesh = cached.Instances.front()->Mesh;
+    for (MeshInstance& instance : scene.Instances())
+        instance.BatchGroupId = 42;
+    const SceneBatchBuildResult& recycled = batcher.Build(scene, 3);
+    Require(recycled.Statistics.RecycledBatches == 1 &&
+                recycled.Instances.front()->Mesh == cachedStaticMesh &&
+                recycled.Instances.front()->Mesh->Revision > staticRevision,
+            "bounded batch cache must recycle inactive entries without changing GPU handles");
+
+    Camera camera;
+    camera.Position = {0.0f, 0.0f, 2.0f};
+    camera.Yaw = -90.0f;
+    SceneRenderer renderer;
+    const RenderFrameData& frame = renderer.PrepareFrame(scene, camera, 800, 600);
+    Require(frame.Batching.DrawCallsSaved == 3 && frame.RenderCommands.size() == 1,
+            "SceneRenderer must cull and submit the shared batched geometry path");
+
+    Scene dynamic;
+    dynamic.Visibility.Enabled = false;
+    dynamic.PostProcess.AntiAliasing = AntiAliasingMode::None;
+    dynamic.Batching.MinimumDynamicBatchSize = 2;
+    dynamic.Batching.PreferInstancingForRepeatedMeshes = false;
+    dynamic.Batching.SpatialCellSize = 100.0f;
+    for (int index = 0; index < 2; ++index)
+    {
+        dynamic.AddInstance(sharedCube, material,
+            glm::translate(glm::mat4(1.0f), {static_cast<float>(index), 0.0f, -4.0f}));
+        dynamic.Instances().back().Mobility = MeshMobility::Movable;
+        dynamic.Instances().back().TemporalId = 200u + static_cast<uint64_t>(index);
+    }
+    SceneBatcher dynamicBatcher;
+    const SceneBatchBuildResult& dynamicFirst = dynamicBatcher.Build(dynamic, 1);
+    Require(dynamicFirst.Instances.size() == 1 &&
+                dynamicFirst.Statistics.DynamicBatches == 1,
+            "selective dynamic batching must combine small movable meshes without TAA");
+    const uint64_t dynamicRevision = dynamicFirst.Instances.front()->Mesh->Revision;
+    const std::shared_ptr<MeshData> dynamicMesh = dynamicFirst.Instances.front()->Mesh;
+    dynamic.Instances()[0].Transform[3].x += 0.5f;
+    const SceneBatchBuildResult& dynamicMoved = dynamicBatcher.Build(dynamic, 2);
+    Require(dynamicMoved.Instances.size() == 1 &&
+                dynamicMoved.Instances.front()->Mesh->Revision > dynamicRevision &&
+                dynamicMoved.Instances.front()->Mesh == dynamicMesh &&
+                dynamicMoved.Statistics.RebuiltBatches == 1,
+            "changed dynamic batches must increment the native GPU upload revision");
+
+    dynamic.PostProcess.AntiAliasing = AntiAliasingMode::Taa;
+    dynamic.Batching.DynamicStabilityFrames = 2;
+    SceneBatcher temporalBatcher;
+    Require(temporalBatcher.Build(dynamic, 1).Instances.size() == 2,
+            "moving TAA geometry must initially retain individual transforms");
+    temporalBatcher.Build(dynamic, 2);
+    Require(temporalBatcher.Build(dynamic, 3).Instances.size() == 1,
+            "TAA geometry may batch after its configured stability window");
+    dynamic.Instances()[1].Transform[3].x += 0.25f;
+    Require(temporalBatcher.Build(dynamic, 4).Instances.size() == 2,
+            "TAA motion must immediately fall back from dynamic batching");
 }
 
 void TestTaskSystemScheduling()
@@ -962,23 +1081,46 @@ void TestSharedRendererUtilities()
             "GPU timing aggregation must produce common min/average/max values");
 
     const std::filesystem::path shaderRoot = TEST_SHADER_DIR;
-    const ShaderSourceDocument shader = LoadShaderSource(
-        shaderRoot / "vk/lighting/pbr.frag", {shaderRoot / "vk", shaderRoot});
-    Require(shader.Dependencies.size() >= 3,
-            "shared shader loader must track transitive includes for cache invalidation");
-    Require(shader.Source.find("#include") == std::string::npos
-                && shader.Source.find("D_GGX") != std::string::npos,
-            "shared shader loader must expand backend and common GLSL includes");
+    const ShaderSourceDocument shaderDocument = LoadShaderSource(
+        shaderRoot / "hlsl/opengl/common/fullscreen.vert.hlsl",
+        {shaderRoot / "hlsl", shaderRoot});
+    Require(shaderDocument.Dependencies.size() == 2,
+            "shared HLSL loader must track includes for cache invalidation");
+    Require(shaderDocument.Source.find("#include") == std::string::npos
+                && shaderDocument.Source.find("EngineFullscreenNdc") != std::string::npos,
+            "shared shader loader must expand backend-neutral HLSL includes");
+
+    shader::HlslCompileRequest glRequest;
+    glRequest.SourcePath = shaderRoot / "hlsl/opengl/common/fullscreen.vert.hlsl";
+    glRequest.ShaderStage = shader::Stage::Vertex;
+    glRequest.Target = shader::SpirvTarget::OpenGL46;
+    glRequest.Optimize = false;
+    const shader::HlslCompileResult glSpirv = shader::CompileHlslToSpirv(glRequest);
+    Require(!glSpirv.Spirv.empty() && glSpirv.Spirv[0] == 0x07230203u &&
+                glSpirv.TargetIdentity.find("opengl-4.6") != std::string::npos,
+            "HLSL compiler must emit native OpenGL-compatible SPIR-V");
+
+    shader::HlslCompileRequest vkRequest;
+    vkRequest.SourcePath = shaderRoot / "hlsl/vulkan/post/fullscreen.vert.hlsl";
+    vkRequest.ShaderStage = shader::Stage::Vertex;
+    vkRequest.Target = shader::SpirvTarget::Vulkan13;
+    vkRequest.Optimize = false;
+    const shader::HlslCompileResult vkSpirv = shader::CompileHlslToSpirv(vkRequest);
+    Require(!vkSpirv.Spirv.empty() && vkSpirv.Spirv[0] == 0x07230203u &&
+                vkSpirv.TargetIdentity.find("vulkan-1.3") != std::string::npos,
+            "HLSL compiler must emit Vulkan 1.3 SPIR-V");
 
     const ShaderSourceDocument glSky = LoadShaderSource(
-        shaderRoot / "gl/environment/sky.frag", {shaderRoot / "gl", shaderRoot});
+        shaderRoot / "hlsl/opengl/environment/sky.frag.hlsl",
+        {shaderRoot / "hlsl", shaderRoot});
     const ShaderSourceDocument vkSky = LoadShaderSource(
-        shaderRoot / "vk/environment/sky.frag", {shaderRoot / "vk", shaderRoot});
+        shaderRoot / "hlsl/vulkan/environment/sky.frag.hlsl",
+        {shaderRoot / "hlsl", shaderRoot});
     for (const ShaderSourceDocument* sky : {&glSky, &vkSky})
     {
         Require(sky->Source.find("EngineEvaluateProceduralStar") != std::string::npos &&
                     sky->Source.find("EngineStarCubeGrid") != std::string::npos,
-                "both backends must use the shared pole-safe procedural star field");
+                "both HLSL backend variants must retain the pole-safe procedural star field");
         Require(sky->Source.find("atan(nightDirection") == std::string::npos,
                 "procedural stars must not use pole-singular equirectangular coordinates");
     }
@@ -2238,6 +2380,7 @@ int main()
     TestVisibilityCulling();
     TestTemporalHiZOcclusionPolicy();
     TestGpuInstancingAndHism();
+    TestGeometryCombiningAndBatching();
     TestTaskSystemScheduling();
     TestAsyncResourceLoadingAndStreamingBudgets();
     TestAsyncRenderResourceLifetime();

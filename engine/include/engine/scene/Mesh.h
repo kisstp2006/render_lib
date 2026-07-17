@@ -22,6 +22,11 @@ struct MeshData
 {
     std::vector<Vertex> Vertices;
     std::vector<uint32_t> Indices;
+    // Mutable runtime-generated geometry increments Revision after replacing
+    // either stream. Native backends use it to refresh cached GPU buffers
+    // without changing the shared CPU-side mesh identity.
+    uint64_t Revision = 1;
+    bool RuntimeMutable = false;
 };
 
 namespace primitives {

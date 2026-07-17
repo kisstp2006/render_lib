@@ -80,13 +80,13 @@ unsigned int CreateCubemap(int size, bool mipmapped)
 
 GLEnvironment::GLEnvironment(const std::string& shaderDir)
 {
-    const std::string fullscreen = shaderDir + "/gl/common/fullscreen.vert";
-    const std::string environment = shaderDir + "/gl/environment/";
-    m_skyGenShader = std::make_unique<GLShader>(fullscreen, environment + "sky_gen.frag");
-    m_equirectShader = std::make_unique<GLShader>(fullscreen, environment + "equirect_to_cube.frag");
-    m_irradianceShader = std::make_unique<GLShader>(fullscreen, environment + "irradiance.frag");
-    m_prefilterShader = std::make_unique<GLShader>(fullscreen, environment + "prefilter.frag");
-    m_brdfShader = std::make_unique<GLShader>(fullscreen, environment + "brdf_lut.frag");
+    const std::string fullscreen = shaderDir + "/common/fullscreen.vert.hlsl";
+    const std::string environment = shaderDir + "/environment/";
+    m_skyGenShader = std::make_unique<GLShader>(fullscreen, environment + "sky_gen.frag.hlsl");
+    m_equirectShader = std::make_unique<GLShader>(fullscreen, environment + "equirect_to_cube.frag.hlsl");
+    m_irradianceShader = std::make_unique<GLShader>(fullscreen, environment + "irradiance.frag.hlsl");
+    m_prefilterShader = std::make_unique<GLShader>(fullscreen, environment + "prefilter.frag.hlsl");
+    m_brdfShader = std::make_unique<GLShader>(fullscreen, environment + "brdf_lut.frag.hlsl");
 
     glGenFramebuffers(1, &m_fbo);
     glGenVertexArrays(1, &m_emptyVao);

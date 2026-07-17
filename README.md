@@ -55,6 +55,9 @@ Current feature set (OpenGL backend):
 - **GPU instancing + HISM**: exact mesh/material batching into base-instance
   draws, shared current/previous transform buffers, and hierarchical cluster
   culling for dense instance populations on OpenGL and Vulkan
+- **Geometry batching**: spatially partitioned cached static batches,
+  TAA-aware selective dynamic batches, and material-safe offline mesh combining
+  with versioned OpenGL/Vulkan GPU-buffer refresh
 - **Editor runtime foundation**: resize-safe, simultaneous OpenGL/Vulkan
   offscreen scene viewports; Dear ImGui docking/native platform windows;
   reflected World render components; stable-GUID scene save/load; picking,
@@ -66,7 +69,9 @@ Current Vulkan renderer (core OpenGL image parity complete):
 
 - Vulkan 1.3 device with dynamic rendering and synchronization2 enabled
 - swapchain, resize handling, two frames in flight and validation in Debug
-- runtime shaderc compilation of source GLSL into dependency-aware cached SPIR-V;
+- runtime HLSL compilation into dependency-aware cached SPIR-V; Vulkan consumes
+  Vulkan 1.3 SPIR-V and OpenGL 4.6 uses native `glShaderBinary`/
+  `glSpecializeShader` SPIR-V without a GLSL runtime translation step
   editing a Vulkan shader or any of its includes takes effect on the next launch
 - indexed mesh rendering, glTF metallic-roughness textures, normal mapping,
   alpha-mask materials, procedural sky, directional/point/spot/area PBR lights
@@ -100,16 +105,16 @@ MoltenVK; the current renderer does not build there as-is.
   APIs have materially different lifetime models.
 - **CPU-side scene is backend-agnostic.** `MeshData`, `Material`, `Scene`,
   `Camera` don't know about GL or Vulkan; both backends consume the same data.
-- **Shared shading math.** Both backends include common Cook-Torrance/GGX,
-  tonemap/color-space, TAA and bloom math from `shaders/common`, preventing
-  visually important equations from drifting. API-specific shader files only
-  adapt bindings, clip-space conventions and native render-target contracts.
+- **One shader language.** All backend stages are HLSL. Shared `.hlsli` files
+  carry backend-neutral helpers, while OpenGL/Vulkan variants adapt resource
+  bindings, clip-space conventions and native render-target contracts. The
+  same source family is continuously validated for DX11 SM5 and DX12 SM6.
 - **Shared renderer utilities.** Shader source/include loading, auto-exposure
   adaptation, temporal sampling, cascade preparation and GPU timing aggregation
   are backend-neutral; only native queries, resource ownership and command
   recording remain inside the OpenGL/Vulkan implementations.
 - **Reference for the PBR math and Source "feel":** the lighting model
-  (`shaders/gl/lighting/pbr.frag`) mirrors the D/G/F terms in Valve's own
+  (`shaders/hlsl/opengl/lighting/pbr.frag.hlsl`) mirrors the D/G/F terms in Valve's own
   `ValveResourceFormat/Renderer/Shaders/common/pbr.slang` (GGX distribution,
   Schlick-Smith visibility, Schlick Fresnel) so material response reads the
   same way Source 2 materials do, without depending on that project's code.
@@ -130,6 +135,7 @@ engine/                  Modular engine libraries plus compatibility facade
     Assets/               Concrete texture/environment/material/model/scene asset types
     Runtime/              Components, world hierarchy and C++ plugins
     RendererCore/         Shared frame preparation and renderer algorithms
+    ShaderCompiler/       HLSL source, permutation and SPIR-V compilation
     RendererOpenGL/       Native OpenGL backend
     RendererVulkan/       Native Vulkan backend
     Application/          Main loop and backend selection
@@ -148,13 +154,10 @@ engine/                  Modular engine libraries plus compatibility facade
       vk/                  Vulkan resources, shader contract and backend scaffold
   src/                     Implementations mirroring the stable public include tree
 
-shaders/
-  common/                  PBR/BRDF math shared by OpenGL and Vulkan
-  gl/common/               Shared fullscreen vertex stage
-  gl/lighting/             PBR and directional/local shadow stages
-  gl/environment/          Visible sky and IBL baking stages
-  gl/post/                 Bloom, tonemap/LUT, FXAA and TAA
-  vk/                      Runtime-compiled and cached Vulkan shader stages
+shaders/hlsl/
+  common/                  Backend-neutral HLSL include files
+  opengl/                  OpenGL 4.6 native-SPIR-V shader stages
+  vulkan/                  Vulkan 1.3 SPIR-V shader stages
 
 examples/sandbox/src/      Shared sample application, scenes and runtime controls
 examples/samples/          One small entry point per standalone renderer sample
@@ -173,15 +176,17 @@ allowed dependency directions and extension rules are documented in the
 
 ## Building
 
-Requires CMake >= 3.21, Python 3 with Jinja2 for GLAD code generation, and a
-C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+).
+Requires CMake >= 3.21, Python 3 with Jinja2 for GLAD code generation, a
+C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+), and shaderc from the
+Vulkan SDK for the common HLSL-to-SPIR-V pipeline.
 Dependencies (GLFW, GLAD2, GLM, stb) are fetched at configure time via
 `FetchContent` — nothing to install beyond a compiler and CMake. The Vulkan
-backend additionally requires the LunarG Vulkan SDK (including shaderc); if it
-isn't found, `ENGINE_BUILD_VULKAN` is automatically disabled and only the
-OpenGL backend is built. Vulkan GLSL is compiled when the application starts.
-SPIR-V is cached under `build/runtime_shaders/vk/<config>` and automatically
-rebuilt when its source or a transitive include changes.
+Both backends compile HLSL when the application starts and retain native shader
+or pipeline caches. Vulkan SPIR-V is cached under
+`build/runtime_shaders/vk/<config>` and automatically rebuilt when its source,
+target profile or a transitive include changes. On Windows, `validate_hlsl`
+also compiles every entry point with FXC SM5 and DXC SM6 to keep the shader set
+ready for future DirectX 11 and DirectX 12 backends.
 
 The engine also builds `assetc`, a headless source-to-cooked asset tool. See
 the [asset pipeline guide](docs/asset-pipeline.md) for descriptor formats,
@@ -215,7 +220,7 @@ stay small while each can be launched directly:
 | `sample_day_night` | Animated procedural day/sunset/night sky cycle |
 | `sample_post` | Color-grading LUT, FXAA and TAA validation scene |
 | `sample_stability` | Resize/minimize/fullscreen, hot-reload and resource-lifetime stress suite |
-| `sample_visibility` | CPU/HISM visibility, GPU instancing, Hi-Z occlusion and color-coded bounds |
+| `sample_visibility` | CPU/HISM visibility, static geometry batching, GPU instancing, Hi-Z occlusion and color-coded bounds |
 | `sample_editor_viewports` | Two simultaneous offscreen perspective/orthographic ImGui viewports, resize and picking |
 | `sample_world_editor` | World hierarchy, reflected inspector, scene save/load, picking and log console foundation |
 
@@ -524,7 +529,7 @@ above are not repeated here.
     - [x] CPU frustum and distance culling with bounds/debug visualization ([guide](docs/visibility-culling.md))
     - [x] GPU Hi-Z occlusion culling with asynchronous readback, temporal conservatism, debug visualization and OpenGL/Vulkan parity ([guide](docs/visibility-culling.md))
     - [x] GPU instancing and hierarchical instancing (HISM) with shared batching, temporal transforms, shadow-pass integration and cluster diagnostics ([guide](docs/instancing.md))
-    - [ ] Static batching, selective dynamic batching and offline mesh combining
+    - [x] Static batching, selective dynamic batching and offline mesh combining ([guide](docs/geometry-batching.md))
     - [ ] Authored and generated LOD chains with screen-space error selection
     - [ ] HLOD cluster generation, impostors and streaming integration
     - [ ] Indirect rendering and Multi Draw Indirect

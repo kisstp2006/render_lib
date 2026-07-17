@@ -6,6 +6,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/include/engine/debug/DebugOverlay.h
         ${ENGINE_ROOT}/include/engine/debug/FrameDebugger.h
         ${ENGINE_ROOT}/include/engine/render/CascadedShadows.h
+        ${ENGINE_ROOT}/include/engine/render/Batching.h
         ${ENGINE_ROOT}/include/engine/render/AsyncRenderResources.h
         ${ENGINE_ROOT}/include/engine/render/Exposure.h
         ${ENGINE_ROOT}/include/engine/render/GpuTiming.h
@@ -24,6 +25,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/src/debug/DebugOverlay.cpp
         ${ENGINE_ROOT}/src/debug/FrameDebugger.cpp
         ${ENGINE_ROOT}/src/render/CascadedShadows.cpp
+        ${ENGINE_ROOT}/src/render/Batching.cpp
         ${ENGINE_ROOT}/src/render/AsyncRenderResources.cpp
         ${ENGINE_ROOT}/src/render/Exposure.cpp
         ${ENGINE_ROOT}/src/render/GpuTiming.cpp

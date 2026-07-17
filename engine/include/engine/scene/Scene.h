@@ -15,6 +15,12 @@
 
 namespace engine {
 
+enum class MeshMobility : uint8_t
+{
+    Static,
+    Movable
+};
+
 struct MeshInstance
 {
     uint64_t TemporalId = 0;
@@ -27,6 +33,11 @@ struct MeshInstance
     bool CastsShadows = true;
     bool AlwaysVisible = false;
     bool AllowInstancing = true;
+    bool AllowBatching = true;
+    MeshMobility Mobility = MeshMobility::Static;
+    // Optional author-defined partition. Zero lets the batcher choose groups
+    // from material, render state and spatial cell alone.
+    uint64_t BatchGroupId = 0;
     // Zero selects automatic grouping. A non-zero value lets callers keep
     // otherwise compatible spatial populations in separate HISM trees.
     uint64_t HismGroupId = 0;
@@ -58,6 +69,7 @@ public:
     ShadowSettings Shadows;
     VisibilitySettings Visibility;
     InstancingSettings Instancing;
+    GeometryBatchingSettings Batching;
     uint64_t SelectedEntity = 0;
     glm::vec3 SelectionColor{3.0f, 1.25f, 0.08f};
 

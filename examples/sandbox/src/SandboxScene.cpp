@@ -300,6 +300,13 @@ void PopulateVisibilityShowcase(Application& app)
     scene.Instancing.HierarchicalCulling = true;
     scene.Instancing.HismMinimumGroupSize = 24;
     scene.Instancing.HismLeafSize = 8;
+    scene.Batching.Enabled = true;
+    scene.Batching.StaticBatching = true;
+    scene.Batching.DynamicBatching = true;
+    scene.Batching.MinimumStaticBatchSize = 3;
+    scene.Batching.SpatialCellSize = 24.0f;
+    scene.Batching.MaximumVerticesPerBatch = 32768;
+    scene.Batching.MaximumIndicesPerBatch = 98304;
     scene.Fog.Enabled = false;
     scene.PostProcess.AutoExposure = false;
     scene.PostProcess.Exposure = 1.5f;
@@ -351,6 +358,24 @@ void PopulateVisibilityShowcase(Application& app)
             transform = glm::scale(transform, {0.8f, 1.0f + (row % 3) * 0.45f, 0.8f});
             scene.AddInstance(cube, material, transform);
         }
+    }
+
+    // These stand in for small, heterogeneous imported props: each owns a
+    // distinct mesh resource, so geometry batching is preferable to GPU
+    // instancing. The dense grid above deliberately remains on HISM/instancing.
+    Material propMaterial;
+    propMaterial.Albedo = {0.56f, 0.18f, 0.82f};
+    propMaterial.Metallic = 0.18f;
+    propMaterial.Roughness = 0.42f;
+    for (int index = 0; index < 6; ++index)
+    {
+        auto propMesh = std::make_shared<MeshData>(*cube);
+        glm::mat4 transform = glm::translate(
+            glm::mat4(1.0f), {1.0f + index * 1.7f, 5.0f, -8.0f});
+        transform = glm::scale(transform,
+            {0.45f + index * 0.04f, 0.35f + (index % 3) * 0.18f, 0.45f});
+        scene.AddInstance(std::move(propMesh), propMaterial, transform);
+        scene.Instances().back().BatchGroupId = 9001;
     }
 
     Camera& camera = app.GetCamera();

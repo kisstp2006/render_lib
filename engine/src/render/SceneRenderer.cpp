@@ -224,7 +224,9 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
             light.Position, prepared.Direction, light.BarnAngleDeg, light.Range, aspect);
     }
 
-    const std::vector<MeshInstance>& instances = scene.Instances();
+    const SceneBatchBuildResult& batchBuild = m_batcher.Build(scene, m_frame.FrameIndex);
+    m_frame.Batching = batchBuild.Statistics;
+    const std::vector<const MeshInstance*>& instances = batchBuild.Instances;
     if ((m_frame.FrameIndex % 120u) == 0u)
     {
         std::erase_if(m_boundsCache, [](const auto& entry) {
@@ -235,17 +237,19 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
     std::vector<AxisAlignedBounds> localBounds(instances.size());
     for (size_t index = 0; index < instances.size(); ++index)
     {
-        const std::shared_ptr<MeshData>& mesh = instances[index].Mesh;
+        const std::shared_ptr<MeshData>& mesh = instances[index]->Mesh;
         if (!mesh || mesh->Vertices.empty() || mesh->Indices.empty())
             continue;
         CachedMeshBounds& cached = m_boundsCache[mesh.get()];
         const std::shared_ptr<MeshData> cachedOwner = cached.Owner.lock();
         if (cachedOwner.get() != mesh.get() || cached.VertexData != mesh->Vertices.data() ||
-            cached.VertexCount != mesh->Vertices.size())
+            cached.VertexCount != mesh->Vertices.size() ||
+            cached.Revision != mesh->Revision)
         {
             cached.Owner = mesh;
             cached.VertexData = mesh->Vertices.data();
             cached.VertexCount = mesh->Vertices.size();
+            cached.Revision = mesh->Revision;
             cached.Bounds = ComputeMeshBounds(*mesh);
         }
         localBounds[index] = cached.Bounds;
@@ -265,7 +269,7 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
         ? std::min(scene.Visibility.MaxDistance, camera.FarPlane) : camera.FarPlane;
     m_tasks->ParallelFor(instances.size(), 32,
         [&instances, &localBounds, &classified](size_t index) {
-            const MeshInstance& instance = instances[index];
+            const MeshInstance& instance = *instances[index];
             ClassifiedCommand& result = classified[index];
             result.Command.InstanceIndex = static_cast<uint32_t>(index);
             if (!instance.Mesh || instance.Mesh->Vertices.empty() || instance.Mesh->Indices.empty())
@@ -311,7 +315,7 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
         std::unordered_map<HismGroupKey, size_t, HismGroupKeyHash> groupLookup;
         for (size_t index = 0; index < instances.size(); ++index)
         {
-            const MeshInstance& instance = instances[index];
+            const MeshInstance& instance = *instances[index];
             if (!classified[index].Bounds.Valid || instance.AlwaysVisible ||
                 !instance.AllowInstancing)
                 continue;
@@ -361,7 +365,7 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
             ClassifiedCommand& result = classified[index];
             if (!result.Bounds.Valid || handledByHierarchy[index] != 0)
                 return;
-            const MeshInstance& instance = instances[index];
+            const MeshInstance& instance = *instances[index];
             if (scene.Visibility.Enabled && !instance.AlwaysVisible)
             {
                 float maxDistance = globalDistance;
@@ -386,7 +390,7 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
             result.Render = result.Classification == VisibilityClassification::Visible;
             // Nearby off-frustum casters remain available. Distance culling
             // suppresses both camera and shadow submissions as before.
-            result.Shadow = instances[index].CastsShadows &&
+            result.Shadow = instances[index]->CastsShadows &&
                 result.Classification != VisibilityClassification::DistanceCulled;
         });
 
@@ -452,14 +456,30 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
         AppendIconLines(icon, camera, m_frame.DebugLines);
     if (scene.SelectedEntity != 0)
     {
-        for (size_t index = 0; index < instances.size(); ++index)
+        for (const MeshInstance& instance : scene.Instances())
         {
-            if (instances[index].SourceEntity != scene.SelectedEntity ||
-                !classified[index].Bounds.Valid)
+            if (instance.SourceEntity != scene.SelectedEntity || !instance.Mesh)
+                continue;
+            CachedMeshBounds& cached = m_boundsCache[instance.Mesh.get()];
+            const std::shared_ptr<MeshData> cachedOwner = cached.Owner.lock();
+            if (cachedOwner.get() != instance.Mesh.get() ||
+                cached.VertexData != instance.Mesh->Vertices.data() ||
+                cached.VertexCount != instance.Mesh->Vertices.size() ||
+                cached.Revision != instance.Mesh->Revision)
+            {
+                cached.Owner = instance.Mesh;
+                cached.VertexData = instance.Mesh->Vertices.data();
+                cached.VertexCount = instance.Mesh->Vertices.size();
+                cached.Revision = instance.Mesh->Revision;
+                cached.Bounds = ComputeMeshBounds(*instance.Mesh);
+            }
+            const AxisAlignedBounds selectedBounds = TransformBounds(
+                cached.Bounds, instance.Transform);
+            if (!selectedBounds.Valid)
                 continue;
             DebugDrawList selected;
-            selected.Aabb(classified[index].Bounds.Minimum,
-                          classified[index].Bounds.Maximum,
+            selected.Aabb(selectedBounds.Minimum,
+                          selectedBounds.Maximum,
                           scene.SelectionColor, DebugDepthMode::Overlay);
             m_frame.DebugLines.insert(m_frame.DebugLines.end(),
                                       selected.Lines().begin(), selected.Lines().end());

@@ -21,10 +21,10 @@ namespace engine {
 
 namespace {
 
-constexpr int kUnitAlbedo = 1;
-constexpr int kUnitLocalShadowAtlas = 13;
-constexpr int kUnitPointShadowArray = 14;
-constexpr int kUnitCookieAtlas = 15;
+constexpr int kUnitAlbedo = 0;
+constexpr int kUnitLocalShadowAtlas = 12;
+constexpr int kUnitPointShadowArray = 13;
+constexpr int kUnitCookieAtlas = 14;
 
 glm::vec4 AtlasRect(int slot, int tileSize, int atlasSize)
 {
@@ -209,6 +209,8 @@ void GLRenderBackend::RenderLocalLightShadows(
                 m_pointShadowShader->SetFloat("uBaseColorAlpha", material.BaseColorAlpha);
                 m_pointShadowShader->SetFloat("uAlphaCutoff", material.AlphaCutoff);
                 m_pointShadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
+                m_pointShadowShader->SetInt("uBaseInstance",
+                    static_cast<int>(batch.FirstInstance));
                 BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
                 GetOrCreateMesh(instance.Mesh).DrawInstanced(
                     static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
@@ -239,6 +241,8 @@ void GLRenderBackend::RenderLocalLightShadows(
             m_shadowShader->SetFloat("uBaseColorAlpha", material.BaseColorAlpha);
             m_shadowShader->SetFloat("uAlphaCutoff", material.AlphaCutoff);
             m_shadowShader->SetInt("uAlbedoMap", kUnitAlbedo);
+            m_shadowShader->SetInt("uBaseInstance",
+                static_cast<int>(batch.FirstInstance));
             BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
             GetOrCreateMesh(instance.Mesh).DrawInstanced(
                 static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);

@@ -383,7 +383,8 @@ bool VulkanRenderBackend::IsDeviceSuitable(VkPhysicalDevice device) const
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features.pNext = &vulkan12Features;
     vkGetPhysicalDeviceFeatures2(device, &features);
-    if (!vulkan13Features.dynamicRendering || !vulkan13Features.synchronization2
+    if (!vulkan13Features.dynamicRendering || !vulkan13Features.synchronization2 ||
+        !vulkan13Features.shaderDemoteToHelperInvocation
         || !vulkan12Features.timelineSemaphore || !features.features.imageCubeArray)
         return false;
 
@@ -601,6 +602,7 @@ void VulkanRenderBackend::CreateLogicalDevice()
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     vulkan13Features.dynamicRendering = VK_TRUE;
     vulkan13Features.synchronization2 = VK_TRUE;
+    vulkan13Features.shaderDemoteToHelperInvocation = VK_TRUE;
     VkPhysicalDeviceVulkan12Features vulkan12Features{};
     vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vulkan12Features.timelineSemaphore = VK_TRUE;
@@ -931,7 +933,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     }
     ReclaimTransferUploads();
     m_frameGpuArena->Reset(m_currentFrame);
-    m_deferredRelease.ReleaseCompleted(frame.FrameIndex);
+    m_deferredRelease.ReleaseCompleted(m_gpuProfileFrameIndex);
     ReadPerformanceQueries(m_currentFrame);
     UpdateAutoExposure(frame);
     {
