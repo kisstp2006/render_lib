@@ -24,6 +24,10 @@ namespace engine {
 namespace {
 
 constexpr VkFormat kHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+// shaderc's HLSL frontend emits RWTexture2D<float4> as a typed rgba32f
+// storage image. Keep bloom UAVs format-compatible; sampled HDR scene/history
+// targets remain RGBA16F.
+constexpr VkFormat kBloomStorageFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
 constexpr VkFormat kLdrFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
 VkImageMemoryBarrier2 ImageBarrier(VkImage image, VkImageLayout oldLayout,
@@ -343,7 +347,7 @@ void VulkanRenderBackend::CreatePostTargets()
         for (vulkan::Image& level : m_bloomChains[imageIndex].Levels)
         {
             level = m_resources.CreateImage2D(
-                width, height, kHdrFormat,
+                width, height, kBloomStorageFormat,
                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT);

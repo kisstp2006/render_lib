@@ -256,24 +256,24 @@ void VulkanRenderBackend::DestroyEnvironmentInfrastructure()
 void VulkanRenderBackend::CreateEnvironmentResources()
 {
     m_environmentCube = m_resources.CreateImage2D(
-        kEnvironmentSize, kEnvironmentSize, VK_FORMAT_R16G16B16A16_SFLOAT,
+        kEnvironmentSize, kEnvironmentSize, VK_FORMAT_R32G32B32A32_SFLOAT,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
             | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, kEnvironmentMipLevels, 6,
         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
     m_irradianceCube = m_resources.CreateImage2D(
-        kIrradianceSize, kIrradianceSize, VK_FORMAT_R16G16B16A16_SFLOAT,
+        kIrradianceSize, kIrradianceSize, VK_FORMAT_R32G32B32A32_SFLOAT,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, 1, 6, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
     m_prefilterCube = m_resources.CreateImage2D(
-        kPrefilterSize, kPrefilterSize, VK_FORMAT_R16G16B16A16_SFLOAT,
+        kPrefilterSize, kPrefilterSize, VK_FORMAT_R32G32B32A32_SFLOAT,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, kPrefilterMipLevels, 6,
         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
     m_brdfLut = m_resources.CreateImage2D(
-        kBrdfLutSize, kBrdfLutSize, VK_FORMAT_R16G16_SFLOAT,
+        kBrdfLutSize, kBrdfLutSize, VK_FORMAT_R32G32_SFLOAT,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
