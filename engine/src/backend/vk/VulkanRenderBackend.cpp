@@ -739,6 +739,30 @@ void VulkanRenderBackend::CreateSwapchain(int width, int height)
         SetDebugName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_swapchainImages[index]),
                      "Swapchain Image " + std::to_string(index));
 
+    // A presentation wait does not make a frame-slot semaphore reusable. The
+    // acquired image does, so render-finished semaphores must be indexed by
+    // swapchain image rather than by CPU frame in flight.
+    m_renderFinished.assign(m_swapchainImages.size(), VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (size_t index = 0; index < m_renderFinished.size(); ++index)
+    {
+        if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr,
+                              &m_renderFinished[index]) != VK_SUCCESS)
+        {
+            for (VkSemaphore semaphore : m_renderFinished)
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            m_renderFinished.clear();
+            vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+            m_swapchain = VK_NULL_HANDLE;
+            throw std::runtime_error(
+                "Failed to create Vulkan swapchain presentation semaphores");
+        }
+        SetDebugName(VK_OBJECT_TYPE_SEMAPHORE,
+                     reinterpret_cast<uint64_t>(m_renderFinished[index]),
+                     "Swapchain Image " + std::to_string(index) + " Render Finished");
+    }
+
     m_swapchainFormat = chosenFormat.format;
     m_swapchainExtent = extent;
 }
@@ -843,7 +867,6 @@ void VulkanRenderBackend::CreateCommandObjects()
 void VulkanRenderBackend::CreateSyncObjects()
 {
     m_imageAvailable.resize(kFramesInFlight);
-    m_renderFinished.resize(kFramesInFlight);
     m_inFlightFences.resize(kFramesInFlight);
 
     VkSemaphoreCreateInfo semInfo{};
@@ -856,15 +879,12 @@ void VulkanRenderBackend::CreateSyncObjects()
     for (int i = 0; i < kFramesInFlight; ++i)
     {
         if (vkCreateSemaphore(m_device, &semInfo, nullptr, &m_imageAvailable[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(m_device, &semInfo, nullptr, &m_renderFinished[i]) != VK_SUCCESS ||
             vkCreateFence(m_device, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to create Vulkan sync objects");
         }
         SetDebugName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(m_imageAvailable[i]),
                      "Frame " + std::to_string(i) + " Image Available");
-        SetDebugName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(m_renderFinished[i]),
-                     "Frame " + std::to_string(i) + " Render Finished");
         SetDebugName(VK_OBJECT_TYPE_FENCE, reinterpret_cast<uint64_t>(m_inFlightFences[i]),
                      "Frame " + std::to_string(i) + " In Flight Fence");
     }
@@ -872,6 +892,11 @@ void VulkanRenderBackend::CreateSyncObjects()
 
 void VulkanRenderBackend::DestroySwapchain()
 {
+    for (VkSemaphore semaphore : m_renderFinished)
+        if (semaphore != VK_NULL_HANDLE)
+            vkDestroySemaphore(m_device, semaphore, nullptr);
+    m_renderFinished.clear();
+
     for (vulkan::Image& image : m_depthImages)
         m_resources.Destroy(image);
     m_depthImages.clear();
@@ -1684,7 +1709,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     commandInfo.commandBuffer = cmd;
     VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signalInfo.semaphore = m_renderFinished[m_currentFrame];
+    signalInfo.semaphore = offscreen ? VK_NULL_HANDLE : m_renderFinished[imageIndex];
     signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     VkSubmitInfo2 submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     submitInfo.waitSemaphoreInfoCount = waitCount;
@@ -1719,7 +1744,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = &m_renderFinished[m_currentFrame];
+        presentInfo.pWaitSemaphores = &m_renderFinished[imageIndex];
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &m_swapchain;
         presentInfo.pImageIndices = &imageIndex;
@@ -1794,7 +1819,6 @@ void VulkanRenderBackend::Shutdown()
     for (int i = 0; i < kFramesInFlight; ++i)
     {
         if (i < static_cast<int>(m_imageAvailable.size())) vkDestroySemaphore(m_device, m_imageAvailable[i], nullptr);
-        if (i < static_cast<int>(m_renderFinished.size())) vkDestroySemaphore(m_device, m_renderFinished[i], nullptr);
         if (i < static_cast<int>(m_inFlightFences.size())) vkDestroyFence(m_device, m_inFlightFences[i], nullptr);
     }
 
