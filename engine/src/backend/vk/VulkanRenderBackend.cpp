@@ -1053,7 +1053,7 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
         for (const InstanceDrawBatch& batch : submission.Batches)
         {
             const MeshInstance& instance = *batch.Representative->Source;
-            batches.push_back({&GetOrCreateMesh(instance.Mesh),
+            batches.push_back({&GetOrCreateMesh(GetCommandMesh(*batch.Representative)),
                 &GetOrCreateMaterial(instance.Mat), batch.FirstInstance,
                 static_cast<uint32_t>(batch.Commands.size())});
         }

@@ -28,6 +28,10 @@ struct MeshInstance
     // selection. Zero denotes a renderer-only instance.
     uint64_t SourceEntity = 0;
     std::shared_ptr<MeshData> Mesh;
+    // LOD0 is Mesh. Additional levels may come from a cooked model asset or
+    // be authored directly by a client. They remain CPU-owned just like LOD0
+    // and are uploaded/cached lazily by each backend.
+    std::vector<MeshLodLevel> LodLevels;
     Material Mat;
     glm::mat4 Transform{1.0f};
     bool CastsShadows = true;
@@ -68,6 +72,7 @@ public:
     FogSettings Fog;
     ShadowSettings Shadows;
     VisibilitySettings Visibility;
+    LodSettings Lods;
     InstancingSettings Instancing;
     GeometryBatchingSettings Batching;
     uint64_t SelectedEntity = 0;

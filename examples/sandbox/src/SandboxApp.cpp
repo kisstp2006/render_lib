@@ -252,6 +252,7 @@ void ParseCommandLine(int argc, char** argv, ApplicationDesc& application,
         else if (argument == "--shadow-stress") sceneConfig.ShadowStress = true;
         else if (argument == "--shadow-benchmark") sceneConfig.ShadowBenchmark = true;
         else if (argument == "--light-showcase") sceneConfig.LocalLightShowcase = true;
+        else if (argument == "--no-visibility-debug") sceneConfig.VisibilityDebug = false;
         else if (argument == "--post-showcase") { sceneConfig.PostShowcase = true; sceneConfig.CinematicLut = true; }
         else if (argument == "--post-benchmark") sceneConfig.PostBenchmark = true;
         else if (argument == "--aa" && i + 1 < argc) sceneConfig.AntiAliasing = argv[++i];

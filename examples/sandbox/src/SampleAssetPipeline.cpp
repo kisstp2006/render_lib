@@ -298,16 +298,28 @@ void SampleAssetPipeline::AddStaticMesh(Scene& scene, const std::filesystem::pat
     if (!mesh)
         throw std::runtime_error(error);
     ++m_impl->LoadedResources;
+    size_t lodLevels = 0;
     for (const assets::StaticMeshPart& part : mesh->Parts)
     {
         if (!part.Mesh)
             continue;
         scene.AddInstance(part.Mesh, m_impl->LoadMaterial(part.Material), rootTransform * part.Transform);
+        MeshInstance& instance = scene.Instances().back();
+        instance.LodLevels.reserve(part.Lods.size());
+        for (const assets::cook::MeshLod& lod : part.Lods)
+        {
+            if (lod.Mesh.Vertices.empty() || lod.Mesh.Indices.empty())
+                continue;
+            instance.LodLevels.push_back({std::make_shared<MeshData>(lod.Mesh),
+                                         lod.TriangleRatio, lod.RelativeError});
+        }
+        lodLevels += instance.LodLevels.size();
     }
     const float loadMs = std::chrono::duration<float, std::milli>(
         std::chrono::steady_clock::now() - loadStart).count();
     log::Info("Sample asset: instantiated " + std::to_string(mesh->Parts.size()) +
-              " mesh part(s) in " + std::to_string(loadMs) + " ms");
+              " mesh part(s), " + std::to_string(lodLevels) + " LOD level(s) in " +
+              std::to_string(loadMs) + " ms");
 }
 
 std::shared_ptr<HdrImageData> SampleAssetPipeline::LoadEnvironment(const std::filesystem::path& source)

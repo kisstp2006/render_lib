@@ -3,6 +3,8 @@
 #include "SampleAssetPipeline.h"
 
 #include "engine/core/Application.h"
+#include "engine/asset/cook/MeshProcessing.h"
+#include "engine/core/Log.h"
 #include "engine/scene/Mesh.h"
 #include "engine/scene/Scene.h"
 #include "engine/scene/Texture.h"
@@ -11,6 +13,8 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -283,18 +287,21 @@ void PopulatePostShowcase(Application& app, const SandboxSceneConfig&)
     camera.Pitch = -10.0f;
 }
 
-void PopulateVisibilityShowcase(Application& app)
+void PopulateVisibilityShowcase(Application& app, const SandboxSceneConfig& config)
 {
     Scene& scene = app.GetScene();
     scene.Visibility.Enabled = true;
     scene.Visibility.FrustumCulling = true;
     scene.Visibility.DistanceCulling = true;
     scene.Visibility.MaxDistance = 140.0f;
-    scene.Visibility.DebugBounds = true;
+    scene.Visibility.DebugBounds = config.VisibilityDebug;
     scene.Visibility.DebugCulledBounds = true;
     scene.Visibility.GpuOcclusionCulling = true;
     scene.Visibility.OcclusionDepthBias = 0.0001f;
-    scene.Visibility.DebugOcclusion = true;
+    scene.Visibility.DebugOcclusion = config.VisibilityDebug;
+    scene.Lods.Enabled = true;
+    scene.Lods.TargetScreenSpaceErrorPixels = 1.0f;
+    scene.Lods.HysteresisFraction = 0.15f;
     scene.Instancing.Enabled = true;
     scene.Instancing.MinimumBatchSize = 2;
     scene.Instancing.HierarchicalCulling = true;
@@ -315,6 +322,20 @@ void PopulateVisibilityShowcase(Application& app)
 
     const auto plane = std::make_shared<MeshData>(primitives::MakePlane(100.0f, 1));
     const auto cube = std::make_shared<MeshData>(primitives::MakeCube(0.75f));
+    // Deliberately dense source geometry: the rows nearest to the camera use
+    // LOD0, while distant rows cross the same common SSE thresholds on GL/VK.
+    const auto lodSource = std::make_shared<MeshData>(primitives::MakeSphere(0.78f, 40, 40));
+    std::vector<assets::cook::MeshLod> cookedLods;
+    std::string lodError;
+    if (!assets::cook::GenerateMeshLods(*lodSource, 4, 0.42f, 0.04f, true,
+                                        cookedLods, &lodError))
+        throw std::runtime_error("Visibility LOD sample generation failed: " + lodError);
+    std::vector<MeshLodLevel> lodLevels;
+    lodLevels.reserve(cookedLods.size() > 0 ? cookedLods.size() - 1u : 0u);
+    for (size_t level = 1; level < cookedLods.size(); ++level)
+        lodLevels.push_back({std::make_shared<MeshData>(std::move(cookedLods[level].Mesh)),
+                             cookedLods[level].TriangleRatio,
+                             cookedLods[level].RelativeError});
     Material floor;
     floor.Albedo = {0.22f, 0.24f, 0.28f};
     floor.Roughness = 0.82f;
@@ -356,7 +377,8 @@ void PopulateVisibilityShowcase(Application& app)
             transform = glm::rotate(transform, glm::radians(column * 7.0f + row * 11.0f),
                                     glm::vec3(0.0f, 1.0f, 0.0f));
             transform = glm::scale(transform, {0.8f, 1.0f + (row % 3) * 0.45f, 0.8f});
-            scene.AddInstance(cube, material, transform);
+            scene.AddInstance(lodSource, material, transform);
+            scene.Instances().back().LodLevels = lodLevels;
         }
     }
 
@@ -383,6 +405,9 @@ void PopulateVisibilityShowcase(Application& app)
     camera.Yaw = -90.0f;
     camera.Pitch = -8.0f;
     camera.FarPlane = 160.0f;
+    log::Info("Visibility sample: " + std::to_string(lodLevels.size() + 1u) +
+              " LOD levels, 1 px SSE target, 15% hysteresis. "
+              "Use the runtime Debug UI to inspect selected levels and triangle savings.");
 }
 
 void PopulateHdriStudio(Application& app, const SandboxSceneConfig& config, SampleAssetPipeline& assets)
@@ -453,7 +478,7 @@ void PopulateSandboxScene(Application& app, const SandboxSceneConfig& config, Sa
     }
     if (config.VisibilityShowcase)
     {
-        PopulateVisibilityShowcase(app);
+        PopulateVisibilityShowcase(app, config);
         return;
     }
     if (config.HdriStudio)

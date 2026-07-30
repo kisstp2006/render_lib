@@ -29,6 +29,18 @@ struct MeshData
     bool RuntimeMutable = false;
 };
 
+// One optional, lower-detail representation of a MeshData.  The level-zero
+// mesh continues to live in MeshInstance::Mesh, so existing scenes remain
+// source-compatible.  RelativeError is the maximum geometric deviation
+// relative to the source mesh's bounding-sphere diameter; it is the value
+// produced by meshoptimizer and lets the renderer make a screen-space choice.
+struct MeshLodLevel
+{
+    std::shared_ptr<MeshData> Mesh;
+    float TriangleRatio = 1.0f;
+    float RelativeError = 0.0f;
+};
+
 namespace primitives {
 
 MeshData MakeSphere(float radius = 1.0f, int stacks = 32, int slices = 32);

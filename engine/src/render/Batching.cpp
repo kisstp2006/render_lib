@@ -341,7 +341,10 @@ struct SceneBatcher::Impl
         for (size_t index = 0; index < source.size(); ++index)
         {
             const MeshInstance& instance = source[index];
-            if (!instance.AllowBatching || !instance.Mesh ||
+            // A spatially combined mesh cannot change level independently.
+            // Keep authored/generated LOD chains on the per-instance path;
+            // they still profit from later exact LOD-aware GPU instancing.
+            if (!instance.AllowBatching || !instance.LodLevels.empty() || !instance.Mesh ||
                 instance.Mesh->Vertices.empty() || instance.Mesh->Indices.empty())
                 continue;
 

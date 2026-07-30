@@ -89,6 +89,14 @@ void AppendIconLines(const DebugIcon& icon, const Camera& camera,
 
 } // namespace
 
+const std::shared_ptr<MeshData>& GetCommandMesh(const PreparedRenderCommand& command)
+{
+    static const std::shared_ptr<MeshData> empty;
+    if (command.Geometry)
+        return command.Geometry;
+    return command.Source ? command.Source->Mesh : empty;
+}
+
 uint64_t SceneRenderer::AddFrameWork(FrameWorkStage stage, FrameWorkCallback callback,
                                      concurrency::TaskPriority priority)
 {
@@ -275,6 +283,7 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
             if (!instance.Mesh || instance.Mesh->Vertices.empty() || instance.Mesh->Indices.empty())
                 return;
             result.Command.Source = &instance;
+            result.Command.Geometry = instance.Mesh;
             result.Command.IndexCount = static_cast<uint32_t>(instance.Mesh->Indices.size());
             result.Bounds = TransformBounds(localBounds[index], instance.Transform);
             result.Command.WorldBounds = result.Bounds;
@@ -407,9 +416,37 @@ const RenderFrameData& SceneRenderer::PrepareFrame(const Scene& scene, const Cam
     m_frame.ShadowCommands.reserve(instances.size());
     if (scene.Visibility.DebugBounds || scene.Visibility.DebugOcclusion)
         m_frame.VisibilityDebug.reserve(instances.size());
-    for (const ClassifiedCommand& result : classified)
+    for (ClassifiedCommand& result : classified)
     {
         ++m_frame.Visibility.Tested;
+        // Keep culling bounds at LOD0 for conservative visibility, but select
+        // actual geometry only after visibility has been classified. The same
+        // prepared command is then shared by main and shadow passes.
+        if (result.Bounds.Valid && result.Command.Source &&
+            !result.Command.Source->LodLevels.empty())
+        {
+            const LodSelection selection = m_lodSelector.Select(
+                result.Command.Source->TemporalId, m_frame.FrameIndex, result.Bounds,
+                camera, static_cast<uint32_t>(m_frame.Height),
+                result.Command.Source->LodLevels, scene.Lods, &m_frame.Lods);
+            result.Command.LodLevel = selection.Level;
+            if (selection.Level > 0)
+            {
+                const MeshLodLevel& lod = result.Command.Source->LodLevels[selection.Level - 1u];
+                if (lod.Mesh)
+                {
+                    result.Command.Geometry = lod.Mesh;
+                    result.Command.IndexCount = static_cast<uint32_t>(lod.Mesh->Indices.size());
+                }
+            }
+        }
+        const std::shared_ptr<MeshData>& submittedMesh = GetCommandMesh(result.Command);
+        if (result.Render && submittedMesh && result.Command.Source)
+        {
+            m_frame.Lods.Lod0Triangles += result.Command.Source->Mesh
+                ? result.Command.Source->Mesh->Indices.size() / 3u : 0u;
+            m_frame.Lods.SubmittedTriangles += submittedMesh->Indices.size() / 3u;
+        }
         switch (result.Classification)
         {
         case VisibilityClassification::Visible:

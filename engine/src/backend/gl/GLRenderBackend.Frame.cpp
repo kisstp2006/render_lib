@@ -186,7 +186,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
                     m_shadowShader->SetInt("uBaseInstance",
                                            static_cast<int>(batch.FirstInstance));
                     BindMaterialTexture(mat.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-                    GetOrCreateMesh(instance.Mesh).DrawInstanced(
+                    GetOrCreateMesh(GetCommandMesh(*batch.Representative)).DrawInstanced(
                         static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
                     ++m_gpuDrawCallsThisFrame;
                 }
@@ -295,7 +295,7 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
         BindMaterialTexture(mat.EmissiveMap, kUnitEmissive, *m_defaultWhite);
         BindMaterialTexture(mat.OcclusionMap, kUnitOcclusion, *m_defaultWhite);
 
-        GetOrCreateMesh(instance.Mesh).DrawInstanced(
+        GetOrCreateMesh(GetCommandMesh(*batch.Representative)).DrawInstanced(
             static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
         ++m_gpuDrawCallsThisFrame;
     }

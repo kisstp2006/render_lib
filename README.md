@@ -55,6 +55,9 @@ Current feature set (OpenGL backend):
 - **GPU instancing + HISM**: exact mesh/material batching into base-instance
   draws, shared current/previous transform buffers, and hierarchical cluster
   culling for dense instance populations on OpenGL and Vulkan
+- **Mesh LODs**: cooked or authored chains, screen-space-error selection,
+  hysteresis, LOD-aware instancing and identical shadow geometry on OpenGL and
+  Vulkan ([guide](docs/mesh-lod.md))
 - **Geometry batching**: spatially partitioned cached static batches,
   TAA-aware selective dynamic batches, and material-safe offline mesh combining
   with versioned OpenGL/Vulkan GPU-buffer refresh
@@ -530,7 +533,7 @@ above are not repeated here.
     - [x] GPU Hi-Z occlusion culling with asynchronous readback, temporal conservatism, debug visualization and OpenGL/Vulkan parity ([guide](docs/visibility-culling.md))
     - [x] GPU instancing and hierarchical instancing (HISM) with shared batching, temporal transforms, shadow-pass integration and cluster diagnostics ([guide](docs/instancing.md))
     - [x] Static batching, selective dynamic batching and offline mesh combining ([guide](docs/geometry-batching.md))
-    - [ ] Authored and generated LOD chains with screen-space error selection
+    - [x] Authored and generated LOD chains with screen-space error selection ([guide](docs/mesh-lod.md))
     - [ ] HLOD cluster generation, impostors and streaming integration
     - [ ] Indirect rendering and Multi Draw Indirect
     - [ ] GPU-generated draw lists and fully GPU-driven submission

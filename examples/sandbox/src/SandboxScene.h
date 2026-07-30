@@ -25,6 +25,7 @@ struct SandboxSceneConfig
     bool DayNightShowcase = false;
     bool PostShowcase = false;
     bool VisibilityShowcase = false;
+    bool VisibilityDebug = true;
     bool CinematicLut = false;
     bool PostBenchmark = false;
     float ColorLutWeight = 1.0f;

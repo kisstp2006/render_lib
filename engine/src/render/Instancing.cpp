@@ -28,10 +28,11 @@ void HashWord(uint64_t& hash, uint64_t value) noexcept
     }
 }
 
-uint64_t InstanceBatchHash(const MeshInstance& instance) noexcept
+uint64_t InstanceBatchHash(const PreparedRenderCommand& command) noexcept
 {
+    const MeshInstance& instance = *command.Source;
     uint64_t hash = MaterialRenderStateHash(instance.Mat);
-    HashWord(hash, reinterpret_cast<uintptr_t>(instance.Mesh.get()));
+    HashWord(hash, reinterpret_cast<uintptr_t>(GetCommandMesh(command).get()));
     return hash;
 }
 
@@ -40,7 +41,7 @@ bool BatchCompatible(const PreparedRenderCommand& left,
 {
     const MeshInstance& a = *left.Source;
     const MeshInstance& b = *right.Source;
-    return a.Mesh.get() == b.Mesh.get() &&
+    return GetCommandMesh(left).get() == GetCommandMesh(right).get() &&
            MaterialRenderStatesEqual(a.Mat, b.Mat);
 }
 
@@ -125,7 +126,7 @@ InstanceBatchBuildResult BuildInstanceBatches(
             groups.push_back({command, {command}});
             continue;
         }
-        const uint64_t hash = InstanceBatchHash(*command->Source);
+        const uint64_t hash = InstanceBatchHash(*command);
         size_t groupIndex = SIZE_MAX;
         if (const auto found = buckets.find(hash); found != buckets.end())
         {

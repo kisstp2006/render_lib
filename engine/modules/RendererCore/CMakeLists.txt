@@ -11,6 +11,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/include/engine/render/Exposure.h
         ${ENGINE_ROOT}/include/engine/render/GpuTiming.h
         ${ENGINE_ROOT}/include/engine/render/Instancing.h
+        ${ENGINE_ROOT}/include/engine/render/LevelOfDetail.h
         ${ENGINE_ROOT}/include/engine/render/PipelineCache.h
         ${ENGINE_ROOT}/include/engine/render/Picking.h
         ${ENGINE_ROOT}/include/engine/render/RenderGraph.h
@@ -30,6 +31,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/src/render/Exposure.cpp
         ${ENGINE_ROOT}/src/render/GpuTiming.cpp
         ${ENGINE_ROOT}/src/render/Instancing.cpp
+        ${ENGINE_ROOT}/src/render/LevelOfDetail.cpp
         ${ENGINE_ROOT}/src/render/PipelineCache.cpp
         ${ENGINE_ROOT}/src/render/Picking.cpp
         ${ENGINE_ROOT}/src/render/RenderGraph.cpp

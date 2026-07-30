@@ -10,6 +10,7 @@
 #include "engine/render/Exposure.h"
 #include "engine/render/GpuTiming.h"
 #include "engine/render/Instancing.h"
+#include "engine/render/LevelOfDetail.h"
 #include "engine/render/GpuCapabilities.h"
 #include "engine/render/PipelineCache.h"
 #include "engine/render/Picking.h"
@@ -483,6 +484,80 @@ void TestVisibilityCulling()
             "bounds debug data must include visible and culled finite bounds but exclude invalid meshes");
     Require(SquaredDistanceToBounds({0.0f, 0.0f, 0.0f}, frame.VisibilityDebug[0].Bounds) == 16.0f,
             "distance culling must use nearest AABB distance rather than center distance");
+}
+
+void TestScreenSpaceMeshLods()
+{
+    const auto lod0 = std::make_shared<MeshData>(primitives::MakeSphere(1.0f, 32, 32));
+    const auto lod1 = std::make_shared<MeshData>(primitives::MakeSphere(1.0f, 12, 12));
+    const auto lod2 = std::make_shared<MeshData>(primitives::MakeSphere(1.0f, 5, 5));
+    const std::array<MeshLodLevel, 2> levels{{
+        {lod1, static_cast<float>(lod1->Indices.size()) / static_cast<float>(lod0->Indices.size()), 0.01f},
+        {lod2, static_cast<float>(lod2->Indices.size()) / static_cast<float>(lod0->Indices.size()), 0.04f}}};
+    Camera camera;
+    camera.Position = {0.0f, 0.0f, 0.0f};
+    camera.Yaw = -90.0f;
+    camera.Pitch = 0.0f;
+    LodSettings settings;
+    settings.TargetScreenSpaceErrorPixels = 1.0f;
+    settings.HysteresisFraction = 0.15f;
+    LodSelector selector;
+    LodStatistics statistics;
+    auto boundsAt = [](float z) {
+        return AxisAlignedBounds{{-1.0f, -1.0f, z - 1.0f}, {1.0f, 1.0f, z + 1.0f}, true};
+    };
+    Require(selector.Select(77, 1, boundsAt(-5.0f), camera, 720, levels, settings,
+                            &statistics).Level == 0,
+            "near geometry must retain LOD0 when its projected simplification error is visible");
+    Require(selector.Select(77, 2, boundsAt(-120.0f), camera, 720, levels, settings,
+                            &statistics).Level == 2,
+            "distant geometry must select the coarsest LOD under the screen-space error target");
+    Require(selector.Select(77, 3, boundsAt(-80.0f), camera, 720, levels, settings,
+                            &statistics).Level == 2,
+            "LOD hysteresis must retain a coarse level inside the transition band");
+    Require(selector.Select(77, 4, boundsAt(-65.0f), camera, 720, levels, settings,
+                            &statistics).Level == 1,
+            "LOD hysteresis must restore detail after leaving the transition band");
+    selector.Reset();
+    Require(selector.Select(0, 5, boundsAt(-120.0f), camera, 720, levels, settings).Level == 2 &&
+                selector.Select(0, 6, boundsAt(-80.0f), camera, 720, levels, settings).Level == 1,
+            "anonymous renderer instances must not share temporal LOD hysteresis");
+    const std::array<MeshLodLevel, 2> incompleteLevels{{
+        {lod1, 0.5f, 0.01f}, {nullptr, 0.2f, 0.04f}}};
+    settings.ForcedLevel = 2;
+    Require(selector.Select(77, 5, boundsAt(-5.0f), camera, 720, levels, settings,
+                            &statistics).Level == 2,
+            "forced LOD selection must provide deterministic visual QA");
+    Require(selector.Select(78, 6, boundsAt(-120.0f), camera, 720, incompleteLevels,
+                            settings).Level == 1,
+            "forced LOD selection must clamp to the contiguous valid mesh chain");
+
+    Scene scene;
+    scene.Visibility.Enabled = false;
+    scene.Batching.Enabled = true;
+    scene.Lods = settings;
+    scene.Lods.ForcedLevel = UINT32_MAX;
+    scene.AddInstance(lod0, Material{}, glm::translate(glm::mat4(1.0f), {0.0f, 0.0f, -5.0f}));
+    scene.Instances().back().LodLevels.assign(levels.begin(), levels.end());
+    scene.AddInstance(lod0, Material{}, glm::translate(glm::mat4(1.0f), {3.0f, 0.0f, -120.0f}));
+    scene.Instances().back().LodLevels.assign(levels.begin(), levels.end());
+    SceneRenderer renderer;
+    const RenderFrameData& frame = renderer.PrepareFrame(scene, camera, 1280, 720);
+    Require(frame.RenderCommands.size() == 2 && frame.ShadowCommands.size() == 2,
+            "LOD instances must remain eligible for both main and shadow submission");
+    Require(GetCommandMesh(frame.RenderCommands[0]) == lod0 &&
+                GetCommandMesh(frame.RenderCommands[1]) == lod2,
+            "shared frame preparation must select near and far LOD geometry exactly once");
+    Require(GetCommandMesh(frame.ShadowCommands[1]) == lod2,
+            "the shadow path must consume the exact LOD chosen for the main pass");
+    std::array<const PreparedRenderCommand*, 2> commands{
+        &frame.RenderCommands[0], &frame.RenderCommands[1]};
+    const InstanceBatchBuildResult batches = BuildInstanceBatches(commands, scene.Instancing);
+    Require(batches.Batches.size() == 2,
+            "GPU instancing must never combine commands that selected different LOD geometry");
+    Require(frame.Lods.Selected[0] == 1 && frame.Lods.Selected[2] == 1 &&
+                frame.Lods.SubmittedTriangles < frame.Lods.Lod0Triangles,
+            "LOD frame statistics must expose selected levels and triangle savings");
 }
 
 void TestTemporalHiZOcclusionPolicy()
@@ -1301,6 +1376,11 @@ void TestCpuProfilerHierarchyAndTimeline()
             "CPU profiler must retain names for each recorded thread timeline");
     Require(snapshot.Summaries.size() == 3,
             "CPU profiler must aggregate every distinct zone");
+
+    const CpuProfileSnapshot frameSummary = profiler.FrameSummarySnapshot();
+    Require(frameSummary.Events.empty() && frameSummary.Summaries.size() == 3 &&
+                frameSummary.FirstFrame == 0 && frameSummary.LastFrame == 0,
+            "runtime CPU overlay summary must avoid copying the retained trace");
 
     const std::filesystem::path tracePath =
         std::filesystem::temp_directory_path() / "source_like_cpu_profiler_test.json";
@@ -2378,6 +2458,7 @@ int main()
     TestVulkanMaterialPacking();
     TestSharedSceneRendererFrame();
     TestVisibilityCulling();
+    TestScreenSpaceMeshLods();
     TestTemporalHiZOcclusionPolicy();
     TestGpuInstancingAndHism();
     TestGeometryCombiningAndBatching();

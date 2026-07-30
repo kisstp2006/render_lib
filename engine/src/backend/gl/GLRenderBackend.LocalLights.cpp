@@ -212,7 +212,7 @@ void GLRenderBackend::RenderLocalLightShadows(
                 m_pointShadowShader->SetInt("uBaseInstance",
                     static_cast<int>(batch.FirstInstance));
                 BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-                GetOrCreateMesh(instance.Mesh).DrawInstanced(
+                GetOrCreateMesh(GetCommandMesh(*batch.Representative)).DrawInstanced(
                     static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
                 ++m_gpuDrawCallsThisFrame;
             }
@@ -244,7 +244,7 @@ void GLRenderBackend::RenderLocalLightShadows(
             m_shadowShader->SetInt("uBaseInstance",
                 static_cast<int>(batch.FirstInstance));
             BindMaterialTexture(material.AlbedoMap, kUnitAlbedo, *m_defaultWhite);
-            GetOrCreateMesh(instance.Mesh).DrawInstanced(
+            GetOrCreateMesh(GetCommandMesh(*batch.Representative)).DrawInstanced(
                 static_cast<uint32_t>(batch.Commands.size()), batch.FirstInstance);
             ++m_gpuDrawCallsThisFrame;
         }

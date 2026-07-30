@@ -461,6 +461,7 @@ bool Application::RunOneFrame()
                 m_debugOverlay.SetValue("JOBS", "ACTIVE", std::to_string(taskStatistics.Active));
                 m_debugOverlay.SetValue("JOBS", "COMPLETED", std::to_string(taskStatistics.Completed));
                 const VisibilityStatistics& visibility = m_sceneRenderer.GetVisibilityStatistics();
+                const LodStatistics& lods = m_sceneRenderer.GetLodStatistics();
                 m_debugOverlay.SetValue("VISIBILITY", "TESTED", std::to_string(visibility.Tested));
                 m_debugOverlay.SetValue("VISIBILITY", "VISIBLE", std::to_string(visibility.Visible));
                 m_debugOverlay.SetValue("VISIBILITY", "FRUSTUM CULLED",
@@ -469,6 +470,16 @@ bool Application::RunOneFrame()
                                         std::to_string(visibility.DistanceCulled));
                 m_debugOverlay.SetValue("VISIBILITY", "SHADOW CASTERS",
                                         std::to_string(visibility.ShadowCasters));
+                m_debugOverlay.SetValue("MESH LOD", "CANDIDATES", std::to_string(lods.Candidates));
+                m_debugOverlay.SetValue("MESH LOD", "LOD0", std::to_string(lods.Selected[0]));
+                m_debugOverlay.SetValue("MESH LOD", "LOD1", std::to_string(lods.Selected[1]));
+                m_debugOverlay.SetValue("MESH LOD", "LOD2", std::to_string(lods.Selected[2]));
+                m_debugOverlay.SetValue("MESH LOD", "LOD3+", std::to_string(
+                    lods.Selected[3] + lods.Selected[4] + lods.Selected[5] +
+                    lods.Selected[6] + lods.Selected[7]));
+                m_debugOverlay.SetValue("MESH LOD", "TRANSITIONS", std::to_string(lods.Transitions));
+                m_debugOverlay.SetValue("MESH LOD", "SUBMITTED TRIS", std::to_string(lods.SubmittedTriangles));
+                m_debugOverlay.SetValue("MESH LOD", "LOD0 TRIS", std::to_string(lods.Lod0Triangles));
                 m_debugOverlay.SetValue("GPU HI-Z", "ACTIVE",
                                         metrics.Backend.GpuOcclusionActive ? "YES" : "NO");
                 m_debugOverlay.SetValue("GPU HI-Z", "CANDIDATES",

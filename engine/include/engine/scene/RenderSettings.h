@@ -135,6 +135,23 @@ struct VisibilitySettings
     bool DebugOcclusion = false;
 };
 
+struct LodSettings
+{
+    bool Enabled = true;
+    // Largest allowed projected simplification error.  One pixel preserves
+    // the intended silhouette while allowing distant geometry to become much
+    // cheaper.
+    float TargetScreenSpaceErrorPixels = 1.0f;
+    // A band around the target error prevents rapid level changes when the
+    // camera hovers around a transition.
+    float HysteresisFraction = 0.15f;
+    // Positive values favor detail; negative values favor cheaper geometry.
+    float Bias = 0.0f;
+    // UINT32_MAX means automatic selection. This is useful for visual QA of
+    // an individual level without backend-specific debug switches.
+    uint32_t ForcedLevel = UINT32_MAX;
+};
+
 struct InstancingSettings
 {
     // Compatible meshes and materials are submitted with one native

@@ -11,6 +11,7 @@
 
 #include "engine/render/CascadedShadows.h"
 #include "engine/render/Batching.h"
+#include "engine/render/LevelOfDetail.h"
 #include "engine/backend/IRenderBackend.h"
 #include "engine/render/Visibility.h"
 #include "engine/scene/Environment.h"
@@ -65,10 +66,20 @@ struct PreparedLocalLights
 struct PreparedRenderCommand
 {
     const MeshInstance* Source = nullptr;
+    // The selected LOD geometry. An empty value means LOD0 (Source->Mesh).
+    // Keeping ownership in the immutable command guarantees that delayed GPU
+    // work still references a live CPU mesh.
+    std::shared_ptr<MeshData> Geometry;
     uint32_t InstanceIndex = 0;
     uint32_t IndexCount = 0;
+    uint32_t LodLevel = 0;
     AxisAlignedBounds WorldBounds;
 };
+
+// Resolves the mesh actually submitted by a prepared command. It is used by
+// both native backends and by the shared instancing key, preventing a backend
+// from accidentally batching distinct LOD levels together.
+const std::shared_ptr<MeshData>& GetCommandMesh(const PreparedRenderCommand& command);
 
 enum class FrameWorkStage : uint8_t
 {
@@ -127,6 +138,7 @@ struct RenderFrameData
     std::vector<DebugLine> DebugLines;
     VisibilityStatistics Visibility{};
     GeometryBatchingStatistics Batching{};
+    LodStatistics Lods{};
     FramePreparationStatistics Preparation{};
     float TonemapWhitePointScale = 1.0f;
     const debug::DebugOverlayImage* DebugOverlay = nullptr;
@@ -150,6 +162,7 @@ public:
     {
         m_frame = {};
         m_batcher.Reset();
+        m_lodSelector.Reset();
     }
     void SetTaskSystem(concurrency::TaskSystem* tasks)
     {
@@ -162,6 +175,10 @@ public:
     const GeometryBatchingStatistics& GetBatchingStatistics() const noexcept
     {
         return m_frame.Batching;
+    }
+    const LodStatistics& GetLodStatistics() const noexcept
+    {
+        return m_frame.Lods;
     }
 
     const RenderFrameData& PrepareFrame(const Scene& scene, const Camera& camera,
@@ -217,6 +234,7 @@ private:
     uint64_t m_nextWorkToken = 1;
     std::unordered_map<const MeshData*, CachedMeshBounds> m_boundsCache;
     SceneBatcher m_batcher;
+    LodSelector m_lodSelector;
     RenderFrameData m_frame;
 };
 
