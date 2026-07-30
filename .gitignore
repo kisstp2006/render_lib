@@ -5,6 +5,7 @@ out/
 *.user
 .vs/
 .vscode/
+.claude/
 CMakeUserPresets.json
 compile_commands.json
 imgui.ini
