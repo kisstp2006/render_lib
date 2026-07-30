@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(SourceLikeEngine LANGUAGES C CXX)
+project(SourceLikeEngine VERSION 0.1.0 LANGUAGES C CXX)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -43,6 +43,11 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+# Wayland support needs wayland-protocols/wayland-scanner in addition to
+# libwayland-dev; X11 alone (which also covers XWayland-compatible Wayland
+# sessions) keeps the Linux dependency list short. Set GLFW_BUILD_WAYLAND=ON
+# in a local cache if native Wayland windowing is specifically needed.
+set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     glfw
