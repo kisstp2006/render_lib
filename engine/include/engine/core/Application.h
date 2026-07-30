@@ -108,7 +108,6 @@ class Application
     bool m_wasFocused = true;
     bool m_hasFrameClock = false;
     bool m_profilerOwnedByDebugOverlay = false;
-    bool m_memoryProfilerOwnedByDiagnostics = false;
     double m_lastFrameTime = 0.0;
     double m_nextDebugOverlayUpdateTime = 0.0;
     uint64_t m_frameCounter = 0;
