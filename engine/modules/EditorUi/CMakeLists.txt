@@ -16,6 +16,7 @@ target_include_directories(engine_imgui PUBLIC
     ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(engine_imgui PUBLIC glfw)
 set_target_properties(engine_imgui PROPERTIES FOLDER "Dependencies")
+engine_apply_target_compile_options(engine_imgui)
 
 set(editor_ui_dependencies
     engine_foundation

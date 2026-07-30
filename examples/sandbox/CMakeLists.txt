@@ -13,22 +13,13 @@ target_compile_definitions(sandbox_support PRIVATE
     ENGINE_SAMPLE_ASSET_ROOT="${CMAKE_BINARY_DIR}/sample-assets/descriptors"
     ENGINE_SAMPLE_CACHE_ROOT="${CMAKE_BINARY_DIR}/sample-assets/cache")
 
-if(MSVC)
-    target_compile_options(sandbox_support PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(sandbox_support PRIVATE -Wall -Wextra)
-endif()
+engine_apply_target_compile_options(sandbox_support)
 
 function(add_renderer_sample target source)
     add_executable(${target} ${source})
     target_link_libraries(${target} PRIVATE sandbox_support)
     set_target_properties(${target} PROPERTIES FOLDER "Samples")
-
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra)
-    endif()
+    engine_apply_target_compile_options(${target})
 endfunction()
 
 add_renderer_sample(sandbox src/main.cpp)
@@ -46,11 +37,7 @@ if(ENGINE_ENABLE_IMGUI)
         add_executable(${target} ${source})
         target_link_libraries(${target} PRIVATE engine)
         set_target_properties(${target} PROPERTIES FOLDER "Samples/Editor Foundation")
-        if(MSVC)
-            target_compile_options(${target} PRIVATE /W4 /permissive-)
-        else()
-            target_compile_options(${target} PRIVATE -Wall -Wextra)
-        endif()
+        engine_apply_target_compile_options(${target})
     endfunction()
 
     add_editor_sample(sample_editor_viewports ../samples/editor_viewports/main.cpp)

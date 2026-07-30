@@ -1,12 +1,22 @@
 include_guard(GLOBAL)
 
-function(engine_apply_target_defaults target folder)
-    set_target_properties(${target} PROPERTIES FOLDER "Engine/${folder}")
+function(engine_apply_target_compile_options target)
+    # Explicit per-target requirement rather than relying on an ambient
+    # CMAKE_CXX_STANDARD directory default, which would also force this
+    # standard onto FetchContent'd third-party targets and (if this project
+    # is embedded via add_subdirectory) would be the kind of directory-wide
+    # setting a parent project should never have to worry about.
+    target_compile_features(${target} PUBLIC cxx_std_20)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive-)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra)
     endif()
+endfunction()
+
+function(engine_apply_target_defaults target folder)
+    set_target_properties(${target} PROPERTIES FOLDER "Engine/${folder}")
+    engine_apply_target_compile_options(${target})
 endfunction()
 
 function(engine_add_module target)

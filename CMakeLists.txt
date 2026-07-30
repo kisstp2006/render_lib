@@ -1,20 +1,32 @@
 cmake_minimum_required(VERSION 3.21)
 project(SourceLikeEngine VERSION 0.1.0 LANGUAGES C CXX)
 
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+# ON when this is the top-level build (an application built directly from
+# this repo); automatically OFF when add_subdirectory()'d into another
+# project. Guards every setting below that would otherwise leak into or
+# fight with an embedding parent's own global build configuration.
+option(ENGINE_STANDALONE "Build the renderer as a standalone top-level project" ON)
+if(NOT PROJECT_IS_TOP_LEVEL)
+    set(ENGINE_STANDALONE OFF)
+endif()
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(ENGINE_STANDALONE)
+    set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Keep C and C++ dependencies on the same MSVC CRT. GLAD is generated as C;
 # without enabling/configuring C explicitly it fell back to static LIBCMT,
-# while the engine used the dynamic debug CRT, producing LNK4098.
-if(MSVC)
+# while the engine used the dynamic debug CRT, producing LNK4098. Only
+# forced standalone: embedded, the parent's own CRT choice already applies
+# to this subtree, and overriding it here risks a CRT mismatch against the
+# parent's other targets.
+if(ENGINE_STANDALONE AND MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+if(ENGINE_STANDALONE AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
@@ -39,15 +51,22 @@ include(FetchContent)
 # Third-party dependencies (fetched at configure time, no vendoring)
 # ---------------------------------------------------------------------------
 
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+# No FORCE on any of these: they set our preferred defaults for the first
+# configure without clobbering a value an embedding parent project or a
+# command-line -D already gave the cache.
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "")
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "")
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "")
+set(GLFW_INSTALL OFF CACHE BOOL "")
 # Wayland support needs wayland-protocols/wayland-scanner in addition to
 # libwayland-dev; X11 alone (which also covers XWayland-compatible Wayland
 # sessions) keeps the Linux dependency list short. Set GLFW_BUILD_WAYLAND=ON
 # in a local cache if native Wayland windowing is specifically needed.
-set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "")
+# GLFW's own switch to pin its library type independent of the ambient
+# BUILD_SHARED_LIBS, which an embedding parent may have set ON for its own
+# targets without meaning to also turn our fetched GLFW into a shared lib.
+set(GLFW_LIBRARY_TYPE STATIC CACHE STRING "")
 
 FetchContent_Declare(
     glfw
@@ -101,10 +120,10 @@ if(ENGINE_ENABLE_IMGUI)
     )
 endif()
 
-set(ASTCENC_CLI OFF CACHE BOOL "" FORCE)
-set(ASTCENC_UNITTEST OFF CACHE BOOL "" FORCE)
-set(ASTCENC_WERROR OFF CACHE BOOL "" FORCE)
-set(ASTCENC_ISA_NATIVE ON CACHE BOOL "" FORCE)
+set(ASTCENC_CLI OFF CACHE BOOL "")
+set(ASTCENC_UNITTEST OFF CACHE BOOL "")
+set(ASTCENC_WERROR OFF CACHE BOOL "")
+set(ASTCENC_ISA_NATIVE ON CACHE BOOL "")
 FetchContent_Declare(
     astc_encoder
     GIT_REPOSITORY https://github.com/ARM-software/astc-encoder.git
