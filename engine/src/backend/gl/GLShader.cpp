@@ -21,6 +21,11 @@ namespace {
 
 constexpr uint32_t kProgramBinaryMagic = 0x42474c53u; // SLGB
 constexpr uint32_t kProgramBinaryVersion = 1;
+// NVIDIA's OpenGL SPIR-V specialization can silently miscompile optimized
+// shaderc HLSL without non-semantic debug records (observed as an all-black
+// Release frame). Keep the records in every configuration; they do not alter
+// shader semantics and are stripped by the driver's native program binary.
+constexpr bool kGenerateOpenGlSpirvDebugInfo = true;
 
 struct ProgramBinaryHeader
 {
@@ -148,9 +153,9 @@ GLShader::GLShader(const std::string& vertPath, const std::string& fragPath,
 
     GLShaderCacheState& cache = ShaderCacheState();
     const std::string vertexKey = BuildShaderPermutationKey(
-        vertexDocument.Source, canonicalDefines, "opengl-4.6-native-spirv-hlsl-combined-gl-builtins-vertex-v3");
+        vertexDocument.Source, canonicalDefines, "opengl-4.6-native-spirv-hlsl-combined-gl-builtins-vertex-v4");
     const std::string fragmentKey = BuildShaderPermutationKey(
-        fragmentDocument.Source, canonicalDefines, "opengl-4.6-native-spirv-hlsl-combined-gl-builtins-fragment-v3");
+        fragmentDocument.Source, canonicalDefines, "opengl-4.6-native-spirv-hlsl-combined-gl-builtins-fragment-v4");
     const uint64_t programKey = StableShaderHash(
         vertexKey + ":" + fragmentKey + ":" + cache.DeviceIdentity);
     const std::filesystem::path binaryPath = cache.Directory /
@@ -183,9 +188,7 @@ GLShader::GLShader(const std::string& vertPath, const std::string& fragPath,
         vertexRequest.Target = shader::SpirvTarget::OpenGL46;
         vertexRequest.Defines = canonicalDefines;
         vertexRequest.Optimize = true;
-#ifndef NDEBUG
-        vertexRequest.GenerateDebugInfo = true;
-#endif
+        vertexRequest.GenerateDebugInfo = kGenerateOpenGlSpirvDebugInfo;
         const shader::HlslCompileResult vertex =
             shader::CompileHlslToSpirv(vertexRequest);
         const unsigned int vert = CompileStage(
@@ -199,9 +202,7 @@ GLShader::GLShader(const std::string& vertPath, const std::string& fragPath,
             fragmentRequest.Target = shader::SpirvTarget::OpenGL46;
             fragmentRequest.Defines = canonicalDefines;
             fragmentRequest.Optimize = true;
-#ifndef NDEBUG
-            fragmentRequest.GenerateDebugInfo = true;
-#endif
+            fragmentRequest.GenerateDebugInfo = kGenerateOpenGlSpirvDebugInfo;
             const shader::HlslCompileResult fragment =
                 shader::CompileHlslToSpirv(fragmentRequest);
             frag = CompileStage(GL_FRAGMENT_SHADER, fragment.Spirv, fragPath);
@@ -266,7 +267,7 @@ GLShader::GLShader(const std::string& computePath,
 
     GLShaderCacheState& cache = ShaderCacheState();
     const std::string shaderKey = BuildShaderPermutationKey(
-        document.Source, canonicalDefines, "opengl-4.6-native-spirv-hlsl-combined-gl-builtins-compute-v3");
+        document.Source, canonicalDefines, "opengl-4.6-native-spirv-hlsl-combined-gl-builtins-compute-v4");
     const uint64_t programKey = StableShaderHash(shaderKey + ":" + cache.DeviceIdentity);
     const std::filesystem::path binaryPath = cache.Directory /
         (ShaderHashHex(programKey) + ".glbin");
@@ -298,9 +299,7 @@ GLShader::GLShader(const std::string& computePath,
         request.Target = shader::SpirvTarget::OpenGL46;
         request.Defines = canonicalDefines;
         request.Optimize = true;
-#ifndef NDEBUG
-        request.GenerateDebugInfo = true;
-#endif
+        request.GenerateDebugInfo = kGenerateOpenGlSpirvDebugInfo;
         const shader::HlslCompileResult result = shader::CompileHlslToSpirv(request);
         const unsigned int compute = CompileStage(
             GL_COMPUTE_SHADER, result.Spirv, computePath);
