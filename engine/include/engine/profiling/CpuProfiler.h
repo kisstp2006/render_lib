@@ -71,6 +71,9 @@ public:
 
     void SetThreadName(std::string_view name);
     CpuProfileSnapshot Snapshot() const;
+    // Lightweight view for the runtime overlay: only aggregates the most
+    // recently completed frame and never copies the full trace payload.
+    CpuProfileSnapshot FrameSummarySnapshot() const;
     bool WriteChromeTrace(const std::string& path) const;
 
 private:

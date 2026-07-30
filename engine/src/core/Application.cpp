@@ -195,8 +195,6 @@ Application::~Application()
     }
     if (m_profilerOwnedByDebugOverlay)
         profiling::CpuProfiler::Get().SetEnabled(false);
-    if (m_memoryProfilerOwnedByDiagnostics)
-        profiling::MemoryProfiler::Get().SetEnabled(false);
 }
 
 #if ENGINE_ENABLE_IMGUI
@@ -215,34 +213,24 @@ void Application::SetRuntimeMonitorsEnabled(bool enabled)
 #endif
     m_desc.EnableRuntimeMonitors = enabled;
     m_debugOverlay.SetRuntimeMonitorsVisible(enabled);
-    profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
     // Always-on monitor cards use the OS process-memory sample exposed by
-    // MemoryProfiler::Snapshot. Full global new/delete tracking remains an
-    // explicit profiler/debug-ui feature because serializing every allocation
-    // behind a shared mutex measurably destroys frame pacing.
-    if (!enabled && m_memoryProfilerOwnedByDiagnostics)
-    {
-        memoryProfiler.SetEnabled(false);
-        m_memoryProfilerOwnedByDiagnostics = false;
-    }
+    // MemoryProfiler::Snapshot. Full global new/delete tracking remains under
+    // explicit control of the embedding application.
 }
 
 void Application::Run()
 {
     profiling::CpuProfiler& profiler = profiling::CpuProfiler::Get();
-    profiling::MemoryProfiler& memoryProfiler = profiling::MemoryProfiler::Get();
     if (m_debugOverlay.IsVisible() && !profiler.IsEnabled())
     {
         profiler.SetEnabled(true);
         m_profilerOwnedByDebugOverlay = true;
     }
     profiler.SetThreadName("Main");
-    if (m_debugOverlay.IsVisible() && !memoryProfiler.IsEnabled())
-    {
-        memoryProfiler.SetEnabled(true);
-        memoryProfiler.SetLeakReportOnShutdown(true);
-        m_memoryProfilerOwnedByDiagnostics = true;
-    }
+    // Runtime memory cards read inexpensive OS process counters. Allocation
+    // tracking remains opt-in (--memory-profile / leak diagnostics) because
+    // globally locking every allocation to draw an overlay damages frame
+    // pacing, especially in Debug builds.
 
     while (RunOneFrame())
     {
@@ -252,11 +240,6 @@ void Application::Run()
     {
         profiler.SetEnabled(false);
         m_profilerOwnedByDebugOverlay = false;
-    }
-    if (m_memoryProfilerOwnedByDiagnostics)
-    {
-        memoryProfiler.SetEnabled(false);
-        m_memoryProfilerOwnedByDiagnostics = false;
     }
 }
 
@@ -273,12 +256,6 @@ bool Application::RunOneFrame()
         profiler.SetEnabled(true);
         profiler.SetThreadName("Main");
         m_profilerOwnedByDebugOverlay = true;
-    }
-    if (m_debugOverlay.IsVisible() && !memoryProfiler.IsEnabled())
-    {
-        memoryProfiler.SetEnabled(true);
-        memoryProfiler.SetLeakReportOnShutdown(true);
-        m_memoryProfilerOwnedByDiagnostics = true;
     }
 
     const double frameStart = glfwGetTime();
@@ -556,7 +533,7 @@ bool Application::RunOneFrame()
                                         std::to_string(batching.CombinedIndices));
                 m_debugOverlay.SetValue("GEOMETRY BATCHING", "CPU TIME",
                                         std::to_string(batching.BuildMilliseconds) + " MS");
-                m_debugOverlay.Update(metrics, profiler.Snapshot(), memoryProfiler.Snapshot(),
+                m_debugOverlay.Update(metrics, profiler.FrameSummarySnapshot(), memoryProfiler.Snapshot(),
                                       gpuProfile);
             }
 

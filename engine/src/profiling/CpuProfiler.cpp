@@ -253,6 +253,24 @@ CpuProfileSnapshot CpuProfiler::Snapshot() const
     return snapshot;
 }
 
+CpuProfileSnapshot CpuProfiler::FrameSummarySnapshot() const
+{
+    // The visible debug overlay needs only current CPU zones.  Copying and
+    // sorting a full multi-frame Chrome trace here was needlessly expensive
+    // and produced a regular frame-time hitch whenever the overlay refreshed.
+    CpuProfileSnapshot snapshot;
+    std::scoped_lock lock(m_mutex);
+    snapshot.DroppedEvents = m_droppedEvents;
+    if (m_completedFrames == 0)
+        return snapshot;
+
+    const uint64_t completedFrame = m_completedFrames - 1u;
+    snapshot.FirstFrame = completedFrame;
+    snapshot.LastFrame = completedFrame;
+    snapshot.Summaries = BuildSummaries(m_events, completedFrame, completedFrame);
+    return snapshot;
+}
+
 void CpuProfiler::LogFrameStatistics(uint64_t completedFrame)
 {
     std::vector<CpuProfileEvent> events;

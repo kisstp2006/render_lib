@@ -380,7 +380,10 @@ int RunSandboxApp(int argc, char** argv, SandboxPreset preset)
     memoryProfiler.SetEnabled(false);
     memoryProfiler.Reset();
     profiling::MemoryProfilerConfig memoryConfig;
-    memoryConfig.Enabled = !memoryProfilePath.empty() || memoryLeakReport || debugUi || stabilityStress;
+    // The runtime monitor uses the inexpensive process-memory snapshot. Full
+    // allocation tracking is intentionally opt-in so opening the Debug UI
+    // cannot perturb rendering performance.
+    memoryConfig.Enabled = !memoryProfilePath.empty() || memoryLeakReport || stabilityStress;
     memoryConfig.LeakReportOnShutdown = memoryLeakReport;
     memoryConfig.RetainedFrames = memoryProfileRetainedFrames;
     memoryProfiler.Configure(memoryConfig);
