@@ -1665,6 +1665,14 @@ void TestMemoryProfilerTrackingAndExport()
         profiling::MemoryTagScope tag("Test/GlobalNew");
         globalAllocation = new uint8_t[70'000];
     }
+    // The standard permits eliding a new/delete pair whose pointer is used
+    // for nothing but the matching delete; GCC applies this even across the
+    // translation-unit boundary that hides the profiler's override, which
+    // would silently skip tracking this allocation. The volatile round-trip
+    // forces the compiler to treat the pointer as observably used.
+    volatile uintptr_t globalAllocationAddress =
+        reinterpret_cast<uintptr_t>(globalAllocation);
+    (void)globalAllocationAddress;
 
     const profiling::MemoryProfileSnapshot live = profiler.Snapshot(true);
     Require(live.LiveAllocations >= 3 && live.CurrentBytes >= 72'080 &&

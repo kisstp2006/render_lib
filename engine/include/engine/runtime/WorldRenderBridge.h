@@ -19,7 +19,11 @@ namespace engine::runtime
 struct WorldRenderResolvers
 {
     std::function<std::shared_ptr<MeshData>(assets::AssetGuid)> Mesh;
-    std::function<std::optional<Material>(assets::AssetGuid)> Material;
+    // Qualified as engine::Material: an unqualified reference here would be
+    // ill-formed once the member name below hides the outer type name in
+    // this class's scope (GCC/Clang diagnose it; MSVC permissively accepts
+    // it, so this only surfaces on non-MSVC compilers).
+    std::function<std::optional<engine::Material>(assets::AssetGuid)> Material;
     std::function<std::shared_ptr<TextureData>(assets::AssetGuid)> Texture;
     std::function<std::shared_ptr<HdrImageData>(assets::AssetGuid)> Hdri;
 };
