@@ -180,11 +180,9 @@ allowed dependency directions and extension rules are documented in the
 ## Building
 
 Requires CMake >= 3.21, Python 3 with Jinja2 for GLAD code generation, a
-C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+), and shaderc from the
-Vulkan SDK for the common HLSL-to-SPIR-V pipeline.
-Dependencies (GLFW, GLAD2, GLM, stb) are fetched at configure time via
-`FetchContent` — nothing to install beyond a compiler and CMake. The Vulkan
-Both backends compile HLSL when the application starts and retain native shader
+C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+), and shaderc (normally
+supplied by the Vulkan SDK) for the common HLSL-to-SPIR-V pipeline. Both
+backends compile HLSL when the application starts and retain native shader
 or pipeline caches. Vulkan SPIR-V is cached under
 `build/runtime_shaders/vk/<config>` and automatically rebuilt when its source,
 target profile or a transitive include changes. On Windows, `validate_hlsl`
@@ -195,19 +193,54 @@ The engine also builds `assetc`, a headless source-to-cooked asset tool. See
 the [asset pipeline guide](docs/asset-pipeline.md) for descriptor formats,
 runtime handles, supported asset types and command examples.
 
+### Windows
+
+Dependencies (GLFW, GLAD2, GLM, stb, ...) are fetched at configure time via
+`FetchContent`. Install the [Vulkan SDK](https://vulkan.lunarg.com/) (it
+ships `shaderc_combined.lib`) and Python 3 with `pip install jinja2`, then
+either use the CMake preset:
+
+```powershell
+cmake --preset windows-vs2022
+cmake --build --preset windows-vs2022
+ctest --preset windows-vs2022 --output-on-failure
+.\build\windows-vs2022\examples\sandbox\RelWithDebInfo\sandbox.exe
+```
+
+or the plain generator invocation used for local day-to-day development:
+
 ```powershell
 cmake -B build -S . -G "Visual Studio 18 2026"
 cmake --build build --config RelWithDebInfo
 .\build\examples\sandbox\RelWithDebInfo\sandbox.exe
 ```
 
-On Linux/macOS with Ninja:
+### Linux
+
+Verified on Ubuntu 24.04 (GCC 13). Install the build tools, X11 development
+headers GLFW needs, Vulkan/shaderc development packages, and Jinja2:
 
 ```bash
-cmake -B build -S . -G Ninja
-cmake --build build
-./build/examples/sandbox/sandbox
+sudo apt-get update && sudo apt-get install -y \
+    ninja-build libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+    libxi-dev libxext-dev libgl1-mesa-dev libvulkan-dev libshaderc-dev \
+    python3-jinja2 pkg-config
+cmake --preset linux
+cmake --build --preset linux
+ctest --preset linux --output-on-failure
+./build/linux/examples/sandbox/sandbox
 ```
+
+Native Wayland windowing is intentionally left off (`GLFW_BUILD_WAYLAND=OFF`
+in the root `CMakeLists.txt`) to keep the required package list short; GLFW's
+X11 backend already covers XWayland-compatible Wayland sessions. Set that
+cache variable `ON` and install `libwayland-dev wayland-protocols
+libxkbcommon-dev` if native Wayland support is specifically needed.
+
+Distro-packaged `libshaderc-dev` (unlike the LunarG SDK's fully
+self-contained `shaderc_combined`) links against separate SPIRV-Tools and
+glslang static libraries; `engine/modules/ShaderCompiler/CMakeLists.txt`
+detects and links them automatically when present.
 
 The build creates a generic command-line sandbox and ten focused sample
 executables. They share the same scene/control implementation, so the samples
@@ -459,6 +492,20 @@ cool, warm or fantasy). `--no-stars`, `--no-milky-way` and
 `--static-night-sky` disable the corresponding effects. The same switches,
 colors and numeric values are available to applications through `Scene::Sky`
 (`SkySettings`) without depending on the OpenGL backend.
+
+## Versioning
+
+Releases follow [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`
+tags (`v0.1.0`, ...) on `main`, with notable changes tracked in
+[CHANGELOG.md](CHANGELOG.md).
+
+Before `1.0.0`, per SemVer's own rules, `MINOR` releases may still contain
+breaking changes — there is no stable public API yet. Once the embedding API
+(publicly documented CMake targets, headers under a stable `include/`
+boundary, the backend factory) settles, breaking changes to that surface will
+require at least a `MINOR` bump; everything else (new features, fixes,
+internal refactors) bumps `PATCH`. `MAJOR` is reserved for `1.0.0` and later
+compatibility breaks.
 
 ## Roadmap
 
