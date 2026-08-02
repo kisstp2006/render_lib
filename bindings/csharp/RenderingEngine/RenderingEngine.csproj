@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>RenderingEngine.Bindings</PackageId>
+    <AssemblyName>RenderingEngine.Managed</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Managed binding for the Rendering Engine native C ABI.</Description>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(RendererShaderDirectory)')">
+    <Content Include="$(RendererShaderDirectory)/**/*">
+      <Link>shaders/%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

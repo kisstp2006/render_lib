@@ -1,0 +1,21 @@
+<Project>
+  <!-- Keep native libraries out of the .NET dependency manifest. This target
+       applies to the binding and to every example under this directory. -->
+  <Target Name="DeployNativeRenderingEngine" AfterTargets="Build"
+          Condition="Exists('$(NativeRendererDirectory)')">
+    <ItemGroup>
+      <_NativeRenderer Include="$(NativeRendererDirectory)/RenderingEngine.dll"
+                       Condition="Exists('$(NativeRendererDirectory)/RenderingEngine.dll')" />
+      <_NativeRenderer Include="$(NativeRendererDirectory)/libRenderingEngine.so"
+                       Condition="Exists('$(NativeRendererDirectory)/libRenderingEngine.so')" />
+      <_NativeRenderer Include="$(NativeRendererDirectory)/libRenderingEngine.dylib"
+                       Condition="Exists('$(NativeRendererDirectory)/libRenderingEngine.dylib')" />
+      <_NativeRenderer Include="$(NativeRendererDirectory)/shaderc_shared.dll"
+                       Condition="Exists('$(NativeRendererDirectory)/shaderc_shared.dll')" />
+      <_NativeRenderer Include="$(NativeRendererDirectory)/shaderc_sharedd.dll"
+                       Condition="Exists('$(NativeRendererDirectory)/shaderc_sharedd.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_NativeRenderer)" DestinationFolder="$(TargetDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>
