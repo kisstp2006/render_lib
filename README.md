@@ -179,6 +179,13 @@ allowed dependency directions and extension rules are documented in the
 
 ## Building
 
+For library integration, the installable C++ SDK, stable C ABI, submodule
+recipe and runtime-asset contract are documented in the
+[renderer SDK guide](docs/renderer-sdk.md). The .NET 8 P/Invoke layer and its
+two examples are covered by the [C# binding guide](docs/csharp-binding.md).
+The renderer-only target is `engine::renderer`; editor, ECS, asset-pipeline
+and legacy application code is optional under `ENGINE_BUILD_EXTRAS`.
+
 Requires CMake >= 3.21, Python 3 with Jinja2 for GLAD code generation, a
 C++20 compiler (MSVC 2022, GCC 12+, or Clang 15+), and shaderc (normally
 supplied by the Vulkan SDK) for the common HLSL-to-SPIR-V pipeline. Both

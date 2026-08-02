@@ -9,6 +9,14 @@ before 1.0.0).
 
 ## [Unreleased]
 
+### Added
+
+- Installable `engine::renderer` shared-library SDK with a small C++ facade,
+  stable versioned C ABI, relocatable CMake package and runtime shader policy.
+- .NET 8 P/Invoke binding plus interactive PBR and backend smoke examples.
+- Renderer-only embedded build mode that leaves ECS, editor, asset pipeline,
+  tools and legacy sandbox code out of consumer projects.
+
 ## [0.1.0] - 2026-07-30
 
 First tagged release. A from-scratch C++20/CMake renderer targeting the
