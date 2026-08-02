@@ -8,14 +8,16 @@ function(engine_apply_target_compile_options target)
     # setting a parent project should never have to worry about.
     target_compile_features(${target} PUBLIC cxx_std_20)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra)
     endif()
 endfunction()
 
 function(engine_apply_target_defaults target folder)
-    set_target_properties(${target} PROPERTIES FOLDER "Engine/${folder}")
+    set_target_properties(${target} PROPERTIES
+        FOLDER "Engine/${folder}"
+        POSITION_INDEPENDENT_CODE ON)
     engine_apply_target_compile_options(${target})
 endfunction()
 

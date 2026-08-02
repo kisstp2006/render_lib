@@ -4,7 +4,7 @@
 
 #include <glm/glm.hpp>
 
-#include "engine/asset/ColorGrading.h"
+#include "engine/scene/ColorGrading.h"
 
 namespace engine {
 

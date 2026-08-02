@@ -1,6 +1,7 @@
 #include "engine/shader/HlslCompiler.h"
 
 #include "engine/render/ShaderSource.h"
+#include "engine/render/ShaderPaths.h"
 
 #include <shaderc/shaderc.hpp>
 
@@ -28,8 +29,8 @@ std::vector<std::filesystem::path> IncludeRoots(
 {
     return {
         sourcePath.parent_path(),
-        std::filesystem::path(ENGINE_SHADER_DIR),
-        std::filesystem::path(ENGINE_SHADER_DIR) / "hlsl",
+        shader_paths::Root(),
+        shader_paths::Resolve("hlsl"),
     };
 }
 

@@ -18,6 +18,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/include/engine/render/RendererFrameGraph.h
         ${ENGINE_ROOT}/include/engine/render/GpuCapabilities.h
         ${ENGINE_ROOT}/include/engine/render/SceneRenderer.h
+        ${ENGINE_ROOT}/include/engine/render/ShaderPaths.h
         ${ENGINE_ROOT}/include/engine/render/ShaderSource.h
         ${ENGINE_ROOT}/include/engine/render/TemporalAA.h
         ${ENGINE_ROOT}/include/engine/render/TextureFallback.h
@@ -38,6 +39,7 @@ engine_add_module(engine_renderer_core
         ${ENGINE_ROOT}/src/render/RendererFrameGraph.cpp
         ${ENGINE_ROOT}/src/render/GpuCapabilities.cpp
         ${ENGINE_ROOT}/src/render/SceneRenderer.cpp
+        ${ENGINE_ROOT}/src/render/ShaderPaths.cpp
         ${ENGINE_ROOT}/src/render/ShaderSource.cpp
         ${ENGINE_ROOT}/src/render/TemporalAA.cpp
         ${ENGINE_ROOT}/src/render/TextureFallback.cpp

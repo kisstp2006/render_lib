@@ -34,9 +34,4 @@ engine_add_module(engine_renderer_vulkan
         engine_shader_compiler
         engine_render_tools
         engine_third_party
-        # For color_grading::MakeIdentity() (default color LUT). This was an
-        # undeclared transitive dependency that only linked by accident of
-        # static-library ordering on MSVC; GNU ld's single-pass archive
-        # resolution exposed it as an undefined reference on Linux.
-        engine_assets
         )

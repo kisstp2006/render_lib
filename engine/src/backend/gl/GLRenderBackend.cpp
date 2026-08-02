@@ -4,6 +4,7 @@
 #include "engine/core/Log.h"
 #include "engine/core/Window.h"
 #include "engine/debug/DebugOverlay.h"
+#include "engine/render/ShaderPaths.h"
 #include "engine/render/TextureFallback.h"
 
 #include <glad/gl.h>
@@ -33,6 +34,8 @@ void APIENTRY GLDebugCallback(GLenum, GLenum type, unsigned int, GLenum severity
 
 void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
 {
+    if (!config.ShaderDirectory.empty())
+        shader_paths::SetRoot(config.ShaderDirectory);
     m_window = &window;
     m_width = window.Width();
     m_height = window.Height();
@@ -156,7 +159,7 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
-    const std::string shaderDir = std::string(ENGINE_SHADER_DIR) + "/hlsl/opengl";
+    const std::string shaderDir = shader_paths::Resolve("hlsl/opengl").string();
     const std::string fullscreen = shaderDir + "/common/fullscreen.vert.hlsl";
     m_pbrShader = std::make_unique<GLShader>(shaderDir + "/lighting/pbr.vert.hlsl", shaderDir + "/lighting/pbr.frag.hlsl");
     m_shadowShader = std::make_unique<GLShader>(shaderDir + "/lighting/shadow.vert.hlsl", shaderDir + "/lighting/shadow.frag.hlsl");

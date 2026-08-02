@@ -5,7 +5,7 @@ project(SourceLikeEngine VERSION 0.1.0 LANGUAGES C CXX)
 # this repo); automatically OFF when add_subdirectory()'d into another
 # project. Guards every setting below that would otherwise leak into or
 # fight with an embedding parent's own global build configuration.
-option(ENGINE_STANDALONE "Build the renderer as a standalone top-level project" ON)
+option(ENGINE_STANDALONE "Build the renderer as a standalone top-level project" ${PROJECT_IS_TOP_LEVEL})
 if(NOT PROJECT_IS_TOP_LEVEL)
     set(ENGINE_STANDALONE OFF)
 endif()
@@ -30,10 +30,22 @@ if(ENGINE_STANDALONE AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
+set(_engine_standalone_default ${ENGINE_STANDALONE})
 option(ENGINE_BUILD_VULKAN "Build the Vulkan backend" ON)
-option(ENGINE_BUILD_SANDBOX "Build the sandbox example app" ON)
-option(ENGINE_BUILD_TESTS "Build engine unit tests" ON)
-option(ENGINE_BUILD_ASSET_TOOLS "Build the asset pipeline command-line tools" ON)
+option(ENGINE_BUILD_EXTRAS
+       "Build the mini-engine, runtime, editor and asset-pipeline support used by examples"
+       ${_engine_standalone_default})
+set(_engine_extras_default ${ENGINE_BUILD_EXTRAS})
+option(ENGINE_BUILD_RENDERER_EXAMPLES "Build minimal renderer SDK examples"
+       ${_engine_standalone_default})
+option(ENGINE_BUILD_RENDERER_TESTS "Build renderer SDK ABI tests"
+       ${_engine_standalone_default})
+option(ENGINE_BUILD_CSHARP_BINDINGS "Build the managed binding and C# examples" OFF)
+option(ENGINE_BUILD_SANDBOX "Build the legacy mini-engine sandbox example"
+       ${_engine_extras_default})
+option(ENGINE_BUILD_TESTS "Build full mini-engine unit tests" ${_engine_extras_default})
+option(ENGINE_BUILD_ASSET_TOOLS "Build the asset pipeline command-line tools"
+       ${_engine_extras_default})
 option(ENGINE_ENABLE_GPU_VISUAL_TESTS
        "Run OpenGL/Vulkan golden-image tests through CTest (requires a display and GPU)" OFF)
 option(ENGINE_ENABLE_GPU_STABILITY_TESTS
@@ -43,7 +55,14 @@ option(ENGINE_ENABLE_GPU_PIPELINE_CACHE_TESTS
 option(ENGINE_ENABLE_RUNTIME_MONITORS
        "Enable the always-on CPU-memory and GPU runtime monitor widgets" ON)
 option(ENGINE_ENABLE_IMGUI
-       "Build the Dear ImGui docking integration used by editor applications" ON)
+       "Build the Dear ImGui docking integration used by editor examples"
+       ${_engine_extras_default})
+
+if(ENGINE_BUILD_SANDBOX OR ENGINE_BUILD_TESTS OR ENGINE_BUILD_ASSET_TOOLS OR ENGINE_ENABLE_IMGUI)
+    set(ENGINE_BUILD_EXTRAS ON)
+endif()
+
+set(ENGINE_SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 
 include(FetchContent)
 
@@ -97,21 +116,23 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
-FetchContent_Declare(
-    cgltf
-    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
-    GIT_TAG        v1.15
-    GIT_SHALLOW    TRUE
-)
+if(ENGINE_BUILD_EXTRAS)
+    FetchContent_Declare(
+        cgltf
+        GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+        GIT_TAG        v1.15
+        GIT_SHALLOW    TRUE
+    )
 
-FetchContent_Declare(
-    meshoptimizer
-    GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
-    GIT_TAG        73583c335e541c139821d0de2bf5f12960a04941 # v1.0
-    GIT_SHALLOW    TRUE
-)
+    FetchContent_Declare(
+        meshoptimizer
+        GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+        GIT_TAG        73583c335e541c139821d0de2bf5f12960a04941 # v1.0
+        GIT_SHALLOW    TRUE
+    )
+endif()
 
-if(ENGINE_ENABLE_IMGUI)
+if(ENGINE_BUILD_EXTRAS AND ENGINE_ENABLE_IMGUI)
     FetchContent_Declare(
         imgui
         GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -120,48 +141,55 @@ if(ENGINE_ENABLE_IMGUI)
     )
 endif()
 
-set(ASTCENC_CLI OFF CACHE BOOL "")
-set(ASTCENC_UNITTEST OFF CACHE BOOL "")
-set(ASTCENC_WERROR OFF CACHE BOOL "")
-set(ASTCENC_ISA_NATIVE ON CACHE BOOL "")
-FetchContent_Declare(
-    astc_encoder
-    GIT_REPOSITORY https://github.com/ARM-software/astc-encoder.git
-    GIT_TAG        30aabb3f42406df45a910d8496f9bee17eeba9bb # 5.3.0
-    GIT_SHALLOW    TRUE
-)
+if(ENGINE_BUILD_EXTRAS)
+    set(ASTCENC_CLI OFF CACHE BOOL "")
+    set(ASTCENC_UNITTEST OFF CACHE BOOL "")
+    set(ASTCENC_WERROR OFF CACHE BOOL "")
+    set(ASTCENC_ISA_NATIVE ON CACHE BOOL "")
+    FetchContent_Declare(
+        astc_encoder
+        GIT_REPOSITORY https://github.com/ARM-software/astc-encoder.git
+        GIT_TAG        30aabb3f42406df45a910d8496f9bee17eeba9bb # 5.3.0
+        GIT_SHALLOW    TRUE
+    )
 
-# These two dependencies are source/header packages rather than reusable CMake
-# projects. SOURCE_SUBDIR keeps FetchContent from importing their sample apps;
-# small engine-owned targets are declared below instead.
-FetchContent_Declare(
-    bc7enc_rdo
-    GIT_REPOSITORY https://github.com/richgel999/bc7enc_rdo.git
-    GIT_TAG        dbe416d28a5530b4e8cc45b14bf034dc6b96bbde
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  engine_no_cmake_project
-)
-FetchContent_Declare(
-    vhacd
-    GIT_REPOSITORY https://github.com/kmammou/v-hacd.git
-    GIT_TAG        22ec20a7f8ea221ab600df869369b9c6a258cb10 # 4.1.0
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  engine_no_cmake_project
-)
+    # These two dependencies are source/header packages rather than reusable
+    # CMake projects. SOURCE_SUBDIR keeps FetchContent from importing their
+    # sample apps; small engine-owned targets are declared below instead.
+    FetchContent_Declare(
+        bc7enc_rdo
+        GIT_REPOSITORY https://github.com/richgel999/bc7enc_rdo.git
+        GIT_TAG        dbe416d28a5530b4e8cc45b14bf034dc6b96bbde
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  engine_no_cmake_project
+    )
+    FetchContent_Declare(
+        vhacd
+        GIT_REPOSITORY https://github.com/kmammou/v-hacd.git
+        GIT_TAG        22ec20a7f8ea221ab600df869369b9c6a258cb10 # 4.1.0
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  engine_no_cmake_project
+    )
+endif()
 
-FetchContent_MakeAvailable(glfw glm glad stb cgltf meshoptimizer astc_encoder bc7enc_rdo vhacd)
-if(ENGINE_ENABLE_IMGUI)
+FetchContent_MakeAvailable(glfw glm glad stb)
+if(ENGINE_BUILD_EXTRAS)
+    FetchContent_MakeAvailable(cgltf meshoptimizer astc_encoder bc7enc_rdo vhacd)
+endif()
+if(ENGINE_BUILD_EXTRAS AND ENGINE_ENABLE_IMGUI)
     FetchContent_MakeAvailable(imgui)
 endif()
 
-add_library(engine_bc_encoder STATIC
-    ${bc7enc_rdo_SOURCE_DIR}/bc7enc.cpp
-    ${bc7enc_rdo_SOURCE_DIR}/rgbcx.cpp)
-target_include_directories(engine_bc_encoder PUBLIC ${bc7enc_rdo_SOURCE_DIR})
-set_target_properties(engine_bc_encoder PROPERTIES FOLDER "Dependencies")
+if(ENGINE_BUILD_EXTRAS)
+    add_library(engine_bc_encoder STATIC
+        ${bc7enc_rdo_SOURCE_DIR}/bc7enc.cpp
+        ${bc7enc_rdo_SOURCE_DIR}/rgbcx.cpp)
+    target_include_directories(engine_bc_encoder PUBLIC ${bc7enc_rdo_SOURCE_DIR})
+    set_target_properties(engine_bc_encoder PROPERTIES FOLDER "Dependencies")
 
-add_library(engine_vhacd INTERFACE)
-target_include_directories(engine_vhacd INTERFACE ${vhacd_SOURCE_DIR}/include)
+    add_library(engine_vhacd INTERFACE)
+    target_include_directories(engine_vhacd INTERFACE ${vhacd_SOURCE_DIR}/include)
+endif()
 
 # glad2 generates loader sources at configure time via its cmake helper
 glad_add_library(glad_gl_core46 STATIC API gl:core=4.6)
@@ -172,7 +200,7 @@ endif()
 if(TARGET glm)
     set_target_properties(glm PROPERTIES FOLDER "Dependencies")
 endif()
-if(TARGET meshoptimizer)
+if(ENGINE_BUILD_EXTRAS AND TARGET meshoptimizer)
     set_target_properties(meshoptimizer PROPERTIES FOLDER "Dependencies")
 endif()
 if(TARGET astcenc-native-static)
@@ -192,15 +220,28 @@ endif()
 
 add_subdirectory(engine)
 
-if(ENGINE_BUILD_ASSET_TOOLS)
+if(ENGINE_BUILD_EXTRAS AND ENGINE_BUILD_ASSET_TOOLS)
     add_subdirectory(tools/assetc)
 endif()
 
-if(ENGINE_BUILD_SANDBOX)
+if(ENGINE_BUILD_RENDERER_EXAMPLES)
+    add_subdirectory(examples/renderer_embed)
+endif()
+
+if(ENGINE_BUILD_RENDERER_TESTS)
+    enable_testing()
+    add_subdirectory(tests/renderer_sdk)
+endif()
+
+if(ENGINE_BUILD_EXTRAS AND ENGINE_BUILD_SANDBOX)
     add_subdirectory(examples/sandbox)
 endif()
 
-if(ENGINE_BUILD_TESTS)
+if(ENGINE_BUILD_EXTRAS AND ENGINE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(ENGINE_BUILD_CSHARP_BINDINGS)
+    add_subdirectory(bindings/csharp)
 endif()

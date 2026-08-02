@@ -1,4 +1,4 @@
-#include "engine/asset/ColorGrading.h"
+#include "engine/scene/ColorGrading.h"
 #include "engine/profiling/MemoryProfiler.h"
 
 #include <algorithm>

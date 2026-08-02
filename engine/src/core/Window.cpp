@@ -4,6 +4,8 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <mutex>
 #include <stdexcept>
 
 namespace engine
@@ -11,6 +13,26 @@ namespace engine
 
 namespace
 {
+
+std::mutex g_glfwMutex;
+uint32_t g_glfwUsers = 0;
+
+void AcquireGlfw()
+{
+    std::scoped_lock lock(g_glfwMutex);
+    if (g_glfwUsers == 0 && !glfwInit())
+        throw std::runtime_error("Failed to initialize GLFW");
+    ++g_glfwUsers;
+}
+
+void ReleaseGlfw()
+{
+    std::scoped_lock lock(g_glfwMutex);
+    if (g_glfwUsers == 0)
+        return;
+    if (--g_glfwUsers == 0)
+        glfwTerminate();
+}
 
 GLFWmonitor* SelectMonitor(int requestedIndex)
 {
@@ -42,8 +64,7 @@ Window::Window(const WindowDesc& desc)
     : m_width(desc.width), m_height(desc.height), m_windowedWidth(desc.width), m_windowedHeight(desc.height),
       m_mode(desc.mode), m_defaultCursorMode(desc.cursor)
 {
-    if (!glfwInit())
-        throw std::runtime_error("Failed to initialize GLFW");
+    AcquireGlfw();
 
     glfwDefaultWindowHints();
     glfwWindowHint(GLFW_VISIBLE, desc.visible ? GLFW_TRUE : GLFW_FALSE);
@@ -84,7 +105,7 @@ Window::Window(const WindowDesc& desc)
     m_handle = glfwCreateWindow(createWidth, createHeight, desc.title.c_str(), createMonitor, nullptr);
     if (!m_handle)
     {
-        glfwTerminate();
+        ReleaseGlfw();
         throw std::runtime_error("Failed to create GLFW window");
     }
 
@@ -131,7 +152,7 @@ Window::~Window()
 {
     if (m_handle)
         glfwDestroyWindow(m_handle);
-    glfwTerminate();
+    ReleaseGlfw();
 }
 
 bool Window::ShouldClose() const { return glfwWindowShouldClose(m_handle); }

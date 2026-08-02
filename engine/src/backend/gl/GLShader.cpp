@@ -2,6 +2,7 @@
 #include "engine/backend/gl/GLDebug.h"
 #include "engine/core/Log.h"
 #include "engine/render/ShaderSource.h"
+#include "engine/render/ShaderPaths.h"
 #include "engine/shader/HlslCompiler.h"
 
 #include <glad/gl.h>
@@ -143,9 +144,9 @@ GLShader::GLShader(const std::string& vertPath, const std::string& fragPath,
                    const std::vector<ShaderDefine>& defines)
 {
     const std::vector<std::filesystem::path> includeRoots = {
-        std::filesystem::path(ENGINE_SHADER_DIR),
-        std::filesystem::path(ENGINE_SHADER_DIR) / "hlsl",
-        std::filesystem::path(ENGINE_SHADER_DIR) / "hlsl" / "opengl"
+        shader_paths::Root(),
+        shader_paths::Resolve("hlsl"),
+        shader_paths::Resolve("hlsl/opengl")
     };
     const ShaderSourceDocument vertexDocument = LoadShaderSource(vertPath, includeRoots);
     const ShaderSourceDocument fragmentDocument = LoadShaderSource(fragPath, includeRoots);
@@ -258,9 +259,9 @@ GLShader::GLShader(const std::string& computePath,
                    const std::vector<ShaderDefine>& defines)
 {
     const std::vector<std::filesystem::path> includeRoots = {
-        std::filesystem::path(ENGINE_SHADER_DIR),
-        std::filesystem::path(ENGINE_SHADER_DIR) / "hlsl",
-        std::filesystem::path(ENGINE_SHADER_DIR) / "hlsl" / "opengl"
+        shader_paths::Root(),
+        shader_paths::Resolve("hlsl"),
+        shader_paths::Resolve("hlsl/opengl")
     };
     const ShaderSourceDocument document = LoadShaderSource(computePath, includeRoots);
     const std::vector<ShaderDefine> canonicalDefines = CanonicalizeShaderDefines(defines);

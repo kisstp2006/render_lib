@@ -3,7 +3,6 @@ engine_add_module(engine_assets
     ALIAS assets
     SOURCES
         ${ENGINE_ROOT}/include/engine/asset/BuiltinAssetTypes.h
-        ${ENGINE_ROOT}/include/engine/asset/ColorGrading.h
         ${ENGINE_ROOT}/include/engine/asset/ColorGradingAsset.h
         ${ENGINE_ROOT}/include/engine/asset/CubemapAsset.h
         ${ENGINE_ROOT}/include/engine/asset/GltfLoader.h
@@ -11,7 +10,6 @@ engine_add_module(engine_assets
         ${ENGINE_ROOT}/include/engine/asset/SceneAsset.h
         ${ENGINE_ROOT}/include/engine/asset/TextureAsset.h
         ${ENGINE_ROOT}/include/engine/asset/WorldSceneSerialization.h
-        ${ENGINE_ROOT}/src/asset/ColorGrading.cpp
         ${ENGINE_ROOT}/src/asset/ColorGradingAsset.cpp
         ${ENGINE_ROOT}/src/asset/BuiltinAssetTypes.cpp
         ${ENGINE_ROOT}/src/asset/CubemapAsset.cpp

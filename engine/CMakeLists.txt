@@ -6,29 +6,22 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EngineModule.cmake)
 # each layer becomes its own IDE project and can be built/tested independently.
 add_library(engine_build_config INTERFACE)
 target_include_directories(engine_build_config INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(engine_build_config INTERFACE glm::glm)
 target_compile_definitions(engine_build_config INTERFACE
-    ENGINE_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"
+    ENGINE_SHADER_DIR="${ENGINE_SHADER_SOURCE_DIR}"
     ENGINE_RENDERER_CACHE_DIR="${CMAKE_BINARY_DIR}/renderer_cache/$<CONFIG>"
     ENGINE_ENABLE_RUNTIME_MONITORS=$<BOOL:${ENGINE_ENABLE_RUNTIME_MONITORS}>
     ENGINE_ENABLE_IMGUI=$<BOOL:${ENGINE_ENABLE_IMGUI}>
     ENGINE_HAS_VULKAN=$<BOOL:${ENGINE_BUILD_VULKAN}>)
 set_target_properties(engine_build_config PROPERTIES FOLDER "Engine/Build")
 
-# ezEngine-inspired dependency direction:
-# Foundation -> Core/Scene/Runtime -> RendererCore -> API backends -> Application.
+# The mandatory library graph contains renderer code only. Mini-engine,
+# runtime/ECS, editor and asset-pipeline modules are example support.
 add_subdirectory(modules/ThirdParty)
 add_subdirectory(modules/Foundation)
-add_subdirectory(modules/AssetCore)
-add_subdirectory(modules/Resources)
-add_subdirectory(modules/AssetPipeline)
-add_subdirectory(modules/AssetTools)
 add_subdirectory(modules/Core)
 add_subdirectory(modules/Scene)
-add_subdirectory(modules/AssetCookers)
-add_subdirectory(modules/Assets)
-add_subdirectory(modules/Runtime)
 add_subdirectory(modules/RenderTools)
 add_subdirectory(modules/RendererCore)
 add_subdirectory(modules/ShaderCompiler)
@@ -36,37 +29,50 @@ add_subdirectory(modules/RendererOpenGL)
 if(ENGINE_BUILD_VULKAN)
     add_subdirectory(modules/RendererVulkan)
 endif()
-if(ENGINE_ENABLE_IMGUI)
-    add_subdirectory(modules/EditorUi)
+add_subdirectory(modules/RendererSdk)
+
+if(ENGINE_BUILD_EXTRAS)
+    add_subdirectory(modules/AssetCore)
+    add_subdirectory(modules/Resources)
+    add_subdirectory(modules/AssetPipeline)
+    add_subdirectory(modules/AssetTools)
+    add_subdirectory(modules/AssetCookers)
+    add_subdirectory(modules/Runtime)
+    add_subdirectory(modules/Assets)
+    if(ENGINE_ENABLE_IMGUI)
+        add_subdirectory(modules/EditorUi)
+    endif()
+    add_subdirectory(modules/Application)
 endif()
-add_subdirectory(modules/Application)
 
 # Backward-compatible facade. Existing applications keep linking `engine`, but
 # the target itself contains no engine implementation; it only aggregates the
 # independently compiled modules above.
-add_library(engine STATIC src/Engine.cpp)
-target_link_libraries(engine PUBLIC
-    engine_build_config
-    engine_foundation
-    engine_asset_core
-    engine_resources
-    engine_asset_pipeline
-    engine_asset_tools
-    engine_core
-    engine_scene
-    engine_asset_cookers
-    engine_assets
-    engine_runtime
-    engine_render_tools
-    engine_renderer_core
-    engine_shader_compiler
-    engine_renderer_opengl
-    engine_application)
-if(ENGINE_BUILD_VULKAN)
-    target_link_libraries(engine PUBLIC engine_renderer_vulkan)
+if(ENGINE_BUILD_EXTRAS)
+    add_library(engine STATIC src/Engine.cpp)
+    target_link_libraries(engine PUBLIC
+        engine_build_config
+        engine_foundation
+        engine_asset_core
+        engine_resources
+        engine_asset_pipeline
+        engine_asset_tools
+        engine_core
+        engine_scene
+        engine_asset_cookers
+        engine_assets
+        engine_runtime
+        engine_render_tools
+        engine_renderer_core
+        engine_shader_compiler
+        engine_renderer_opengl
+        engine_application)
+    if(ENGINE_BUILD_VULKAN)
+        target_link_libraries(engine PUBLIC engine_renderer_vulkan)
+    endif()
+    if(ENGINE_ENABLE_IMGUI)
+        target_link_libraries(engine PUBLIC engine_editor_ui)
+    endif()
+    engine_apply_target_defaults(engine "Umbrella")
+    add_library(engine::engine ALIAS engine)
 endif()
-if(ENGINE_ENABLE_IMGUI)
-    target_link_libraries(engine PUBLIC engine_editor_ui)
-endif()
-engine_apply_target_defaults(engine "Umbrella")
-add_library(engine::engine ALIAS engine)

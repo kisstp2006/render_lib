@@ -4,16 +4,63 @@
 # search paths regardless of these hints.
 find_path(ENGINE_SHADERC_INCLUDE_DIR shaderc/shaderc.hpp
     HINTS ${Vulkan_INCLUDE_DIRS} "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
-find_library(ENGINE_SHADERC_LIBRARY_RELEASE shaderc_combined
-    HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
-find_library(ENGINE_SHADERC_LIBRARY_DEBUG shaderc_combinedd
-    HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
-if(NOT ENGINE_SHADERC_INCLUDE_DIR OR NOT ENGINE_SHADERC_LIBRARY_RELEASE)
+set(ENGINE_SHADERC_LINK_LIBRARIES)
+
+# Recent Windows Vulkan SDKs no longer ship a Debug shaderc_combined archive.
+# Prefer shaderc's C-ABI DLL there: it is safe across Debug/Release CRT and STL
+# boundaries, unlike linking the release static C++ archive into a Debug DLL.
+if(WIN32)
+    find_library(ENGINE_SHADERC_SHARED_LIBRARY_RELEASE shaderc_shared
+        HINTS "$ENV{VULKAN_SDK}/Lib")
+    find_library(ENGINE_SHADERC_SHARED_LIBRARY_DEBUG shaderc_sharedd
+        HINTS "$ENV{VULKAN_SDK}/Lib")
+    find_file(ENGINE_SHADERC_SHARED_RUNTIME_RELEASE shaderc_shared.dll
+        HINTS "$ENV{VULKAN_SDK}/Bin")
+    find_file(ENGINE_SHADERC_SHARED_RUNTIME_DEBUG shaderc_sharedd.dll
+        HINTS "$ENV{VULKAN_SDK}/Bin")
+    if(ENGINE_SHADERC_SHARED_LIBRARY_RELEASE AND ENGINE_SHADERC_SHARED_RUNTIME_RELEASE)
+        add_library(engine_shaderc_runtime SHARED IMPORTED GLOBAL)
+        set_target_properties(engine_shaderc_runtime PROPERTIES
+            IMPORTED_IMPLIB_RELEASE "${ENGINE_SHADERC_SHARED_LIBRARY_RELEASE}"
+            IMPORTED_LOCATION_RELEASE "${ENGINE_SHADERC_SHARED_RUNTIME_RELEASE}"
+            IMPORTED_IMPLIB_RELWITHDEBINFO "${ENGINE_SHADERC_SHARED_LIBRARY_RELEASE}"
+            IMPORTED_LOCATION_RELWITHDEBINFO "${ENGINE_SHADERC_SHARED_RUNTIME_RELEASE}"
+            IMPORTED_IMPLIB_MINSIZEREL "${ENGINE_SHADERC_SHARED_LIBRARY_RELEASE}"
+            IMPORTED_LOCATION_MINSIZEREL "${ENGINE_SHADERC_SHARED_RUNTIME_RELEASE}")
+        if(ENGINE_SHADERC_SHARED_LIBRARY_DEBUG AND ENGINE_SHADERC_SHARED_RUNTIME_DEBUG)
+            set_target_properties(engine_shaderc_runtime PROPERTIES
+                IMPORTED_IMPLIB_DEBUG "${ENGINE_SHADERC_SHARED_LIBRARY_DEBUG}"
+                IMPORTED_LOCATION_DEBUG "${ENGINE_SHADERC_SHARED_RUNTIME_DEBUG}")
+        else()
+            set_target_properties(engine_shaderc_runtime PROPERTIES
+                IMPORTED_IMPLIB_DEBUG "${ENGINE_SHADERC_SHARED_LIBRARY_RELEASE}"
+                IMPORTED_LOCATION_DEBUG "${ENGINE_SHADERC_SHARED_RUNTIME_RELEASE}")
+        endif()
+        list(APPEND ENGINE_SHADERC_LINK_LIBRARIES engine_shaderc_runtime)
+        set_property(GLOBAL PROPERTY ENGINE_SHADERC_RUNTIME_TARGET engine_shaderc_runtime)
+    endif()
+endif()
+
+if(NOT ENGINE_SHADERC_LINK_LIBRARIES)
+    find_library(ENGINE_SHADERC_LIBRARY_RELEASE shaderc_combined
+        HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
+    find_library(ENGINE_SHADERC_LIBRARY_DEBUG shaderc_combinedd
+        HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
+    if(NOT ENGINE_SHADERC_LIBRARY_RELEASE)
+        message(FATAL_ERROR
+            "The HLSL shader pipeline requires shaderc (normally supplied by the Vulkan SDK).")
+    endif()
+    if(NOT ENGINE_SHADERC_LIBRARY_DEBUG)
+        set(ENGINE_SHADERC_LIBRARY_DEBUG ${ENGINE_SHADERC_LIBRARY_RELEASE})
+    endif()
+    list(APPEND ENGINE_SHADERC_LINK_LIBRARIES
+        optimized ${ENGINE_SHADERC_LIBRARY_RELEASE}
+        debug ${ENGINE_SHADERC_LIBRARY_DEBUG})
+endif()
+
+if(NOT ENGINE_SHADERC_INCLUDE_DIR OR NOT ENGINE_SHADERC_LINK_LIBRARIES)
     message(FATAL_ERROR
         "The HLSL shader pipeline requires shaderc (normally supplied by the Vulkan SDK).")
-endif()
-if(NOT ENGINE_SHADERC_LIBRARY_DEBUG)
-    set(ENGINE_SHADERC_LIBRARY_DEBUG ${ENGINE_SHADERC_LIBRARY_RELEASE})
 endif()
 
 # The LunarG SDK's shaderc_combined is a single self-contained archive, but
@@ -52,8 +99,7 @@ engine_add_module(engine_shader_compiler
     PUBLIC_DEPS
         engine_renderer_core
     PRIVATE_DEPS
-        optimized ${ENGINE_SHADERC_LIBRARY_RELEASE}
-        debug ${ENGINE_SHADERC_LIBRARY_DEBUG}
+        ${ENGINE_SHADERC_LINK_LIBRARIES}
         ${ENGINE_SHADERC_EXTRA_LIBRARIES}
     PRIVATE_INCLUDE_DIRS
         ${ENGINE_SHADERC_INCLUDE_DIR})

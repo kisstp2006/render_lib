@@ -6,6 +6,7 @@
 #include "engine/core/Window.h"
 #include "engine/render/SceneRenderer.h"
 #include "engine/render/RendererFrameGraph.h"
+#include "engine/render/ShaderPaths.h"
 #include "engine/scene/Scene.h"
 
 #define GLFW_INCLUDE_VULKAN
@@ -191,6 +192,8 @@ VkImageLayout GraphLayout(rendergraph::ResourceState state)
 
 void VulkanRenderBackend::Init(Window& window, const RenderBackendConfig& config)
 {
+    if (!config.ShaderDirectory.empty())
+        shader_paths::SetRoot(config.ShaderDirectory);
     m_window = &window;
     m_config = config;
     m_presentMode = config.Presentation;

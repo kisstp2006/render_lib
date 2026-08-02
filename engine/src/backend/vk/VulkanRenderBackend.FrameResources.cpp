@@ -4,6 +4,7 @@
 #include "engine/backend/vk/VulkanShaderInterop.h"
 #include "engine/core/Camera.h"
 #include "engine/render/SceneRenderer.h"
+#include "engine/render/ShaderPaths.h"
 #include "engine/render/TemporalAA.h"
 #include "engine/scene/Scene.h"
 
@@ -29,15 +30,14 @@ VkShaderModule VulkanRenderBackend::LoadShader(
     std::unique_lock validationLock(m_shaderLoadMutex, std::defer_lock);
     if (m_validationEnabled)
         validationLock.lock();
-    const std::filesystem::path shaderRoot =
-        std::filesystem::path(ENGINE_SHADER_DIR) / "hlsl" / "vulkan";
+    const std::filesystem::path shaderRoot = shader_paths::Resolve("hlsl/vulkan");
     std::filesystem::path hlslRelativePath = relativePath;
     hlslRelativePath += ".hlsl";
     const std::filesystem::path cachePath =
         m_shaderCacheDirectory / (relativePath.string() + ".spv");
     VkShaderModule module = vulkan::CompileAndLoadShaderModule(
         m_device, shaderRoot / hlslRelativePath, cachePath,
-        { shaderRoot, std::filesystem::path(ENGINE_SHADER_DIR) }, defines,
+        { shaderRoot, shader_paths::Root() }, defines,
         m_config.EnablePipelineCache, statistics ? statistics : &m_pipelineCacheStats);
     SetDebugName(VK_OBJECT_TYPE_SHADER_MODULE, reinterpret_cast<uint64_t>(module),
                  "Shader Module: " + relativePath.generic_string());

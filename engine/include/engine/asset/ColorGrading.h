@@ -1,30 +1,5 @@
 #pragma once
 
-#include <memory>
-#include <string>
-#include <vector>
-
-#include <glm/glm.hpp>
-
-namespace engine {
-
-// Backend-independent CPU representation of an industry-standard 3D color
-// grading LUT. Values use .cube ordering: red changes fastest, then green,
-// then blue, matching OpenGL's x/y/z texel order.
-struct ColorGradingLutData
-{
-    int Size = 0;
-    glm::vec3 DomainMin{0.0f};
-    glm::vec3 DomainMax{1.0f};
-    std::vector<glm::vec3> Values;
-    std::string SourcePath;
-};
-
-namespace color_grading {
-
-std::shared_ptr<ColorGradingLutData> LoadCube(const std::string& path);
-std::shared_ptr<ColorGradingLutData> MakeIdentity(int size = 32);
-std::shared_ptr<ColorGradingLutData> MakeCinematic(int size = 32);
-
-} // namespace color_grading
-} // namespace engine
+// Compatibility include for applications written before color grading became
+// part of the renderer scene API.
+#include "engine/scene/ColorGrading.h"

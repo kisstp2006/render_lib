@@ -46,6 +46,9 @@ struct RenderBackendConfig
     // Empty selects the build/runtime default. A fixed engine-owned subtree
     // and device hash are always appended before any files are touched.
     std::string PipelineCacheDirectory;
+    // Empty selects the build-tree default. Installed and embedded consumers
+    // should point this at the SDK's deployed `shaders` directory.
+    std::string ShaderDirectory;
     bool EnableRenderGraph = true;
     bool ValidateRenderGraph = true;
     bool EnableTransientAliasing = true;
