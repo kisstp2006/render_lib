@@ -14,12 +14,28 @@ namespace rendering {
 
 class GraphicsDevice;
 
-inline constexpr uint32_t ApiVersion = 2;
+inline constexpr uint32_t ApiVersion = 3;
 
 enum class Backend : uint32_t
 {
     OpenGL = 0,
     Vulkan = 1,
+};
+
+struct ExternalWindowDesc
+{
+    void* UserData = nullptr;
+    int32_t (*ShouldClose)(void*) = nullptr;
+    void (*RequestClose)(void*) = nullptr;
+    void (*PollEvents)(void*) = nullptr;
+    int32_t (*MakeContextCurrent)(void*) = nullptr;
+    void* (*GetGlProcAddress)(void*, const char*) = nullptr;
+    void (*SwapBuffers)(void*) = nullptr;
+    void (*SetSwapInterval)(void*, int32_t) = nullptr;
+    const char* const* (*GetVulkanInstanceExtensions)(void*, uint32_t*) = nullptr;
+    int32_t (*CreateVulkanSurface)(void*, void* instance,
+                                   const void* allocator,
+                                   uint64_t* surface) = nullptr;
 };
 
 struct RendererDesc
@@ -35,6 +51,10 @@ struct RendererDesc
     uint32_t MsaaSamples = 4;
     std::filesystem::path ShaderDirectory;
     std::filesystem::path PipelineCacheDirectory;
+    // Null keeps the standalone, renderer-owned GLFW window. A non-null host
+    // lets an editor or managed application own presentation and its event
+    // loop while the renderer owns only GPU objects.
+    const ExternalWindowDesc* ExternalWindow = nullptr;
 };
 
 struct Vertex

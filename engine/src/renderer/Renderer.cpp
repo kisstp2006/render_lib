@@ -151,6 +151,11 @@ struct Renderer::Impl
     explicit Impl(const RendererDesc& sourceDesc)
         : Desc(sourceDesc), ActiveApi(sourceDesc.GraphicsBackend)
     {
+        if (sourceDesc.ExternalWindow)
+        {
+            ExternalWindowStorage = *sourceDesc.ExternalWindow;
+            Desc.ExternalWindow = &ExternalWindowStorage;
+        }
         if (Desc.ShaderDirectory.empty())
             Desc.ShaderDirectory = DiscoverShaderDirectory();
         if (Desc.Width == 0 || Desc.Height == 0)
@@ -160,16 +165,39 @@ struct Renderer::Impl
             throw std::runtime_error("Renderer shader directory has no hlsl subtree: " +
                                      Desc.ShaderDirectory.string());
 
-        engine::WindowDesc windowDesc;
-        windowDesc.title = Desc.WindowTitle;
-        windowDesc.width = static_cast<int>(Desc.Width);
-        windowDesc.height = static_cast<int>(Desc.Height);
-        windowDesc.api = ActiveApi == Backend::OpenGL
+        const engine::GraphicsApi graphicsApi = ActiveApi == Backend::OpenGL
             ? engine::GraphicsApi::OpenGL : engine::GraphicsApi::Vulkan;
-        windowDesc.mode = Desc.Resizable ? engine::WindowMode::WindowedResizable
-                                         : engine::WindowMode::WindowedFixed;
-        windowDesc.visible = Desc.Visible;
-        Window = std::make_unique<engine::Window>(windowDesc);
+        if (Desc.ExternalWindow)
+        {
+            engine::ExternalWindowDesc windowDesc;
+            windowDesc.userData = Desc.ExternalWindow->UserData;
+            windowDesc.width = static_cast<int>(Desc.Width);
+            windowDesc.height = static_cast<int>(Desc.Height);
+            windowDesc.api = graphicsApi;
+            windowDesc.shouldClose = Desc.ExternalWindow->ShouldClose;
+            windowDesc.requestClose = Desc.ExternalWindow->RequestClose;
+            windowDesc.pollEvents = Desc.ExternalWindow->PollEvents;
+            windowDesc.makeContextCurrent = Desc.ExternalWindow->MakeContextCurrent;
+            windowDesc.getGlProcAddress = Desc.ExternalWindow->GetGlProcAddress;
+            windowDesc.swapBuffers = Desc.ExternalWindow->SwapBuffers;
+            windowDesc.setSwapInterval = Desc.ExternalWindow->SetSwapInterval;
+            windowDesc.getVulkanInstanceExtensions =
+                Desc.ExternalWindow->GetVulkanInstanceExtensions;
+            windowDesc.createVulkanSurface = Desc.ExternalWindow->CreateVulkanSurface;
+            Window = std::make_unique<engine::Window>(windowDesc);
+        }
+        else
+        {
+            engine::WindowDesc windowDesc;
+            windowDesc.title = Desc.WindowTitle;
+            windowDesc.width = static_cast<int>(Desc.Width);
+            windowDesc.height = static_cast<int>(Desc.Height);
+            windowDesc.api = graphicsApi;
+            windowDesc.mode = Desc.Resizable ? engine::WindowMode::WindowedResizable
+                                             : engine::WindowMode::WindowedFixed;
+            windowDesc.visible = Desc.Visible;
+            Window = std::make_unique<engine::Window>(windowDesc);
+        }
 
         BackendImpl = CreateBackend(ActiveApi);
         engine::RenderBackendConfig backendConfig;
@@ -199,6 +227,8 @@ struct Renderer::Impl
     {
         if (BackendImpl)
         {
+            if (ActiveApi == Backend::OpenGL && Window)
+                Window->MakeContextCurrent();
             LowLevel.reset();
             BackendImpl->WaitIdle();
             BackendImpl->Shutdown();
@@ -206,6 +236,7 @@ struct Renderer::Impl
         }
     }
 
+    ExternalWindowDesc ExternalWindowStorage{};
     RendererDesc Desc;
     Backend ActiveApi = Backend::OpenGL;
     std::unique_ptr<engine::Window> Window;
@@ -270,6 +301,9 @@ void Renderer::Resize(uint32_t width, uint32_t height)
 
 void Renderer::RenderFrame(float deltaSeconds)
 {
+    if (m_impl->ActiveApi == Backend::OpenGL &&
+        !m_impl->Window->MakeContextCurrent())
+        throw std::runtime_error("Host failed to make its OpenGL context current");
     const int width = m_impl->Window->Width();
     const int height = m_impl->Window->Height();
     if (width <= 0 || height <= 0 || m_impl->Window->IsMinimized())

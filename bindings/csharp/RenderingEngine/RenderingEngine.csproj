@@ -8,11 +8,14 @@
     <AssemblyName>RenderingEngine.Managed</AssemblyName>
     <Version>0.1.0</Version>
     <Description>Managed binding for the Rendering Engine native C ABI.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
   </PropertyGroup>
   <ItemGroup Condition="Exists('$(RendererShaderDirectory)')">
     <Content Include="$(RendererShaderDirectory)/**/*">
       <Link>shaders/%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
 </Project>

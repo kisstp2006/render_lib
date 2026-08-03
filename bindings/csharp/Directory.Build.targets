@@ -18,4 +18,21 @@
     <Copy SourceFiles="@(_NativeRenderer)" DestinationFolder="$(TargetDir)"
           SkipUnchangedFiles="true" />
   </Target>
+  <Target Name="PublishNativeRenderingEngine" AfterTargets="Publish"
+          Condition="Exists('$(NativeRendererDirectory)') and '$(PublishDir)' != ''">
+    <ItemGroup>
+      <_PublishedNativeRenderer Include="$(NativeRendererDirectory)/RenderingEngine.dll"
+          Condition="Exists('$(NativeRendererDirectory)/RenderingEngine.dll')" />
+      <_PublishedNativeRenderer Include="$(NativeRendererDirectory)/libRenderingEngine.so"
+          Condition="Exists('$(NativeRendererDirectory)/libRenderingEngine.so')" />
+      <_PublishedNativeRenderer Include="$(NativeRendererDirectory)/libRenderingEngine.dylib"
+          Condition="Exists('$(NativeRendererDirectory)/libRenderingEngine.dylib')" />
+      <_PublishedNativeRenderer Include="$(NativeRendererDirectory)/shaderc_shared.dll"
+          Condition="Exists('$(NativeRendererDirectory)/shaderc_shared.dll')" />
+      <_PublishedNativeRenderer Include="$(NativeRendererDirectory)/shaderc_sharedd.dll"
+          Condition="Exists('$(NativeRendererDirectory)/shaderc_sharedd.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_PublishedNativeRenderer)" DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
 </Project>

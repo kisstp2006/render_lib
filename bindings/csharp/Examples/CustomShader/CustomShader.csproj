@@ -4,12 +4,16 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../RenderingEngine/RenderingEngine.csproj" />
+    <ProjectReference Include="../../RenderingEngine.Silk/RenderingEngine.Silk.csproj" />
     <Content Include="../../../../examples/custom_shader/shaders/*.hlsl">
       <Link>custom-shaders/%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
 </Project>

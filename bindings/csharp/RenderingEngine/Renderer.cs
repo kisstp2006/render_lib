@@ -30,6 +30,7 @@ public sealed class RendererOptions
     public uint MsaaSamples { get; init; } = 4;
     public string ShaderDirectory { get; init; } = Path.Combine(AppContext.BaseDirectory, "shaders");
     public string PipelineCacheDirectory { get; init; } = string.Empty;
+    public IRendererWindowHost? WindowHost { get; init; }
 }
 
 public struct PbrMaterial
@@ -85,8 +86,9 @@ public readonly record struct RendererFrameStats(float GpuMilliseconds,
 public sealed class Renderer : IDisposable
 {
     private nint _handle;
+    private ExternalWindowBridge? _windowBridge;
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
-    public const uint ApiVersion = 2;
+    public const uint ApiVersion = 3;
     public GraphicsDevice GraphicsDevice { get; }
 
     public Renderer(RendererOptions? options = null)
@@ -100,6 +102,9 @@ public sealed class Renderer : IDisposable
             : Marshal.StringToCoTaskMemUTF8(options.PipelineCacheDirectory);
         try
         {
+            _windowBridge = options.WindowHost is null
+                ? null
+                : new ExternalWindowBridge(options.WindowHost, options.Backend);
             var desc = new Native.RendererDesc
             {
                 StructSize = (uint)Marshal.SizeOf<Native.RendererDesc>(), Backend = options.Backend,
@@ -107,10 +112,15 @@ public sealed class Renderer : IDisposable
                 Resizable = options.Resizable ? 1 : 0, Visible = options.Visible ? 1 : 0,
                 VSync = options.VSync ? 1 : 0, Validation = options.Validation ? 1 : 0,
                 MsaaSamples = options.MsaaSamples, ShaderDirectory = shaders,
-                PipelineCacheDirectory = cache
+                PipelineCacheDirectory = cache,
+                ExternalWindow = _windowBridge?.NativeDescription ?? 0
             };
             _handle = Native.re_renderer_create(in desc);
-            if (_handle == 0) ThrowLastError("Could not create renderer");
+            if (_handle == 0)
+            {
+                _windowBridge?.ThrowPendingException();
+                ThrowLastError("Could not create renderer");
+            }
             GraphicsDevice = new GraphicsDevice(this);
         }
         finally
@@ -118,16 +128,46 @@ public sealed class Renderer : IDisposable
             Marshal.FreeCoTaskMem(title);
             Marshal.FreeCoTaskMem(shaders);
             if (cache != 0) Marshal.FreeCoTaskMem(cache);
+            if (_handle == 0)
+            {
+                _windowBridge?.Dispose();
+                _windowBridge = null;
+            }
         }
     }
 
     public string BackendName => Marshal.PtrToStringUTF8(Native.re_renderer_backend_name(Handle)) ?? "Unknown";
-    public bool ShouldClose => Native.re_renderer_should_close(Handle) != 0;
-    public bool PumpEvents() => BoolResult(Native.re_renderer_pump_events(Handle));
-    public bool Tick(float deltaSeconds = 1f / 60f) =>
-        BoolResult(Native.re_renderer_tick(Handle, deltaSeconds));
-    public void RenderFrame(float deltaSeconds = 1f / 60f) => Check(Native.re_renderer_render_frame(Handle, deltaSeconds));
-    public void RequestClose() => Native.re_renderer_request_close(Handle);
+    public bool ShouldClose
+    {
+        get
+        {
+            bool result = Native.re_renderer_should_close(Handle) != 0;
+            _windowBridge?.ThrowPendingException();
+            return result;
+        }
+    }
+    public bool PumpEvents()
+    {
+        bool result = BoolResult(Native.re_renderer_pump_events(Handle));
+        _windowBridge?.ThrowPendingException();
+        return result;
+    }
+    public bool Tick(float deltaSeconds = 1f / 60f)
+    {
+        bool result = BoolResult(Native.re_renderer_tick(Handle, deltaSeconds));
+        _windowBridge?.ThrowPendingException();
+        return result;
+    }
+    public void RenderFrame(float deltaSeconds = 1f / 60f)
+    {
+        Check(Native.re_renderer_render_frame(Handle, deltaSeconds));
+        _windowBridge?.ThrowPendingException();
+    }
+    public void RequestClose()
+    {
+        Native.re_renderer_request_close(Handle);
+        _windowBridge?.ThrowPendingException();
+    }
     public void Resize(uint width, uint height) => Check(Native.re_renderer_resize(Handle, width, height));
 
     public Mesh CreateCube(float halfExtent = 1) => new(HandleResult(Native.re_renderer_create_cube(Handle, halfExtent)));
@@ -188,6 +228,8 @@ public sealed class Renderer : IDisposable
     {
         EnsureOwnerThread();
         if (_handle != 0) { Native.re_renderer_destroy(_handle); _handle = 0; }
+        _windowBridge?.Dispose();
+        _windowBridge = null;
     }
 
     internal nint NativeHandle

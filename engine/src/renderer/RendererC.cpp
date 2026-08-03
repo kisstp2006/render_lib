@@ -413,6 +413,22 @@ re_renderer *re_renderer_create(const re_renderer_desc *desc) {
       native.ShaderDirectory = Utf8Path(desc->shader_directory);
     if (desc->pipeline_cache_directory)
       native.PipelineCacheDirectory = Utf8Path(desc->pipeline_cache_directory);
+    rendering::ExternalWindowDesc externalWindow;
+    if (desc->external_window) {
+      const re_external_window_desc &external = *desc->external_window;
+      externalWindow.UserData = external.user_data;
+      externalWindow.ShouldClose = external.should_close;
+      externalWindow.RequestClose = external.request_close;
+      externalWindow.PollEvents = external.poll_events;
+      externalWindow.MakeContextCurrent = external.make_context_current;
+      externalWindow.GetGlProcAddress = external.get_gl_proc_address;
+      externalWindow.SwapBuffers = external.swap_buffers;
+      externalWindow.SetSwapInterval = external.set_swap_interval;
+      externalWindow.GetVulkanInstanceExtensions =
+          external.get_vulkan_instance_extensions;
+      externalWindow.CreateVulkanSurface = external.create_vulkan_surface;
+      native.ExternalWindow = &externalWindow;
+    }
     auto result = std::make_unique<re_renderer>();
     result->Instance = rendering::Renderer::Create(native);
     return result.release();

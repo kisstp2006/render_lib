@@ -148,55 +148,179 @@ Window::Window(const WindowDesc& desc)
               std::to_string(desc.height) + ")");
 }
 
+Window::Window(const ExternalWindowDesc& desc)
+    : m_externalDesc(desc), m_external(true), m_width(desc.width),
+      m_height(desc.height), m_windowedWidth(desc.width),
+      m_windowedHeight(desc.height)
+{
+    if (m_width <= 0 || m_height <= 0)
+        throw std::invalid_argument("External window dimensions must be positive");
+    if (desc.api == GraphicsApi::OpenGL &&
+        (!desc.makeContextCurrent || !desc.getGlProcAddress ||
+         !desc.swapBuffers))
+        throw std::invalid_argument(
+            "External OpenGL windows require context, proc-address and swap callbacks");
+    if (desc.api == GraphicsApi::Vulkan &&
+        (!desc.getVulkanInstanceExtensions || !desc.createVulkanSurface))
+        throw std::invalid_argument(
+            "External Vulkan windows require extension and surface callbacks");
+    log::Info("Attached host-owned renderer window (" +
+              std::to_string(m_width) + "x" + std::to_string(m_height) + ")");
+}
+
 Window::~Window()
 {
+    if (m_external)
+        return;
     if (m_handle)
         glfwDestroyWindow(m_handle);
     ReleaseGlfw();
 }
 
-bool Window::ShouldClose() const { return glfwWindowShouldClose(m_handle); }
+bool Window::ShouldClose() const
+{
+    return m_external
+        ? (m_externalDesc.shouldClose && m_externalDesc.shouldClose(m_externalDesc.userData) != 0)
+        : glfwWindowShouldClose(m_handle);
+}
 
-void Window::RequestClose() const { glfwSetWindowShouldClose(m_handle, GLFW_TRUE); }
+void Window::RequestClose() const
+{
+    if (m_external)
+    {
+        if (m_externalDesc.requestClose)
+            m_externalDesc.requestClose(m_externalDesc.userData);
+        return;
+    }
+    glfwSetWindowShouldClose(m_handle, GLFW_TRUE);
+}
 
-void Window::PollEvents() const { glfwPollEvents(); }
+void Window::PollEvents() const
+{
+    if (m_external)
+    {
+        if (m_externalDesc.pollEvents)
+            m_externalDesc.pollEvents(m_externalDesc.userData);
+        return;
+    }
+    glfwPollEvents();
+}
 
-void Window::WaitEvents(double timeoutSeconds) const { glfwWaitEventsTimeout(std::max(timeoutSeconds, 0.0)); }
+void Window::WaitEvents(double timeoutSeconds) const
+{
+    if (!m_external)
+        glfwWaitEventsTimeout(std::max(timeoutSeconds, 0.0));
+}
 
-void Window::SwapBuffers() const { glfwSwapBuffers(m_handle); }
+void Window::SwapBuffers() const
+{
+    if (m_external)
+    {
+        m_externalDesc.swapBuffers(m_externalDesc.userData);
+        return;
+    }
+    glfwSwapBuffers(m_handle);
+}
 
 void Window::SetSwapInterval(int interval) const
 {
+    if (m_external)
+    {
+        if (m_externalDesc.setSwapInterval)
+            m_externalDesc.setSwapInterval(m_externalDesc.userData, interval);
+        return;
+    }
     glfwMakeContextCurrent(m_handle);
     glfwSwapInterval(interval);
 }
 
-void Window::SetTitle(const std::string& title) { glfwSetWindowTitle(m_handle, title.c_str()); }
+bool Window::MakeContextCurrent() const
+{
+    if (m_external)
+        return m_externalDesc.makeContextCurrent(m_externalDesc.userData) != 0;
+    glfwMakeContextCurrent(m_handle);
+    return true;
+}
 
-void Window::SetCursorMode(CursorMode mode) { glfwSetInputMode(m_handle, GLFW_CURSOR, CursorValue(mode)); }
+void* Window::GetGlProcAddress(const char* name) const
+{
+    if (m_external)
+        return m_externalDesc.getGlProcAddress(m_externalDesc.userData, name);
+    return reinterpret_cast<void*>(glfwGetProcAddress(name));
+}
+
+const char* const* Window::GetRequiredVulkanInstanceExtensions(uint32_t* count) const
+{
+    if (m_external)
+        return m_externalDesc.getVulkanInstanceExtensions(m_externalDesc.userData, count);
+    return glfwGetRequiredInstanceExtensions(count);
+}
+
+bool Window::CreateVulkanSurface(void* instance, const void* allocator,
+                                 uint64_t* surface) const
+{
+    if (m_external)
+        return m_externalDesc.createVulkanSurface(
+            m_externalDesc.userData, instance, allocator, surface) != 0;
+    (void)instance;
+    (void)allocator;
+    (void)surface;
+    return false;
+}
+
+void Window::SetTitle(const std::string& title)
+{
+    if (!m_external)
+        glfwSetWindowTitle(m_handle, title.c_str());
+}
+
+void Window::SetCursorMode(CursorMode mode)
+{
+    if (!m_external)
+        glfwSetInputMode(m_handle, GLFW_CURSOR, CursorValue(mode));
+}
 
 void Window::SetSize(int width, int height)
 {
     if (width <= 0 || height <= 0)
         return;
+    if (m_external)
+    {
+        SetFramebufferSize(width, height);
+        return;
+    }
     if (m_mode != WindowMode::WindowedFixed && m_mode != WindowMode::WindowedResizable)
         SetMode(WindowMode::WindowedResizable, -1, width, height);
     else
         glfwSetWindowSize(m_handle, width, height);
 }
 
+void Window::SetFramebufferSize(int width, int height)
+{
+    if (width < 0 || height < 0 || (width == m_width && height == m_height))
+        return;
+    m_width = width;
+    m_height = height;
+    if (m_resizeCallback)
+        m_resizeCallback(width, height);
+}
+
 void Window::Minimize()
 {
-    glfwIconifyWindow(m_handle);
+    if (!m_external)
+        glfwIconifyWindow(m_handle);
 }
 
 void Window::Restore()
 {
-    glfwRestoreWindow(m_handle);
+    if (!m_external)
+        glfwRestoreWindow(m_handle);
 }
 
 void Window::RememberWindowedPlacement()
 {
+    if (m_external)
+        return;
     if (m_mode != WindowMode::WindowedFixed && m_mode != WindowMode::WindowedResizable)
         return;
     glfwGetWindowPos(m_handle, &m_windowedX, &m_windowedY);
@@ -205,6 +329,13 @@ void Window::RememberWindowedPlacement()
 
 void Window::SetMode(WindowMode mode, int monitorIndex, int width, int height)
 {
+    if (m_external)
+    {
+        m_mode = mode;
+        if (width > 0 && height > 0)
+            SetFramebufferSize(width, height);
+        return;
+    }
     if (mode == m_mode && width <= 0 && height <= 0)
         return;
 
@@ -240,14 +371,21 @@ void Window::SetMode(WindowMode mode, int monitorIndex, int width, int height)
     m_mode = mode;
 }
 
-bool Window::IsFocused() const { return glfwGetWindowAttrib(m_handle, GLFW_FOCUSED) == GLFW_TRUE; }
+bool Window::IsFocused() const
+{
+    return m_external || glfwGetWindowAttrib(m_handle, GLFW_FOCUSED) == GLFW_TRUE;
+}
 
 bool Window::IsVisible() const
 {
-    return glfwGetWindowAttrib(m_handle, GLFW_VISIBLE) == GLFW_TRUE && !IsMinimized();
+    return m_external || (glfwGetWindowAttrib(m_handle, GLFW_VISIBLE) == GLFW_TRUE && !IsMinimized());
 }
 
-bool Window::IsMinimized() const { return glfwGetWindowAttrib(m_handle, GLFW_ICONIFIED) == GLFW_TRUE; }
+bool Window::IsMinimized() const
+{
+    return m_external ? (m_width == 0 || m_height == 0)
+                      : glfwGetWindowAttrib(m_handle, GLFW_ICONIFIED) == GLFW_TRUE;
+}
 
 void Window::FramebufferSizeCallback(GLFWwindow* window, int width, int height)
 {
@@ -255,11 +393,7 @@ void Window::FramebufferSizeCallback(GLFWwindow* window, int width, int height)
     if (!self)
         return;
 
-    self->m_width = width;
-    self->m_height = height;
-
-    if (self->m_resizeCallback)
-        self->m_resizeCallback(width, height);
+    self->SetFramebufferSize(width, height);
 }
 
 void Window::FocusCallbackThunk(GLFWwindow* window, int focused)

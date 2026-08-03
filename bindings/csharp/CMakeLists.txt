@@ -18,6 +18,9 @@ add_custom_target(renderer_csharp_binding
     COMMAND ${CSHARP_DOTNET_COMMAND} build
             ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/RenderingEngine.csproj
             --configuration $<CONFIG> ${CSHARP_COMMON_ARGS}
+    COMMAND ${CSHARP_DOTNET_COMMAND} build
+            ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine.Silk/RenderingEngine.Silk.csproj
+            --configuration $<CONFIG> ${CSHARP_COMMON_ARGS}
     DEPENDS engine_renderer_sdk
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Building RenderingEngine C# binding")
@@ -45,6 +48,11 @@ install(FILES
 install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/Native.cs
     ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/Renderer.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/WindowHost.cs
     ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/GraphicsDevice.cs
     ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/RenderingEngine.csproj
     DESTINATION ${CMAKE_INSTALL_DATADIR}/RenderingEngine/csharp/RenderingEngine)
+install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine.Silk/SilkWindowHost.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine.Silk/RenderingEngine.Silk.csproj
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/RenderingEngine/csharp/RenderingEngine.Silk)

@@ -122,8 +122,10 @@ where native shader and pipeline caches are stored.
   instances must use the same runtime shader root.
 - Destroying a mesh or material invalidates its handle for new objects;
   existing scene objects retain their underlying resource until removed.
-- Call `PumpEvents` once per host frame, then update scene state and call
-  `RenderFrame`. `Tick` is only the convenience combination of those calls.
+- For a renderer-owned window, call `PumpEvents` once per host frame, then
+  update scene state and call `RenderFrame`. `Tick` is the convenience
+  combination. A host-owned window drives its own event loop and calls only
+  `Resize` and `RenderFrame`.
 - Create resources and record `GraphicsDevice` commands on the renderer thread.
   Do not destroy handles still referenced by commands waiting for the next
   frame. Vulkan resource destruction waits for submitted GPU work so immediate
@@ -132,9 +134,12 @@ where native shader and pipeline caches are stored.
 - Destroy render targets before their attachment textures, pipelines before
   their shader modules, and all custom handles before destroying the renderer.
 
-The current facade owns a top-level window. Rendering directly into a foreign
-native window or editor control is intentionally a later SDK extension; no
-Edu ECS adapter is included in this layer.
+By default the facade owns a top-level GLFW window. Set
+`RendererDesc::ExternalWindow` (or `re_renderer_desc::external_window`) to
+attach a host-owned window. The host supplies OpenGL context/proc/swap
+callbacks or Vulkan instance-extension/surface callbacks, so no toolkit-
+specific native window pointer crosses the ABI. The C# SDK includes a
+Silk.NET implementation. No Edu ECS adapter is included in this layer.
 
 ## Build switches
 

@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define RE_API_VERSION 2u
+#define RE_API_VERSION 3u
 
 typedef struct re_renderer re_renderer;
 typedef uint64_t re_mesh;
@@ -39,6 +39,34 @@ typedef enum re_backend {
   RE_BACKEND_VULKAN = 1
 } re_backend;
 
+typedef int32_t (*re_window_should_close_fn)(void *user_data);
+typedef void (*re_window_request_close_fn)(void *user_data);
+typedef void (*re_window_poll_events_fn)(void *user_data);
+typedef int32_t (*re_window_make_context_current_fn)(void *user_data);
+typedef void *(*re_window_get_gl_proc_address_fn)(void *user_data,
+                                                  const char *name);
+typedef void (*re_window_swap_buffers_fn)(void *user_data);
+typedef void (*re_window_set_swap_interval_fn)(void *user_data,
+                                                int32_t interval);
+typedef const char *const *(*re_window_get_vulkan_instance_extensions_fn)(
+    void *user_data, uint32_t *count);
+typedef int32_t (*re_window_create_vulkan_surface_fn)(
+    void *user_data, void *instance, const void *allocator, uint64_t *surface);
+
+typedef struct re_external_window_desc {
+  void *user_data;
+  re_window_should_close_fn should_close;
+  re_window_request_close_fn request_close;
+  re_window_poll_events_fn poll_events;
+  re_window_make_context_current_fn make_context_current;
+  re_window_get_gl_proc_address_fn get_gl_proc_address;
+  re_window_swap_buffers_fn swap_buffers;
+  re_window_set_swap_interval_fn set_swap_interval;
+  re_window_get_vulkan_instance_extensions_fn
+      get_vulkan_instance_extensions;
+  re_window_create_vulkan_surface_fn create_vulkan_surface;
+} re_external_window_desc;
+
 typedef struct re_renderer_desc {
   uint32_t struct_size;
   re_backend backend;
@@ -52,6 +80,7 @@ typedef struct re_renderer_desc {
   uint32_t msaa_samples;
   const char *shader_directory;
   const char *pipeline_cache_directory;
+  const re_external_window_desc *external_window;
 } re_renderer_desc;
 
 typedef struct re_vertex {

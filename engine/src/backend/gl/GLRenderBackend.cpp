@@ -39,8 +39,14 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     m_window = &window;
     m_width = window.Width();
     m_height = window.Height();
-    glfwMakeContextCurrent(window.Handle());
-    if (!gladLoadGL(glfwGetProcAddress))
+    if (!window.MakeContextCurrent())
+        throw std::runtime_error("Host failed to make its OpenGL context current");
+    const auto loadProc = [](void* user, const char* name) -> GLADapiproc
+    {
+        return reinterpret_cast<GLADapiproc>(
+            static_cast<Window*>(user)->GetGlProcAddress(name));
+    };
+    if (!gladLoadGLUserPtr(loadProc, &window))
         throw std::runtime_error("Failed to initialize GLAD/OpenGL");
 
     int maximumSamples = 1;
@@ -69,8 +75,9 @@ void GLRenderBackend::Init(Window& window, const RenderBackendConfig& config)
     raw.PipelineStatistics = m_gpuPipelineStatisticsSupported;
     raw.MemoryBudget = m_gpuMemoryBudgetSupported;
     raw.ImmediatePresent = true;
-    raw.AdaptivePresent = glfwExtensionSupported("WGL_EXT_swap_control_tear")
-        || glfwExtensionSupported("GLX_EXT_swap_control_tear");
+    raw.AdaptivePresent = !window.IsExternal() &&
+        (glfwExtensionSupported("WGL_EXT_swap_control_tear") ||
+         glfwExtensionSupported("GLX_EXT_swap_control_tear"));
     m_capabilities.AdapterName = raw.Device.DeviceName;
     m_capabilities.MaxMsaaSamples = raw.MaxMsaaSamples;
     m_capabilities.GpuTiming = raw.GpuTimestamps;

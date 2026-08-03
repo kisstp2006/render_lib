@@ -181,8 +181,9 @@ allowed dependency directions and extension rules are documented in the
 
 For library integration, the installable C++ SDK, stable C ABI, submodule
 recipe and runtime-asset contract are documented in the
-[renderer SDK guide](docs/renderer-sdk.md). The .NET 8 P/Invoke layer and its
-three examples are covered by the [C# binding guide](docs/csharp-binding.md).
+[renderer SDK guide](docs/renderer-sdk.md). The .NET 8 P/Invoke layer,
+optional Silk.NET host-window adapter, NativeAOT publish path and three C#
+examples are covered by the [C# binding guide](docs/csharp-binding.md).
 The renderer-only target is `engine::renderer`; editor, ECS, asset-pipeline
 and legacy application code is optional under `ENGINE_BUILD_EXTRAS`.
 

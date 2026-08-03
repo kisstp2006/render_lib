@@ -21,6 +21,22 @@ internal static class Native
         internal uint MsaaSamples;
         internal nint ShaderDirectory;
         internal nint PipelineCacheDirectory;
+        internal nint ExternalWindow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ExternalWindowDesc
+    {
+        internal nint UserData;
+        internal nint ShouldClose;
+        internal nint RequestClose;
+        internal nint PollEvents;
+        internal nint MakeContextCurrent;
+        internal nint GetGlProcAddress;
+        internal nint SwapBuffers;
+        internal nint SetSwapInterval;
+        internal nint GetVulkanInstanceExtensions;
+        internal nint CreateVulkanSurface;
     }
 
     [StructLayout(LayoutKind.Sequential)]

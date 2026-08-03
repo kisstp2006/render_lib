@@ -289,9 +289,14 @@ void VulkanRenderBackend::CreateInstance()
     appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
     appInfo.apiVersion = VK_API_VERSION_1_3;
 
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-    std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+    uint32_t windowExtensionCount = 0;
+    const char* const* windowExtensions =
+        m_window->GetRequiredVulkanInstanceExtensions(&windowExtensionCount);
+    if (!windowExtensions || windowExtensionCount == 0)
+        throw std::runtime_error(
+            "Window host did not provide required Vulkan instance extensions");
+    std::vector<const char*> extensions(
+        windowExtensions, windowExtensions + windowExtensionCount);
 
     const bool useValidation = m_validationEnabled;
     m_debugUtilsEnabled = InstanceHasExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -333,8 +338,23 @@ void VulkanRenderBackend::SetupDebugMessenger()
 
 void VulkanRenderBackend::CreateSurface(Window& window)
 {
-    if (glfwCreateWindowSurface(m_instance, window.Handle(), nullptr, &m_surface) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create Vulkan window surface");
+    if (!window.IsExternal())
+    {
+        if (glfwCreateWindowSurface(m_instance, window.Handle(), nullptr,
+                                    &m_surface) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create Vulkan window surface");
+        return;
+    }
+
+    uint64_t surface = 0;
+    if (!window.CreateVulkanSurface(
+            reinterpret_cast<void*>(m_instance), nullptr, &surface) || surface == 0)
+        throw std::runtime_error("Host failed to create Vulkan window surface");
+#if VK_USE_64_BIT_PTR_DEFINES
+    m_surface = reinterpret_cast<VkSurfaceKHR>(static_cast<uintptr_t>(surface));
+#else
+    m_surface = static_cast<VkSurfaceKHR>(surface);
+#endif
 }
 
 VulkanRenderBackend::QueueFamilyIndices VulkanRenderBackend::FindQueueFamilies(VkPhysicalDevice device) const

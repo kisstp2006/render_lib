@@ -1,22 +1,34 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using RenderingEngine;
+using RenderingEngine.Silk;
+using Silk.NET.Windowing;
 
 Backend backend = args.Contains("--vulkan") ? Backend.Vulkan : Backend.OpenGL;
 int frames = 0;
 int frameArg = Array.IndexOf(args, "--frames");
 if (frameArg >= 0 && frameArg + 1 < args.Length) frames = int.Parse(args[frameArg + 1]);
 
+WindowOptions windowOptions = SilkRendererWindow.CreateOptions(backend,
+    $"Rendering Engine C# custom shader - Silk.NET - {backend}", 960, 540,
+    visible: !args.Contains("--hidden"));
+using IWindow window = Window.Create(windowOptions);
+window.Initialize();
+
 using var renderer = new Renderer(new RendererOptions
 {
     Backend = backend,
-    WindowTitle = "Rendering Engine C# custom shader",
-    Width = 960,
-    Height = 540,
-    Visible = !args.Contains("--hidden"),
+    Width = (uint)window.FramebufferSize.X,
+    Height = (uint)window.FramebufferSize.Y,
     VSync = false,
-    Validation = args.Contains("--validation")
+    Validation = args.Contains("--validation"),
+    WindowHost = new SilkWindowHost(window)
 });
+window.FramebufferResize += size =>
+{
+    if (size.X > 0 && size.Y > 0)
+        renderer.Resize((uint)size.X, (uint)size.Y);
+};
 GraphicsDevice gpu = renderer.GraphicsDevice;
 string shaderRoot = Path.Combine(AppContext.BaseDirectory, "custom-shaders");
 
@@ -147,9 +159,10 @@ ShaderReflection glslReflection = gpu.GetShaderReflection(glslShader);
 Console.WriteLine($"{renderer.BackendName}: fragment reflection has {reflection.Resources.Count} resources; " +
     $"GLSL reflection has {glslReflection.Resources.Count}");
 
-for (int frame = 0; !renderer.ShouldClose && (frames == 0 || frame < frames); ++frame)
+for (int frame = 0; !window.IsClosing && (frames == 0 || frame < frames); ++frame)
 {
-    if (!renderer.PumpEvents()) break;
+    window.DoEvents();
+    if (window.IsClosing) break;
     gpu.ReloadChangedShaders();
 
     gpu.BindComputePipeline(computePipeline);
