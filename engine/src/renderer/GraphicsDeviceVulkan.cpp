@@ -602,8 +602,11 @@ public:
         if (activeTarget && activeTarget->Desc.DepthAttachment)
           info.pDepthAttachment = &depth;
         vkCmdBeginRendering(cmd, &info);
-        VkViewport vp{
-            0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
+        // Match OpenGL/D3D-style custom shader coordinates: positive clip-space
+        // Y points upward. A negative Vulkan viewport height performs the
+        // framebuffer-space conversion without backend-specific shader code.
+        VkViewport vp{0, static_cast<float>(height), static_cast<float>(width),
+                      -static_cast<float>(height), 0, 1};
         VkRect2D sc{{0, 0}, {width, height}};
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &sc);
@@ -889,9 +892,10 @@ private:
                       ? VK_CULL_MODE_NONE
                       : (d.Cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
                                                   : VK_CULL_MODE_FRONT_BIT);
+    // The negative-height viewport reverses framebuffer-space winding.
     rs.frontFace = d.Winding == FrontFace::CounterClockwise
-                       ? VK_FRONT_FACE_COUNTER_CLOCKWISE
-                       : VK_FRONT_FACE_CLOCKWISE;
+                       ? VK_FRONT_FACE_CLOCKWISE
+                       : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1;
     VkPipelineMultisampleStateCreateInfo ms{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};

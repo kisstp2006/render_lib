@@ -5,9 +5,15 @@ using RenderingEngine.Silk;
 using Silk.NET.Windowing;
 
 Backend backend = args.Contains("--vulkan") ? Backend.Vulkan : Backend.OpenGL;
+bool drawCustomPass = !args.Contains("--no-custom");
+bool dispatchCompute = !args.Contains("--no-compute");
 int frames = 0;
 int frameArg = Array.IndexOf(args, "--frames");
 if (frameArg >= 0 && frameArg + 1 < args.Length) frames = int.Parse(args[frameArg + 1]);
+int screenshotArg = Array.IndexOf(args, "--screenshot");
+string? screenshotPath = screenshotArg >= 0 && screenshotArg + 1 < args.Length
+    ? Path.GetFullPath(args[screenshotArg + 1])
+    : null;
 
 WindowOptions windowOptions = SilkRendererWindow.CreateOptions(backend,
     $"Rendering Engine C# custom shader - Silk.NET - {backend}", 960, 540,
@@ -29,6 +35,34 @@ window.FramebufferResize += size =>
     if (size.X > 0 && size.Y > 0)
         renderer.Resize((uint)size.X, (uint)size.Y);
 };
+
+// Keep a real PBR scene behind the programmable pass. This makes the sample a
+// regression test for the intended scene -> custom overlay -> UI/present order.
+var camera = Camera.Default;
+camera.Position = new(0, 2.4f, 8);
+camera.PitchDegrees = -12;
+renderer.SetCamera(camera);
+
+var bronzePbr = PbrMaterial.Default;
+bronzePbr.Albedo = new(0.42f, 0.11f, 0.05f);
+bronzePbr.Metallic = 0.82f;
+bronzePbr.Roughness = 0.2f;
+renderer.AddObject(renderer.CreateSphere(), renderer.CreateMaterial(bronzePbr),
+    Renderer.Transform(new(0, 1, 0), Vector3.Zero, Vector3.One));
+
+var floorPbr = PbrMaterial.Default;
+floorPbr.Albedo = new(0.28f);
+floorPbr.Roughness = 0.85f;
+renderer.AddObject(renderer.CreateCube(), renderer.CreateMaterial(floorPbr),
+    Renderer.Transform(new(0, -0.25f, 0), Vector3.Zero, new(5, 0.2f, 5)));
+renderer.AddPointLight(new LocalPointLight
+{
+    Position = new(-2.5f, 3.5f, 2),
+    Color = new(1, 0.35f, 0.12f),
+    Intensity = 85,
+    Radius = 12
+});
+
 GraphicsDevice gpu = renderer.GraphicsDevice;
 string shaderRoot = Path.Combine(AppContext.BaseDirectory, "custom-shaders");
 
@@ -102,15 +136,25 @@ ComputePipeline computePipeline = gpu.CreateComputePipeline(new ComputePipelineO
 
 CustomVertex[] vertices =
 [
-    new(-0.75f, -0.70f, 0, 1),
-    new( 0.75f, -0.70f, 1, 1),
-    new( 0.00f,  0.75f, 0.5f, 0)
+    new(0.35f, -0.85f, 0, 1),
+    new(0.90f, -0.85f, 1, 1),
+    new(0.625f, -0.30f, 0.5f, 0)
+];
+CustomVertex[] offscreenVertices =
+[
+    new(-1, -1, 0, 1), new( 1, -1, 1, 1), new( 1,  1, 1, 0),
+    new(-1, -1, 0, 1), new( 1,  1, 1, 0), new(-1,  1, 0, 0)
 ];
 GpuBuffer vertexBuffer = gpu.CreateBuffer<CustomVertex>(new BufferOptions
 {
     Usage = BufferUsage.Vertex,
     DebugName = "C# custom vertices"
 }, vertices.AsSpan());
+GpuBuffer offscreenVertexBuffer = gpu.CreateBuffer<CustomVertex>(new BufferOptions
+{
+    Usage = BufferUsage.Vertex,
+    DebugName = "C# offscreen fullscreen vertices"
+}, offscreenVertices.AsSpan());
 Vector4[] tint = [new(0.25f, 0.85f, 1.0f, 1.0f)];
 GpuBuffer uniformBuffer = gpu.CreateBuffer<Vector4>(new BufferOptions
 {
@@ -165,32 +209,40 @@ for (int frame = 0; !window.IsClosing && (frames == 0 || frame < frames); ++fram
     if (window.IsClosing) break;
     gpu.ReloadChangedShaders();
 
-    gpu.BindComputePipeline(computePipeline);
-    gpu.BindStorageBuffer(0, 0, storageBuffer);
-    gpu.Dispatch(4);
-
-    gpu.BeginRenderPass(new RenderPassOptions
+    if (drawCustomPass)
     {
-        Target = offscreenTarget,
-        ColorLoad = LoadAction.Clear,
-        ClearColor = [0.02f, 0.025f, 0.04f, 1]
-    });
-    gpu.BindGraphicsPipeline(offscreenPipeline);
-    gpu.BindVertexBuffer(0, vertexBuffer);
-    gpu.BindUniformBuffer(0, 0, uniformBuffer);
-    gpu.BindTexture(0, 1, checkerTexture, sampler);
-    gpu.BindSampler(0, 2, sampler);
-    gpu.Draw(3);
-    gpu.EndRenderPass();
+        if (dispatchCompute)
+        {
+            gpu.BindComputePipeline(computePipeline);
+            gpu.BindStorageBuffer(0, 0, storageBuffer);
+            gpu.Dispatch(4);
+        }
 
-    gpu.BeginRenderPass(new RenderPassOptions { ColorLoad = LoadAction.Load });
-    gpu.BindGraphicsPipeline(presentPipeline);
-    gpu.BindVertexBuffer(0, vertexBuffer);
-    gpu.BindUniformBuffer(0, 0, uniformBuffer);
-    gpu.BindTexture(0, 1, offscreenTexture, sampler);
-    gpu.BindSampler(0, 2, sampler);
-    gpu.Draw(3);
-    gpu.EndRenderPass();
+        gpu.BeginRenderPass(new RenderPassOptions
+        {
+            Target = offscreenTarget,
+            ColorLoad = LoadAction.Clear,
+            ClearColor = [0.02f, 0.025f, 0.04f, 1]
+        });
+        gpu.BindGraphicsPipeline(offscreenPipeline);
+        gpu.BindVertexBuffer(0, offscreenVertexBuffer);
+        gpu.BindUniformBuffer(0, 0, uniformBuffer);
+        gpu.BindTexture(0, 1, checkerTexture, sampler);
+        gpu.BindSampler(0, 2, sampler);
+        gpu.Draw(6);
+        gpu.EndRenderPass();
+
+        gpu.BeginRenderPass(new RenderPassOptions { ColorLoad = LoadAction.Load });
+        gpu.BindGraphicsPipeline(presentPipeline);
+        gpu.BindVertexBuffer(0, vertexBuffer);
+        gpu.BindUniformBuffer(0, 0, uniformBuffer);
+        gpu.BindTexture(0, 1, offscreenTexture, sampler);
+        gpu.BindSampler(0, 2, sampler);
+        gpu.Draw(3);
+        gpu.EndRenderPass();
+    }
+    if (screenshotPath is not null && frames > 0 && frame == frames - 1)
+        renderer.RequestScreenshot(screenshotPath);
     renderer.RenderFrame();
 }
 
@@ -200,6 +252,7 @@ gpu.DestroySampler(sampler);
 gpu.DestroyTexture(checkerTexture);
 gpu.DestroyBuffer(storageBuffer);
 gpu.DestroyBuffer(uniformBuffer);
+gpu.DestroyBuffer(offscreenVertexBuffer);
 gpu.DestroyBuffer(vertexBuffer);
 gpu.DestroyComputePipeline(computePipeline);
 gpu.DestroyGraphicsPipeline(offscreenPipeline);

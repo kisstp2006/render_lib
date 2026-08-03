@@ -147,6 +147,196 @@ template <class Map> auto &Find(Map &map, uint64_t handle, const char *type) {
   return it->second;
 }
 
+class GlExecutionState final {
+public:
+  GlExecutionState() {
+    GetObject(GL_CURRENT_PROGRAM, Program);
+    GetObject(GL_VERTEX_ARRAY_BINDING, VertexArray);
+    GetObject(GL_DRAW_FRAMEBUFFER_BINDING, DrawFramebuffer);
+    GetObject(GL_READ_FRAMEBUFFER_BINDING, ReadFramebuffer);
+    glGetIntegerv(GL_VIEWPORT, Viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, ScissorBox);
+    glGetIntegerv(GL_CULL_FACE_MODE, &CullFaceMode);
+    glGetIntegerv(GL_FRONT_FACE, &FrontFaceMode);
+    glGetIntegerv(GL_DEPTH_FUNC, &DepthFunction);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &DepthWriteMask);
+    glGetBooleanv(GL_COLOR_WRITEMASK, ColorWriteMask);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &BlendSourceRgb);
+    glGetIntegerv(GL_BLEND_DST_RGB, &BlendDestinationRgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &BlendSourceAlpha);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &BlendDestinationAlpha);
+    glGetIntegerv(GL_BLEND_EQUATION_RGB, &BlendEquationRgb);
+    glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &BlendEquationAlpha);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, ClearColor);
+    glGetDoublev(GL_DEPTH_CLEAR_VALUE, &ClearDepth);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &ActiveTexture);
+    CullEnabled = glIsEnabled(GL_CULL_FACE);
+    DepthEnabled = glIsEnabled(GL_DEPTH_TEST);
+    BlendEnabled = glIsEnabled(GL_BLEND);
+    ScissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+    StencilEnabled = glIsEnabled(GL_STENCIL_TEST);
+    FramebufferSrgbEnabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+  }
+
+  ~GlExecutionState() {
+    for (const auto &[_, binding] : BufferBindings) {
+      if (!binding.Buffer) {
+        glBindBufferBase(binding.Target, binding.Index, 0);
+      } else if (binding.Size > 0) {
+        glBindBufferRange(binding.Target, binding.Index, binding.Buffer,
+                          binding.Start, binding.Size);
+      } else {
+        glBindBufferBase(binding.Target, binding.Index, binding.Buffer);
+      }
+    }
+    for (const auto &[unit, binding] : TextureBindings) {
+      // Restore only the 2D target touched by this API. Binding texture zero
+      // through glBindTextureUnit would clear every target on the unit and
+      // could accidentally unbind the renderer's cube/array textures.
+      glActiveTexture(GL_TEXTURE0 + unit);
+      glBindTexture(GL_TEXTURE_2D, binding.Texture);
+      glBindSampler(unit, binding.Sampler);
+    }
+    for (const auto &[unit, binding] : ImageBindings)
+      glBindImageTexture(unit, binding.Texture, binding.Level, binding.Layered,
+                         binding.Layer, binding.Access, binding.Format);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, DrawFramebuffer);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, ReadFramebuffer);
+    glViewport(Viewport[0], Viewport[1], Viewport[2], Viewport[3]);
+    glScissor(ScissorBox[0], ScissorBox[1], ScissorBox[2], ScissorBox[3]);
+    SetEnabled(GL_CULL_FACE, CullEnabled);
+    SetEnabled(GL_DEPTH_TEST, DepthEnabled);
+    SetEnabled(GL_BLEND, BlendEnabled);
+    SetEnabled(GL_SCISSOR_TEST, ScissorEnabled);
+    SetEnabled(GL_STENCIL_TEST, StencilEnabled);
+    SetEnabled(GL_FRAMEBUFFER_SRGB, FramebufferSrgbEnabled);
+    glCullFace(static_cast<GLenum>(CullFaceMode));
+    glFrontFace(static_cast<GLenum>(FrontFaceMode));
+    glDepthFunc(static_cast<GLenum>(DepthFunction));
+    glDepthMask(DepthWriteMask);
+    glColorMask(ColorWriteMask[0], ColorWriteMask[1], ColorWriteMask[2],
+                ColorWriteMask[3]);
+    glBlendFuncSeparate(static_cast<GLenum>(BlendSourceRgb),
+                        static_cast<GLenum>(BlendDestinationRgb),
+                        static_cast<GLenum>(BlendSourceAlpha),
+                        static_cast<GLenum>(BlendDestinationAlpha));
+    glBlendEquationSeparate(static_cast<GLenum>(BlendEquationRgb),
+                            static_cast<GLenum>(BlendEquationAlpha));
+    glClearColor(ClearColor[0], ClearColor[1], ClearColor[2], ClearColor[3]);
+    glClearDepth(ClearDepth);
+    glActiveTexture(static_cast<GLenum>(ActiveTexture));
+    glUseProgram(Program);
+    glBindVertexArray(VertexArray);
+  }
+
+  void CaptureBufferBinding(GLenum target, GLuint index) {
+    const uint64_t key = (static_cast<uint64_t>(target) << 32u) | index;
+    if (BufferBindings.contains(key))
+      return;
+    const GLenum bindingQuery = target == GL_UNIFORM_BUFFER
+                                    ? GL_UNIFORM_BUFFER_BINDING
+                                    : GL_SHADER_STORAGE_BUFFER_BINDING;
+    const GLenum startQuery = target == GL_UNIFORM_BUFFER
+                                  ? GL_UNIFORM_BUFFER_START
+                                  : GL_SHADER_STORAGE_BUFFER_START;
+    const GLenum sizeQuery = target == GL_UNIFORM_BUFFER
+                                 ? GL_UNIFORM_BUFFER_SIZE
+                                 : GL_SHADER_STORAGE_BUFFER_SIZE;
+    GLint buffer = 0;
+    GLint64 start = 0, size = 0;
+    glGetIntegeri_v(bindingQuery, index, &buffer);
+    glGetInteger64i_v(startQuery, index, &start);
+    glGetInteger64i_v(sizeQuery, index, &size);
+    BufferBindings.emplace(
+        key, IndexedBufferBinding{target, index, static_cast<GLuint>(buffer),
+                                  static_cast<GLintptr>(start),
+                                  static_cast<GLsizeiptr>(size)});
+  }
+
+  void CaptureTextureBinding(GLuint unit) {
+    if (TextureBindings.contains(unit))
+      return;
+    GLint texture = 0, sampler = 0;
+    glGetIntegeri_v(GL_TEXTURE_BINDING_2D, unit, &texture);
+    glGetIntegeri_v(GL_SAMPLER_BINDING, unit, &sampler);
+    TextureBindings.emplace(
+        unit, TextureBinding{static_cast<GLuint>(texture),
+                             static_cast<GLuint>(sampler)});
+  }
+
+  void CaptureImageBinding(GLuint unit) {
+    if (ImageBindings.contains(unit))
+      return;
+    GLint texture = 0, level = 0, layered = GL_FALSE, layer = 0, access = 0,
+          format = 0;
+    glGetIntegeri_v(GL_IMAGE_BINDING_NAME, unit, &texture);
+    glGetIntegeri_v(GL_IMAGE_BINDING_LEVEL, unit, &level);
+    glGetIntegeri_v(GL_IMAGE_BINDING_LAYERED, unit, &layered);
+    glGetIntegeri_v(GL_IMAGE_BINDING_LAYER, unit, &layer);
+    glGetIntegeri_v(GL_IMAGE_BINDING_ACCESS, unit, &access);
+    glGetIntegeri_v(GL_IMAGE_BINDING_FORMAT, unit, &format);
+    ImageBindings.emplace(
+        unit, ImageBinding{static_cast<GLuint>(texture), level,
+                           static_cast<GLboolean>(layered), layer,
+                           static_cast<GLenum>(access),
+                           static_cast<GLenum>(format)});
+  }
+
+private:
+  struct IndexedBufferBinding {
+    GLenum Target;
+    GLuint Index;
+    GLuint Buffer;
+    GLintptr Start;
+    GLsizeiptr Size;
+  };
+  struct TextureBinding {
+    GLuint Texture;
+    GLuint Sampler;
+  };
+  struct ImageBinding {
+    GLuint Texture;
+    GLint Level;
+    GLboolean Layered;
+    GLint Layer;
+    GLenum Access;
+    GLenum Format;
+  };
+
+  static void GetObject(GLenum query, GLuint &value) {
+    GLint result = 0;
+    glGetIntegerv(query, &result);
+    value = static_cast<GLuint>(result);
+  }
+  static void SetEnabled(GLenum capability, GLboolean enabled) {
+    if (enabled)
+      glEnable(capability);
+    else
+      glDisable(capability);
+  }
+
+  GLuint Program = 0, VertexArray = 0, DrawFramebuffer = 0,
+         ReadFramebuffer = 0;
+  GLint Viewport[4]{}, ScissorBox[4]{};
+  GLint CullFaceMode = GL_BACK, FrontFaceMode = GL_CCW,
+        DepthFunction = GL_LESS;
+  GLint BlendSourceRgb = GL_ONE, BlendDestinationRgb = GL_ZERO,
+        BlendSourceAlpha = GL_ONE, BlendDestinationAlpha = GL_ZERO,
+        BlendEquationRgb = GL_FUNC_ADD, BlendEquationAlpha = GL_FUNC_ADD,
+        ActiveTexture = GL_TEXTURE0;
+  GLboolean CullEnabled = GL_FALSE, DepthEnabled = GL_FALSE,
+            BlendEnabled = GL_FALSE, ScissorEnabled = GL_FALSE,
+            StencilEnabled = GL_FALSE, FramebufferSrgbEnabled = GL_FALSE,
+            DepthWriteMask = GL_TRUE;
+  GLboolean ColorWriteMask[4]{GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+  GLfloat ClearColor[4]{};
+  GLdouble ClearDepth = 1.0;
+  std::unordered_map<uint64_t, IndexedBufferBinding> BufferBindings;
+  std::unordered_map<GLuint, TextureBinding> TextureBindings;
+  std::unordered_map<GLuint, ImageBinding> ImageBindings;
+};
+
 class OpenGlGraphicsBackend final : public IGraphicsBackend {
   struct Shader {
     CompiledShader Compiled;
@@ -605,6 +795,7 @@ public:
   std::string_view LastShaderError() const override { return m_lastError; }
 
   void Execute(const engine::NativeCustomRenderContext &frame) override {
+    GlExecutionState restoreState;
     GraphicsPipeline *graphics = nullptr;
     ComputePipeline *compute = nullptr;
     IndexType indexType = IndexType::UInt32;
@@ -622,6 +813,13 @@ public:
         }
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, w, h);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        // The presentation framebuffer is sRGB, just like the Vulkan
+        // swapchain. This also remains safe for linear offscreen attachments,
+        // where OpenGL performs no conversion.
+        glEnable(GL_FRAMEBUFFER_SRGB);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         GLbitfield clear = 0;
         if (c.Pass.ColorLoad == LoadAction::Clear) {
           glClearColor(c.Pass.ClearColor[0], c.Pass.ClearColor[1],
@@ -680,12 +878,17 @@ public:
         break;
       }
       case Op::UniformBuffer:
+        restoreState.CaptureBufferBinding(GL_UNIFORM_BUFFER,
+                                          static_cast<GLuint>(c.B));
         BindBufferRange(GL_UNIFORM_BUFFER, c);
         break;
       case Op::StorageBuffer:
+        restoreState.CaptureBufferBinding(GL_SHADER_STORAGE_BUFFER,
+                                          static_cast<GLuint>(c.B));
         BindBufferRange(GL_SHADER_STORAGE_BUFFER, c);
         break;
       case Op::Texture: {
+        restoreState.CaptureTextureBinding(static_cast<GLuint>(c.B));
         auto &t = Find(m_textures, c.C, "texture");
         glBindTextureUnit(static_cast<GLuint>(c.B), t.Native);
         glBindSampler(static_cast<GLuint>(c.B),
@@ -693,10 +896,12 @@ public:
         break;
       }
       case Op::SamplerBinding:
+        restoreState.CaptureTextureBinding(static_cast<GLuint>(c.B));
         glBindSampler(static_cast<GLuint>(c.B),
                       Find(m_samplers, c.C, "sampler").Native);
         break;
       case Op::StorageTexture: {
+        restoreState.CaptureImageBinding(static_cast<GLuint>(c.B));
         auto &t = Find(m_textures, c.C, "texture");
         const auto f = GlFormat(t.Desc.Format);
         glBindImageTexture(static_cast<GLuint>(c.B), t.Native, 0, GL_FALSE, 0,
