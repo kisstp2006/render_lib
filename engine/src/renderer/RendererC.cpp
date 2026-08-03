@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -81,6 +82,145 @@ rendering::PointLightDesc PointLight(const re_point_light_desc &source) {
   result.Radius = source.radius;
   result.CastsShadows = source.casts_shadows != 0;
   return result;
+}
+
+bool HasPostProcessField(uint32_t structSize, size_t offset, size_t size) {
+  return structSize >= sizeof(uint32_t) &&
+         static_cast<size_t>(structSize) >= offset + size;
+}
+
+rendering::PostProcessSettings
+PostProcessSettings(const re_post_process_settings &source) {
+  if (source.struct_size < sizeof(uint32_t))
+    throw std::invalid_argument("Invalid re_post_process_settings");
+  rendering::PostProcessSettings result;
+#define RE_READ_POST(field, statement)                                          \
+  if (HasPostProcessField(source.struct_size,                                   \
+                          offsetof(re_post_process_settings, field),            \
+                          sizeof(source.field))) {                              \
+    statement;                                                                  \
+  }
+  RE_READ_POST(enabled, result.Enabled = source.enabled != 0);
+  RE_READ_POST(exposure, result.Exposure = source.exposure);
+  RE_READ_POST(bloom_strength, result.BloomStrength = source.bloom_strength);
+  RE_READ_POST(bloom_threshold, result.BloomThreshold = source.bloom_threshold);
+  RE_READ_POST(shoulder_strength,
+               result.ShoulderStrength = source.shoulder_strength);
+  RE_READ_POST(linear_strength, result.LinearStrength = source.linear_strength);
+  RE_READ_POST(linear_angle, result.LinearAngle = source.linear_angle);
+  RE_READ_POST(toe_strength, result.ToeStrength = source.toe_strength);
+  RE_READ_POST(toe_numerator, result.ToeNumerator = source.toe_numerator);
+  RE_READ_POST(toe_denominator,
+               result.ToeDenominator = source.toe_denominator);
+  RE_READ_POST(white_point, result.WhitePoint = source.white_point);
+  RE_READ_POST(auto_exposure, result.AutoExposure = source.auto_exposure != 0);
+  RE_READ_POST(auto_exposure_key,
+               result.AutoExposureKey = source.auto_exposure_key);
+  RE_READ_POST(auto_exposure_min,
+               result.AutoExposureMin = source.auto_exposure_min);
+  RE_READ_POST(auto_exposure_max,
+               result.AutoExposureMax = source.auto_exposure_max);
+  RE_READ_POST(auto_exposure_speed,
+               result.AutoExposureSpeed = source.auto_exposure_speed);
+  RE_READ_POST(saturation, result.Saturation = source.saturation);
+  RE_READ_POST(contrast, result.Contrast = source.contrast);
+  if (HasPostProcessField(source.struct_size,
+                          offsetof(re_post_process_settings, color_tint),
+                          sizeof(source.color_tint)))
+    result.ColorTint = {source.color_tint[0], source.color_tint[1],
+                        source.color_tint[2]};
+  RE_READ_POST(color_lut_weight,
+               result.ColorLutWeight = source.color_lut_weight);
+  RE_READ_POST(anti_aliasing, {
+    if (source.anti_aliasing < 0 || source.anti_aliasing > 2)
+      throw std::invalid_argument("Invalid post-process anti-aliasing mode");
+    result.AntiAliasing =
+        static_cast<rendering::AntiAliasingMode>(source.anti_aliasing);
+  });
+  RE_READ_POST(fxaa_subpixel, result.FxaaSubpixel = source.fxaa_subpixel);
+  RE_READ_POST(fxaa_edge_threshold,
+               result.FxaaEdgeThreshold = source.fxaa_edge_threshold);
+  RE_READ_POST(fxaa_edge_threshold_min,
+               result.FxaaEdgeThresholdMin = source.fxaa_edge_threshold_min);
+  RE_READ_POST(taa_history_weight,
+               result.TaaHistoryWeight = source.taa_history_weight);
+  RE_READ_POST(taa_sharpen, result.TaaSharpen = source.taa_sharpen);
+  RE_READ_POST(taa_jitter_scale,
+               result.TaaJitterScale = source.taa_jitter_scale);
+  RE_READ_POST(taa_depth_threshold,
+               result.TaaDepthThreshold = source.taa_depth_threshold);
+  RE_READ_POST(log_performance,
+               result.LogPerformance = source.log_performance != 0);
+#undef RE_READ_POST
+  return result;
+}
+
+void WritePostProcessSettings(re_post_process_settings &destination,
+                              const rendering::PostProcessSettings &source) {
+  if (destination.struct_size < sizeof(uint32_t))
+    throw std::invalid_argument("Invalid re_post_process_settings");
+#define RE_WRITE_POST(field, statement)                                         \
+  if (HasPostProcessField(destination.struct_size,                              \
+                          offsetof(re_post_process_settings, field),            \
+                          sizeof(destination.field))) {                         \
+    statement;                                                                  \
+  }
+  RE_WRITE_POST(enabled, destination.enabled = source.Enabled ? 1 : 0);
+  RE_WRITE_POST(exposure, destination.exposure = source.Exposure);
+  RE_WRITE_POST(bloom_strength,
+                destination.bloom_strength = source.BloomStrength);
+  RE_WRITE_POST(bloom_threshold,
+                destination.bloom_threshold = source.BloomThreshold);
+  RE_WRITE_POST(shoulder_strength,
+                destination.shoulder_strength = source.ShoulderStrength);
+  RE_WRITE_POST(linear_strength,
+                destination.linear_strength = source.LinearStrength);
+  RE_WRITE_POST(linear_angle, destination.linear_angle = source.LinearAngle);
+  RE_WRITE_POST(toe_strength, destination.toe_strength = source.ToeStrength);
+  RE_WRITE_POST(toe_numerator,
+                destination.toe_numerator = source.ToeNumerator);
+  RE_WRITE_POST(toe_denominator,
+                destination.toe_denominator = source.ToeDenominator);
+  RE_WRITE_POST(white_point, destination.white_point = source.WhitePoint);
+  RE_WRITE_POST(auto_exposure,
+                destination.auto_exposure = source.AutoExposure ? 1 : 0);
+  RE_WRITE_POST(auto_exposure_key,
+                destination.auto_exposure_key = source.AutoExposureKey);
+  RE_WRITE_POST(auto_exposure_min,
+                destination.auto_exposure_min = source.AutoExposureMin);
+  RE_WRITE_POST(auto_exposure_max,
+                destination.auto_exposure_max = source.AutoExposureMax);
+  RE_WRITE_POST(auto_exposure_speed,
+                destination.auto_exposure_speed = source.AutoExposureSpeed);
+  RE_WRITE_POST(saturation, destination.saturation = source.Saturation);
+  RE_WRITE_POST(contrast, destination.contrast = source.Contrast);
+  RE_WRITE_POST(color_tint, {
+    destination.color_tint[0] = source.ColorTint[0];
+    destination.color_tint[1] = source.ColorTint[1];
+    destination.color_tint[2] = source.ColorTint[2];
+  });
+  RE_WRITE_POST(color_lut_weight,
+                destination.color_lut_weight = source.ColorLutWeight);
+  RE_WRITE_POST(anti_aliasing,
+                destination.anti_aliasing =
+                    static_cast<int32_t>(source.AntiAliasing));
+  RE_WRITE_POST(fxaa_subpixel,
+                destination.fxaa_subpixel = source.FxaaSubpixel);
+  RE_WRITE_POST(fxaa_edge_threshold,
+                destination.fxaa_edge_threshold = source.FxaaEdgeThreshold);
+  RE_WRITE_POST(
+      fxaa_edge_threshold_min,
+      destination.fxaa_edge_threshold_min = source.FxaaEdgeThresholdMin);
+  RE_WRITE_POST(taa_history_weight,
+                destination.taa_history_weight = source.TaaHistoryWeight);
+  RE_WRITE_POST(taa_sharpen, destination.taa_sharpen = source.TaaSharpen);
+  RE_WRITE_POST(taa_jitter_scale,
+                destination.taa_jitter_scale = source.TaaJitterScale);
+  RE_WRITE_POST(taa_depth_threshold,
+                destination.taa_depth_threshold = source.TaaDepthThreshold);
+  RE_WRITE_POST(log_performance,
+                destination.log_performance = source.LogPerformance ? 1 : 0);
+#undef RE_WRITE_POST
 }
 
 std::array<float, 16> Transform(const float *values) {
@@ -311,6 +451,21 @@ void re_point_light_desc_init(re_point_light_desc *desc) {
   desc->color[0] = desc->color[1] = desc->color[2] = 1.0f;
   desc->intensity = 20.0f;
   desc->radius = 15.0f;
+}
+
+void re_post_process_settings_init(re_post_process_settings *settings) {
+  if (!settings)
+    return;
+  uint32_t callerSize = settings->struct_size;
+  if (callerSize == 0)
+    callerSize = sizeof(*settings);
+  else if (callerSize < sizeof(uint32_t))
+    return;
+  const size_t knownSize =
+      std::min(static_cast<size_t>(callerSize), sizeof(*settings));
+  std::memset(settings, 0, knownSize);
+  settings->struct_size = callerSize;
+  WritePostProcessSettings(*settings, rendering::PostProcessSettings{});
 }
 
 void re_shader_module_desc_init(re_shader_module_desc *d) {
@@ -674,6 +829,36 @@ int32_t re_renderer_set_exposure(re_renderer *renderer, float exposure) {
     if (!Valid(renderer))
       return 0;
     renderer->Instance->SetExposure(exposure);
+    return 1;
+  } catch (...) {
+    CaptureError();
+    return 0;
+  }
+}
+
+int32_t re_renderer_set_post_process_settings(
+    re_renderer *renderer, const re_post_process_settings *settings) {
+  ClearError();
+  try {
+    if (!Valid(renderer) || !settings)
+      return 0;
+    rendering::PostProcessSettings value = PostProcessSettings(*settings);
+    renderer->Instance->SetPostProcessSettings(value);
+    return 1;
+  } catch (...) {
+    CaptureError();
+    return 0;
+  }
+}
+
+int32_t re_renderer_get_post_process_settings(
+    const re_renderer *renderer, re_post_process_settings *settings) {
+  ClearError();
+  try {
+    if (!Valid(renderer) || !settings)
+      return 0;
+    WritePostProcessSettings(*settings,
+                             renderer->Instance->GetPostProcessSettings());
     return 1;
   } catch (...) {
     CaptureError();

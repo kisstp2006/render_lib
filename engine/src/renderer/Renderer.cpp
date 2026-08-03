@@ -63,6 +63,80 @@ engine::PointLight ConvertPointLight(const PointLightDesc& source)
     return light;
 }
 
+void ApplyPostProcessSettings(const PostProcessSettings& source,
+                              engine::PostProcessSettings& destination)
+{
+    destination.Enabled = source.Enabled;
+    destination.Exposure = source.Exposure;
+    destination.BloomStrength = source.BloomStrength;
+    destination.BloomThreshold = source.BloomThreshold;
+    destination.ShoulderStrength = source.ShoulderStrength;
+    destination.LinearStrength = source.LinearStrength;
+    destination.LinearAngle = source.LinearAngle;
+    destination.ToeStrength = source.ToeStrength;
+    destination.ToeNumerator = source.ToeNumerator;
+    destination.ToeDenominator = source.ToeDenominator;
+    destination.WhitePoint = source.WhitePoint;
+    destination.AutoExposure = source.AutoExposure;
+    destination.AutoExposureKey = source.AutoExposureKey;
+    destination.AutoExposureMin = source.AutoExposureMin;
+    destination.AutoExposureMax = source.AutoExposureMax;
+    destination.AutoExposureSpeed = source.AutoExposureSpeed;
+    destination.Saturation = source.Saturation;
+    destination.Contrast = source.Contrast;
+    destination.ColorTint = {source.ColorTint[0], source.ColorTint[1],
+                             source.ColorTint[2]};
+    destination.ColorLutWeight = source.ColorLutWeight;
+    destination.AntiAliasing =
+        static_cast<engine::AntiAliasingMode>(source.AntiAliasing);
+    destination.FxaaSubpixel = source.FxaaSubpixel;
+    destination.FxaaEdgeThreshold = source.FxaaEdgeThreshold;
+    destination.FxaaEdgeThresholdMin = source.FxaaEdgeThresholdMin;
+    destination.TaaHistoryWeight = source.TaaHistoryWeight;
+    destination.TaaSharpen = source.TaaSharpen;
+    destination.TaaJitterScale = source.TaaJitterScale;
+    destination.TaaDepthThreshold = source.TaaDepthThreshold;
+    destination.LogPerformance = source.LogPerformance;
+}
+
+PostProcessSettings ExportPostProcessSettings(
+    const engine::PostProcessSettings& source)
+{
+    PostProcessSettings destination;
+    destination.Enabled = source.Enabled;
+    destination.Exposure = source.Exposure;
+    destination.BloomStrength = source.BloomStrength;
+    destination.BloomThreshold = source.BloomThreshold;
+    destination.ShoulderStrength = source.ShoulderStrength;
+    destination.LinearStrength = source.LinearStrength;
+    destination.LinearAngle = source.LinearAngle;
+    destination.ToeStrength = source.ToeStrength;
+    destination.ToeNumerator = source.ToeNumerator;
+    destination.ToeDenominator = source.ToeDenominator;
+    destination.WhitePoint = source.WhitePoint;
+    destination.AutoExposure = source.AutoExposure;
+    destination.AutoExposureKey = source.AutoExposureKey;
+    destination.AutoExposureMin = source.AutoExposureMin;
+    destination.AutoExposureMax = source.AutoExposureMax;
+    destination.AutoExposureSpeed = source.AutoExposureSpeed;
+    destination.Saturation = source.Saturation;
+    destination.Contrast = source.Contrast;
+    destination.ColorTint = {source.ColorTint.r, source.ColorTint.g,
+                             source.ColorTint.b};
+    destination.ColorLutWeight = source.ColorLutWeight;
+    destination.AntiAliasing =
+        static_cast<AntiAliasingMode>(source.AntiAliasing);
+    destination.FxaaSubpixel = source.FxaaSubpixel;
+    destination.FxaaEdgeThreshold = source.FxaaEdgeThreshold;
+    destination.FxaaEdgeThresholdMin = source.FxaaEdgeThresholdMin;
+    destination.TaaHistoryWeight = source.TaaHistoryWeight;
+    destination.TaaSharpen = source.TaaSharpen;
+    destination.TaaJitterScale = source.TaaJitterScale;
+    destination.TaaDepthThreshold = source.TaaDepthThreshold;
+    destination.LogPerformance = source.LogPerformance;
+    return destination;
+}
+
 glm::mat4 Matrix(const std::array<float, 16>& values)
 {
     return glm::make_mat4(values.data());
@@ -501,6 +575,16 @@ void Renderer::SetSun(const DirectionalLightDesc& desc)
 void Renderer::SetExposure(float exposure)
 {
     m_impl->Scene.PostProcess.Exposure = std::max(exposure, 0.0f);
+}
+
+void Renderer::SetPostProcessSettings(const PostProcessSettings& settings)
+{
+    ApplyPostProcessSettings(settings, m_impl->Scene.PostProcess);
+}
+
+PostProcessSettings Renderer::GetPostProcessSettings() const
+{
+    return ExportPostProcessSettings(m_impl->Scene.PostProcess);
 }
 
 void Renderer::SetBackgroundColor(const std::array<float, 3>& zenith,

@@ -36,6 +36,14 @@ window.FramebufferResize += size =>
         renderer.Resize((uint)size.X, (uint)size.Y);
 };
 
+PostProcessSettings initialPost = renderer.GetPostProcessSettings();
+PostProcessSettings roundTripPost = initialPost;
+roundTripPost.Exposure += 0.125f;
+renderer.SetPostProcessSettings(roundTripPost);
+if (MathF.Abs(renderer.GetPostProcessSettings().Exposure - roundTripPost.Exposure) > 0.0001f)
+    throw new InvalidOperationException("Post-process settings round-trip failed");
+renderer.SetPostProcessSettings(initialPost);
+
 // Keep a real PBR scene behind the programmable pass. This makes the sample a
 // regression test for the intended scene -> custom overlay -> UI/present order.
 var camera = Camera.Default;

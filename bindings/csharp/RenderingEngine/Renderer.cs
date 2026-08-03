@@ -9,6 +9,8 @@ public readonly record struct Material(ulong Value);
 public readonly record struct SceneObject(ulong Value);
 public readonly record struct PointLight(ulong Value);
 
+public enum AntiAliasingMode : int { None = 0, Fxaa = 1, Taa = 2 }
+
 public struct RenderVertex
 {
     public Vector3 Position;
@@ -80,6 +82,39 @@ public struct LocalPointLight
     public bool CastsShadows;
 }
 
+public struct PostProcessSettings
+{
+    public bool Enabled;
+    public float Exposure;
+    public float BloomStrength;
+    public float BloomThreshold;
+    public float ShoulderStrength;
+    public float LinearStrength;
+    public float LinearAngle;
+    public float ToeStrength;
+    public float ToeNumerator;
+    public float ToeDenominator;
+    public float WhitePoint;
+    public bool AutoExposure;
+    public float AutoExposureKey;
+    public float AutoExposureMin;
+    public float AutoExposureMax;
+    public float AutoExposureSpeed;
+    public float Saturation;
+    public float Contrast;
+    public Vector3 ColorTint;
+    public float ColorLutWeight;
+    public AntiAliasingMode AntiAliasing;
+    public float FxaaSubpixel;
+    public float FxaaEdgeThreshold;
+    public float FxaaEdgeThresholdMin;
+    public float TaaHistoryWeight;
+    public float TaaSharpen;
+    public float TaaJitterScale;
+    public float TaaDepthThreshold;
+    public bool LogPerformance;
+}
+
 public readonly record struct RendererFrameStats(float GpuMilliseconds,
     uint DrawBatches, uint Instances, uint DrawCallsSaved);
 
@@ -88,7 +123,7 @@ public sealed class Renderer : IDisposable
     private nint _handle;
     private ExternalWindowBridge? _windowBridge;
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
-    public const uint ApiVersion = 3;
+    public const uint ApiVersion = 4;
     public GraphicsDevice GraphicsDevice { get; }
 
     public Renderer(RendererOptions? options = null)
@@ -205,6 +240,14 @@ public sealed class Renderer : IDisposable
     public void SetCamera(Camera camera) => Check(Native.re_renderer_set_camera(Handle, ToNative(camera)));
     public void SetSun(DirectionalLight light) => Check(Native.re_renderer_set_sun(Handle, ToNative(light)));
     public void SetExposure(float exposure) => Check(Native.re_renderer_set_exposure(Handle, exposure));
+    public void SetPostProcessSettings(PostProcessSettings settings) =>
+        Check(Native.re_renderer_set_post_process_settings(Handle, ToNative(settings)));
+    public PostProcessSettings GetPostProcessSettings()
+    {
+        Native.PostProcessSettings settings = CreateNativePostProcessSettings();
+        Check(Native.re_renderer_get_post_process_settings(Handle, ref settings));
+        return FromNative(settings);
+    }
     public void SetBackgroundColor(Vector3 zenith, Vector3 horizon) =>
         Check(Native.re_renderer_set_background_color(Handle,
             [zenith.X, zenith.Y, zenith.Z], [horizon.X, horizon.Y, horizon.Z]));
@@ -281,6 +324,83 @@ public sealed class Renderer : IDisposable
         DirectionX = l.Direction.X, DirectionY = l.Direction.Y, DirectionZ = l.Direction.Z,
         ColorR = l.Color.X, ColorG = l.Color.Y, ColorB = l.Color.Z,
         Intensity = l.Intensity, CastsShadows = l.CastsShadows ? 1 : 0
+    };
+    private static Native.PostProcessSettings ToNative(PostProcessSettings s)
+    {
+        Native.PostProcessSettings result = CreateNativePostProcessSettings();
+        result.Enabled = s.Enabled ? 1 : 0;
+        result.Exposure = s.Exposure;
+        result.BloomStrength = s.BloomStrength;
+        result.BloomThreshold = s.BloomThreshold;
+        result.ShoulderStrength = s.ShoulderStrength;
+        result.LinearStrength = s.LinearStrength;
+        result.LinearAngle = s.LinearAngle;
+        result.ToeStrength = s.ToeStrength;
+        result.ToeNumerator = s.ToeNumerator;
+        result.ToeDenominator = s.ToeDenominator;
+        result.WhitePoint = s.WhitePoint;
+        result.AutoExposure = s.AutoExposure ? 1 : 0;
+        result.AutoExposureKey = s.AutoExposureKey;
+        result.AutoExposureMin = s.AutoExposureMin;
+        result.AutoExposureMax = s.AutoExposureMax;
+        result.AutoExposureSpeed = s.AutoExposureSpeed;
+        result.Saturation = s.Saturation;
+        result.Contrast = s.Contrast;
+        result.ColorTintR = s.ColorTint.X;
+        result.ColorTintG = s.ColorTint.Y;
+        result.ColorTintB = s.ColorTint.Z;
+        result.ColorLutWeight = s.ColorLutWeight;
+        result.AntiAliasing = (int)s.AntiAliasing;
+        result.FxaaSubpixel = s.FxaaSubpixel;
+        result.FxaaEdgeThreshold = s.FxaaEdgeThreshold;
+        result.FxaaEdgeThresholdMin = s.FxaaEdgeThresholdMin;
+        result.TaaHistoryWeight = s.TaaHistoryWeight;
+        result.TaaSharpen = s.TaaSharpen;
+        result.TaaJitterScale = s.TaaJitterScale;
+        result.TaaDepthThreshold = s.TaaDepthThreshold;
+        result.LogPerformance = s.LogPerformance ? 1 : 0;
+        return result;
+    }
+    private static Native.PostProcessSettings CreateNativePostProcessSettings()
+    {
+        Native.PostProcessSettings result = new()
+        {
+            StructSize = (uint)Marshal.SizeOf<Native.PostProcessSettings>()
+        };
+        Native.re_post_process_settings_init(ref result);
+        return result;
+    }
+    private static PostProcessSettings FromNative(Native.PostProcessSettings s) => new()
+    {
+        Enabled = s.Enabled != 0,
+        Exposure = s.Exposure,
+        BloomStrength = s.BloomStrength,
+        BloomThreshold = s.BloomThreshold,
+        ShoulderStrength = s.ShoulderStrength,
+        LinearStrength = s.LinearStrength,
+        LinearAngle = s.LinearAngle,
+        ToeStrength = s.ToeStrength,
+        ToeNumerator = s.ToeNumerator,
+        ToeDenominator = s.ToeDenominator,
+        WhitePoint = s.WhitePoint,
+        AutoExposure = s.AutoExposure != 0,
+        AutoExposureKey = s.AutoExposureKey,
+        AutoExposureMin = s.AutoExposureMin,
+        AutoExposureMax = s.AutoExposureMax,
+        AutoExposureSpeed = s.AutoExposureSpeed,
+        Saturation = s.Saturation,
+        Contrast = s.Contrast,
+        ColorTint = new(s.ColorTintR, s.ColorTintG, s.ColorTintB),
+        ColorLutWeight = s.ColorLutWeight,
+        AntiAliasing = (AntiAliasingMode)s.AntiAliasing,
+        FxaaSubpixel = s.FxaaSubpixel,
+        FxaaEdgeThreshold = s.FxaaEdgeThreshold,
+        FxaaEdgeThresholdMin = s.FxaaEdgeThresholdMin,
+        TaaHistoryWeight = s.TaaHistoryWeight,
+        TaaSharpen = s.TaaSharpen,
+        TaaJitterScale = s.TaaJitterScale,
+        TaaDepthThreshold = s.TaaDepthThreshold,
+        LogPerformance = s.LogPerformance != 0
     };
     private static Native.PointLightDesc ToNative(LocalPointLight l) => new()
     {

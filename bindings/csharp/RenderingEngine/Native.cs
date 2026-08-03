@@ -91,6 +91,41 @@ internal static class Native
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct PostProcessSettings
+    {
+        internal uint StructSize;
+        internal int Enabled;
+        internal float Exposure;
+        internal float BloomStrength;
+        internal float BloomThreshold;
+        internal float ShoulderStrength;
+        internal float LinearStrength;
+        internal float LinearAngle;
+        internal float ToeStrength;
+        internal float ToeNumerator;
+        internal float ToeDenominator;
+        internal float WhitePoint;
+        internal int AutoExposure;
+        internal float AutoExposureKey;
+        internal float AutoExposureMin;
+        internal float AutoExposureMax;
+        internal float AutoExposureSpeed;
+        internal float Saturation;
+        internal float Contrast;
+        internal float ColorTintR, ColorTintG, ColorTintB;
+        internal float ColorLutWeight;
+        internal int AntiAliasing;
+        internal float FxaaSubpixel;
+        internal float FxaaEdgeThreshold;
+        internal float FxaaEdgeThresholdMin;
+        internal float TaaHistoryWeight;
+        internal float TaaSharpen;
+        internal float TaaJitterScale;
+        internal float TaaDepthThreshold;
+        internal int LogPerformance;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct ShaderDefine
     {
         internal nint Name;
@@ -308,6 +343,14 @@ internal static class Native
     internal static extern int re_renderer_set_sun(nint renderer, in DirectionalLightDesc desc);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int re_renderer_set_exposure(nint renderer, float exposure);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_post_process_settings_init(ref PostProcessSettings settings);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_set_post_process_settings(
+        nint renderer, in PostProcessSettings settings);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_get_post_process_settings(
+        nint renderer, ref PostProcessSettings settings);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int re_renderer_set_background_color(nint renderer,
         [In] float[] zenith, [In] float[] horizon);

@@ -2,6 +2,7 @@
 #include "rendering/renderer_c.h"
 
 #include <array>
+#include <cstddef>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -60,6 +61,27 @@ int main() {
       pass.clear_depth != 1.0f)
     return 6;
 
+  re_post_process_settings post{};
+  re_post_process_settings_init(&post);
+  if (post.struct_size != sizeof(post) || !post.enabled ||
+      !Near(post.exposure, 2.2f) || !Near(post.bloom_strength, 0.12f) ||
+      !Near(post.color_tint[0], 1.0f) || post.anti_aliasing != RE_AA_TAA ||
+      !Near(post.taa_history_weight, 0.95f))
+    return 7;
+
+  struct PostProcessPrefix {
+    uint32_t struct_size;
+    int32_t enabled;
+    float exposure;
+    uint32_t sentinel;
+  } prefix{offsetof(PostProcessPrefix, sentinel), 0, 0.0f, 0x51A7B1u};
+  re_post_process_settings_init(
+      reinterpret_cast<re_post_process_settings *>(&prefix));
+  if (prefix.struct_size != offsetof(PostProcessPrefix, sentinel) ||
+      prefix.enabled != 1 || !Near(prefix.exposure, 2.2f) ||
+      prefix.sentinel != 0x51A7B1u)
+    return 8;
+
   const float translation[3]{1.0f, 2.0f, 3.0f};
   const float rotation[3]{};
   const float scale[3]{1.0f, 1.0f, 1.0f};
@@ -67,11 +89,11 @@ int main() {
   re_compose_transform(translation, rotation, scale, transform);
   if (!Near(transform[12], 1.0f) || !Near(transform[13], 2.0f) ||
       !Near(transform[14], 3.0f) || !Near(transform[15], 1.0f))
-    return 7;
+    return 9;
 
   if (re_renderer_resize(nullptr, 640, 480) != 0 ||
       std::strlen(re_get_last_error()) == 0)
-    return 8;
+    return 10;
 
   std::cout << "Rendering Engine C/C++ ABI v" << RE_API_VERSION << " passed\n";
   return 0;

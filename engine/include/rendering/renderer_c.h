@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define RE_API_VERSION 3u
+#define RE_API_VERSION 4u
 
 typedef struct re_renderer re_renderer;
 typedef uint64_t re_mesh;
@@ -130,6 +130,48 @@ typedef struct re_frame_stats {
   uint32_t instance_count;
   uint32_t draw_calls_saved;
 } re_frame_stats;
+
+typedef enum re_anti_aliasing_mode {
+  RE_AA_NONE = 0,
+  RE_AA_FXAA = 1,
+  RE_AA_TAA = 2
+} re_anti_aliasing_mode;
+
+/* ABI-safe mirror of engine::PostProcessSettings. Color grading LUT data is
+ * intentionally managed through a separate API; only its blend weight lives
+ * in this POD settings block. */
+typedef struct re_post_process_settings {
+  uint32_t struct_size;
+  int32_t enabled;
+  float exposure;
+  float bloom_strength;
+  float bloom_threshold;
+  float shoulder_strength;
+  float linear_strength;
+  float linear_angle;
+  float toe_strength;
+  float toe_numerator;
+  float toe_denominator;
+  float white_point;
+  int32_t auto_exposure;
+  float auto_exposure_key;
+  float auto_exposure_min;
+  float auto_exposure_max;
+  float auto_exposure_speed;
+  float saturation;
+  float contrast;
+  float color_tint[3];
+  float color_lut_weight;
+  int32_t anti_aliasing; /* re_anti_aliasing_mode */
+  float fxaa_subpixel;
+  float fxaa_edge_threshold;
+  float fxaa_edge_threshold_min;
+  float taa_history_weight;
+  float taa_sharpen;
+  float taa_jitter_scale;
+  float taa_depth_threshold;
+  int32_t log_performance;
+} re_post_process_settings;
 
 typedef enum re_shader_language {
   RE_SHADER_HLSL,
@@ -353,6 +395,9 @@ RE_API void re_material_desc_init(re_material_desc *desc);
 RE_API void re_camera_desc_init(re_camera_desc *desc);
 RE_API void re_directional_light_desc_init(re_directional_light_desc *desc);
 RE_API void re_point_light_desc_init(re_point_light_desc *desc);
+/* Set struct_size to the caller's allocation size before calling this function.
+ * A zero-initialized current-version struct is also accepted for convenience. */
+RE_API void re_post_process_settings_init(re_post_process_settings *settings);
 RE_API void re_shader_module_desc_init(re_shader_module_desc *desc);
 RE_API void re_graphics_pipeline_desc_init(re_graphics_pipeline_desc *desc);
 RE_API void re_compute_pipeline_desc_init(re_compute_pipeline_desc *desc);
@@ -419,6 +464,10 @@ RE_API int32_t re_renderer_set_camera(re_renderer *renderer,
 RE_API int32_t re_renderer_set_sun(re_renderer *renderer,
                                    const re_directional_light_desc *desc);
 RE_API int32_t re_renderer_set_exposure(re_renderer *renderer, float exposure);
+RE_API int32_t re_renderer_set_post_process_settings(
+    re_renderer *renderer, const re_post_process_settings *settings);
+RE_API int32_t re_renderer_get_post_process_settings(
+    const re_renderer *renderer, re_post_process_settings *settings);
 RE_API int32_t re_renderer_set_background_color(re_renderer *renderer,
                                                 const float *zenith_3,
                                                 const float *horizon_3);

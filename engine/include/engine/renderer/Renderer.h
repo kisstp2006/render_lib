@@ -14,7 +14,7 @@ namespace rendering {
 
 class GraphicsDevice;
 
-inline constexpr uint32_t ApiVersion = 3;
+inline constexpr uint32_t ApiVersion = 4;
 
 enum class Backend : uint32_t
 {
@@ -103,6 +103,46 @@ struct PointLightDesc
     bool CastsShadows = false;
 };
 
+enum class AntiAliasingMode : int32_t
+{
+    None = 0,
+    Fxaa = 1,
+    Taa = 2,
+};
+
+struct PostProcessSettings
+{
+    bool Enabled = true;
+    float Exposure = 2.2f;
+    float BloomStrength = 0.12f;
+    float BloomThreshold = 1.0f;
+    float ShoulderStrength = 0.15f;
+    float LinearStrength = 0.50f;
+    float LinearAngle = 0.10f;
+    float ToeStrength = 0.20f;
+    float ToeNumerator = 0.02f;
+    float ToeDenominator = 0.30f;
+    float WhitePoint = 8.0f;
+    bool AutoExposure = false;
+    float AutoExposureKey = 0.18f;
+    float AutoExposureMin = 0.4f;
+    float AutoExposureMax = 3.0f;
+    float AutoExposureSpeed = 1.8f;
+    float Saturation = 1.0f;
+    float Contrast = 1.0f;
+    std::array<float, 3> ColorTint{1.0f, 1.0f, 1.0f};
+    float ColorLutWeight = 0.0f;
+    AntiAliasingMode AntiAliasing = AntiAliasingMode::Taa;
+    float FxaaSubpixel = 0.75f;
+    float FxaaEdgeThreshold = 0.125f;
+    float FxaaEdgeThresholdMin = 0.0312f;
+    float TaaHistoryWeight = 0.95f;
+    float TaaSharpen = 0.06f;
+    float TaaJitterScale = 0.5f;
+    float TaaDepthThreshold = 0.0025f;
+    bool LogPerformance = false;
+};
+
 struct FrameStats
 {
     float GpuFrameMilliseconds = 0.0f;
@@ -175,6 +215,8 @@ public:
     void SetCamera(const CameraDesc& desc);
     void SetSun(const DirectionalLightDesc& desc);
     void SetExposure(float exposure);
+    void SetPostProcessSettings(const PostProcessSettings& settings);
+    PostProcessSettings GetPostProcessSettings() const;
     void SetBackgroundColor(const std::array<float, 3>& zenith,
                             const std::array<float, 3>& horizon);
     void RequestScreenshot(const std::filesystem::path& path);
