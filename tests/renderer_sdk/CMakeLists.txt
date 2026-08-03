@@ -8,3 +8,16 @@ set_target_properties(renderer_sdk_abi_tests PROPERTIES
 
 add_test(NAME renderer_sdk_abi COMMAND renderer_sdk_abi_tests)
 set_tests_properties(renderer_sdk_abi PROPERTIES LABELS "renderer;sdk;abi")
+
+if(ENGINE_ENABLE_GPU_VISUAL_TESTS AND TARGET custom_shader_example)
+    add_test(NAME renderer_sdk_custom_opengl
+        COMMAND custom_shader_example --hidden --frames=3)
+    set_tests_properties(renderer_sdk_custom_opengl PROPERTIES
+        LABELS "renderer;sdk;gpu;opengl" TIMEOUT 120)
+    if(ENGINE_BUILD_VULKAN)
+        add_test(NAME renderer_sdk_custom_vulkan
+            COMMAND custom_shader_example --vulkan --hidden --frames=3)
+        set_tests_properties(renderer_sdk_custom_vulkan PROPERTIES
+            LABELS "renderer;sdk;gpu;vulkan" TIMEOUT 120)
+    endif()
+endif()

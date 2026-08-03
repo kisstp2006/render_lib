@@ -572,6 +572,15 @@ void GLRenderBackend::RenderFrame(const RenderFrameData& frame)
     {
         gl_debug::ScopedGroup marker("Debug UI");
         RenderDebugOverlay(frame);
+        if (!m_renderingOffscreen && m_customRenderCallback)
+        {
+            glBindFramebuffer(GL_FRAMEBUFFER, m_activeOutputFramebuffer);
+            glViewport(0, 0, m_width, m_height);
+            m_customRenderCallback({RenderBackendApi::OpenGL, 0,
+                static_cast<uint64_t>(m_activeOutputFramebuffer), 0,
+                static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height),
+                0, 1});
+        }
         if (!m_renderingOffscreen && m_uiRenderCallback)
         {
             glBindFramebuffer(GL_FRAMEBUFFER, m_activeOutputFramebuffer);

@@ -178,6 +178,23 @@ struct NativeUiRenderContext
 
 using NativeUiRenderCallback = std::function<void(const NativeUiRenderContext&)>;
 
+// Execution point for the public low-level GraphicsDevice. Unlike the UI
+// callback no render pass is active on Vulkan, so the SDK may target either
+// the presentation image or its own render targets.
+struct NativeCustomRenderContext
+{
+    RenderBackendApi Api = RenderBackendApi::OpenGL;
+    uint64_t CommandBuffer = 0;
+    uint64_t ColorTarget = 0; // GL framebuffer or Vulkan image view.
+    uint32_t ColorFormat = 0;
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    uint32_t FrameIndex = 0;
+    uint32_t FramesInFlight = 1;
+};
+
+using NativeCustomRenderCallback = std::function<void(const NativeCustomRenderContext&)>;
+
 // Shared contract between the OpenGL and Vulkan backends. Kept intentionally
 // small (immediate-mode-ish per-frame calls) rather than a full generic RHI
 // (command buffers, pipeline objects, descriptor abstractions, ...) because
@@ -212,6 +229,10 @@ class IRenderBackend
     // the device/context.
     virtual void WaitIdle() {}
     virtual void SetUiRenderCallback(NativeUiRenderCallback callback)
+    {
+        (void)callback;
+    }
+    virtual void SetCustomRenderCallback(NativeCustomRenderCallback callback)
     {
         (void)callback;
     }

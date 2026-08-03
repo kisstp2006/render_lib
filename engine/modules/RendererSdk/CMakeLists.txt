@@ -1,9 +1,15 @@
 add_library(engine_renderer_sdk SHARED
     ${ENGINE_ROOT}/include/engine/renderer/Export.h
     ${ENGINE_ROOT}/include/engine/renderer/Renderer.h
+    ${ENGINE_ROOT}/include/engine/renderer/GraphicsDevice.h
     ${ENGINE_ROOT}/include/rendering/renderer_c.h
     ${ENGINE_ROOT}/src/renderer/Renderer.cpp
-    ${ENGINE_ROOT}/src/renderer/RendererC.cpp)
+    ${ENGINE_ROOT}/src/renderer/RendererC.cpp
+    ${ENGINE_ROOT}/src/renderer/GraphicsDeviceInternal.h
+    ${ENGINE_ROOT}/src/renderer/GraphicsDevice.cpp
+    ${ENGINE_ROOT}/src/renderer/ShaderCompilerCommon.h
+    ${ENGINE_ROOT}/src/renderer/ShaderCompilerCommon.cpp
+    ${ENGINE_ROOT}/src/renderer/GraphicsDeviceOpenGL.cpp)
 
 target_link_libraries(engine_renderer_sdk PRIVATE
     engine_foundation
@@ -11,9 +17,13 @@ target_link_libraries(engine_renderer_sdk PRIVATE
     engine_scene
     engine_renderer_core
     engine_renderer_opengl
+    engine_shader_compiler
+    glad_gl_core46
     ${CMAKE_DL_LIBS})
 if(ENGINE_BUILD_VULKAN)
-    target_link_libraries(engine_renderer_sdk PRIVATE engine_renderer_vulkan)
+    target_sources(engine_renderer_sdk PRIVATE
+        ${ENGINE_ROOT}/src/renderer/GraphicsDeviceVulkan.cpp)
+    target_link_libraries(engine_renderer_sdk PRIVATE engine_renderer_vulkan Vulkan::Vulkan)
 endif()
 target_include_directories(engine_renderer_sdk PUBLIC
     $<BUILD_INTERFACE:${ENGINE_ROOT}/include>

@@ -1540,6 +1540,18 @@ void VulkanRenderBackend::RenderFrame(const RenderFrameData& frame)
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Prepare);
     m_renderGraph.ExecutePhase(rendergraph::PassPhase::Render, applyGraphBarriers);
 
+    if (!offscreen && m_customRenderCallback)
+    {
+        BeginDebugLabel(cmd, "Custom GraphicsDevice", {0.65f, 0.35f, 0.95f, 1.0f});
+        m_customRenderCallback({RenderBackendApi::Vulkan,
+            reinterpret_cast<uint64_t>(cmd),
+            reinterpret_cast<uint64_t>(m_swapchainImageViews[imageIndex]),
+            static_cast<uint32_t>(m_swapchainFormat),
+            m_swapchainExtent.width, m_swapchainExtent.height,
+            m_currentFrame, kFramesInFlight});
+        EndDebugLabel(cmd);
+    }
+
     // Editor UI is a final load/overlay operation on the main presentation
     // image. Offscreen scene viewports stay clean and are sampled by this UI.
     if (!offscreen && m_uiRenderCallback)

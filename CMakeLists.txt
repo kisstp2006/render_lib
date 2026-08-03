@@ -226,6 +226,7 @@ endif()
 
 if(ENGINE_BUILD_RENDERER_EXAMPLES)
     add_subdirectory(examples/renderer_embed)
+    add_subdirectory(examples/custom_shader)
 endif()
 
 if(ENGINE_BUILD_RENDERER_TESTS)

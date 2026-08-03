@@ -1,4 +1,6 @@
 #include "engine/renderer/Renderer.h"
+#include "engine/renderer/GraphicsDevice.h"
+#include "GraphicsDeviceInternal.h"
 
 #include "engine/backend/IRenderBackend.h"
 #include "engine/backend/gl/GLRenderBackend.h"
@@ -178,6 +180,8 @@ struct Renderer::Impl
         backendConfig.ShaderDirectory = Desc.ShaderDirectory.string();
         backendConfig.PipelineCacheDirectory = Desc.PipelineCacheDirectory.string();
         BackendImpl->Init(*Window, backendConfig);
+        LowLevel = RendererGraphicsDeviceFactory::Create(
+            ActiveApi, BackendImpl->GetNativeGraphicsContext(), *BackendImpl);
 
         Window->SetResizeCallback([this](int width, int height) {
             if (width > 0 && height > 0 && BackendImpl)
@@ -195,6 +199,7 @@ struct Renderer::Impl
     {
         if (BackendImpl)
         {
+            LowLevel.reset();
             BackendImpl->WaitIdle();
             BackendImpl->Shutdown();
             BackendImpl.reset();
@@ -205,6 +210,7 @@ struct Renderer::Impl
     Backend ActiveApi = Backend::OpenGL;
     std::unique_ptr<engine::Window> Window;
     std::unique_ptr<engine::IRenderBackend> BackendImpl;
+    std::unique_ptr<GraphicsDevice> LowLevel;
     engine::SceneRenderer Frontend;
     engine::Scene Scene;
     engine::Camera Camera;
@@ -486,6 +492,8 @@ FrameStats Renderer::GetFrameStats() const
 
 std::string_view Renderer::BackendName() const { return m_impl->BackendImpl->Name(); }
 Backend Renderer::ActiveBackend() const { return m_impl->ActiveApi; }
+GraphicsDevice& Renderer::GetGraphicsDevice() { return *m_impl->LowLevel; }
+const GraphicsDevice& Renderer::GetGraphicsDevice() const { return *m_impl->LowLevel; }
 
 std::array<float, 16> IdentityTransform()
 {

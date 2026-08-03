@@ -12,7 +12,9 @@
 
 namespace rendering {
 
-inline constexpr uint32_t ApiVersion = 1;
+class GraphicsDevice;
+
+inline constexpr uint32_t ApiVersion = 2;
 
 enum class Backend : uint32_t
 {
@@ -160,6 +162,8 @@ public:
     FrameStats GetFrameStats() const;
     std::string_view BackendName() const;
     Backend ActiveBackend() const;
+    GraphicsDevice& GetGraphicsDevice();
+    const GraphicsDevice& GetGraphicsDevice() const;
 
 private:
     friend struct RendererDeleter;

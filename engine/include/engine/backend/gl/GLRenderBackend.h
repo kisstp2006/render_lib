@@ -49,6 +49,10 @@ public:
     {
         m_uiRenderCallback = std::move(callback);
     }
+    void SetCustomRenderCallback(NativeCustomRenderCallback callback) override
+    {
+        m_customRenderCallback = std::move(callback);
+    }
     void RequestScreenshot(const std::string& path) override { m_screenshotPath = path; }
     void RequestHdrScreenshot(const std::string& path) override { m_hdrScreenshotPath = path; }
     BackendFrameStats GetFrameStats() const override { return m_frameStats; }
@@ -337,6 +341,7 @@ private:
     unsigned int m_activeOutputFramebuffer = 0;
     bool m_renderingOffscreen = false;
     NativeUiRenderCallback m_uiRenderCallback;
+    NativeCustomRenderCallback m_customRenderCallback;
 };
 
 } // namespace engine
