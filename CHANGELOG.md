@@ -14,6 +14,10 @@ before 1.0.0).
 - Installable `engine::renderer` shared-library SDK with a small C++ facade,
   stable versioned C ABI, relocatable CMake package and runtime shader policy.
 - .NET 8 P/Invoke binding plus interactive PBR and backend smoke examples.
+- Backend-neutral programmable `GraphicsDevice` for HLSL/GLSL/SPIR-V shader
+  modules, reflection, shader permutations and hot reload, custom vertex
+  layouts, graphics/compute pipelines, resource binding and render passes.
+- Matching C ABI and C# custom-shader API with OpenGL/Vulkan parity example.
 - Renderer-only embedded build mode that leaves ECS, editor, asset pipeline,
   tools and legacy sandbox code out of consumer projects.
 

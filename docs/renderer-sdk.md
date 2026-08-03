@@ -9,6 +9,9 @@ the ECS, editor, asset pipeline or legacy sandbox. The public native target is
 
 - `engine/renderer/Renderer.h` is the convenient C++20 facade. It owns its
   GLFW window, selected OpenGL/Vulkan backend, render scene and camera.
+- `engine/renderer/GraphicsDevice.h` is the backend-neutral programmable GPU
+  layer. It exposes custom shader modules, reflected graphics/compute
+  pipelines, buffers, textures, samplers, vertex layouts and render passes.
 - `rendering/renderer_c.h` is the stable C ABI. It uses opaque integer handles,
   fixed-layout structures, explicit create/destroy calls and thread-local
   error text. This is the supported boundary for C#, other languages and
@@ -20,6 +23,42 @@ The facade supports custom indexed meshes, cube/sphere primitives, PBR
 materials, object transforms, directional and point lights, camera, exposure,
 sky colors, frame statistics, resize/close handling and screenshots. The same
 scene data is sent to either native backend.
+
+## Programmable rendering
+
+Call `Renderer::GetGraphicsDevice()` when an application needs rendering that
+is not represented by the small built-in scene facade. `GraphicsDevice`
+supports:
+
+- HLSL and GLSL source compiled to SPIR-V, plus precompiled SPIR-V modules;
+- vertex, fragment and compute shader modules with entry points and defines;
+- reflection of vertex inputs, uniform/storage buffers, sampled/storage
+  textures and samplers, including descriptor set and binding numbers;
+- explicit graphics and compute pipelines with custom per-vertex/per-instance
+  layouts, topology, culling, depth and blend state;
+- vertex, index, uniform and storage buffers plus sampled/storage textures;
+- offscreen color/depth render targets and explicit load/store/clear actions;
+- file-backed hot reload and canonical define-based shader permutations.
+
+Commands are recorded on the renderer thread and consumed by the next
+`RenderFrame`, immediately before UI and presentation. A typical custom frame
+is `BindComputePipeline`/`Dispatch`, followed by one or more
+`BeginRenderPass`/bind/draw/`EndRenderPass` groups. Render target handle zero
+selects the renderer-owned presentation target.
+
+The complete backend-parity example is in `examples/custom_shader`. It renders
+through an offscreen target, samples that result in the presentation pass and
+also exercises a compute storage buffer.
+
+File-backed modules can be checked with `ReloadChangedShaders`; changed source
+or included files are recompiled and dependent pipelines are rebuilt. A failed
+compile keeps the previous working shader and reports text through
+`LastShaderError`. `CreateShaderPermutation` merges additional defines with a
+base module and reuses an existing canonical permutation when possible.
+
+Inline source uses `SourcePath` as a virtual filename and diagnostic/include
+root, but the current inline-source path does not expand includes. Use a
+file-backed module when includes or automatic hot reload are required.
 
 ## Add as a submodule
 
@@ -85,6 +124,13 @@ where native shader and pipeline caches are stored.
   existing scene objects retain their underlying resource until removed.
 - Call `PumpEvents` once per host frame, then update scene state and call
   `RenderFrame`. `Tick` is only the convenience combination of those calls.
+- Create resources and record `GraphicsDevice` commands on the renderer thread.
+  Do not destroy handles still referenced by commands waiting for the next
+  frame. Vulkan resource destruction waits for submitted GPU work so immediate
+  post-frame cleanup is validation-safe; batch destruction outside latency-
+  sensitive frame code.
+- Destroy render targets before their attachment textures, pipelines before
+  their shader modules, and all custom handles before destroying the renderer.
 
 The current facade owns a top-level window. Rendering directly into a foreign
 native window or editor control is intentionally a later SDK extension; no
@@ -99,4 +145,3 @@ Edu ECS adapter is included in this layer.
 | `ENGINE_BUILD_RENDERER_EXAMPLES` | Small C++ SDK example | `OFF` |
 | `ENGINE_BUILD_RENDERER_TESTS` | C/C++ ABI tests | `OFF` |
 | `ENGINE_BUILD_CSHARP_BINDINGS` | Managed binding and C# examples | `OFF` |
-
