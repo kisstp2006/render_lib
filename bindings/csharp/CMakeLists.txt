@@ -30,6 +30,9 @@ add_custom_target(renderer_csharp_examples
     COMMAND ${CSHARP_DOTNET_COMMAND} build
             ${CMAKE_CURRENT_SOURCE_DIR}/Examples/BackendSmoke/BackendSmoke.csproj
             --configuration $<CONFIG> ${CSHARP_COMMON_ARGS}
+    COMMAND ${CSHARP_DOTNET_COMMAND} build
+            ${CMAKE_CURRENT_SOURCE_DIR}/Examples/CustomShader/CustomShader.csproj
+            --configuration $<CONFIG> ${CSHARP_COMMON_ARGS}
     DEPENDS renderer_csharp_binding
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Building RenderingEngine C# examples")
@@ -42,5 +45,6 @@ install(FILES
 install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/Native.cs
     ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/Renderer.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/GraphicsDevice.cs
     ${CMAKE_CURRENT_SOURCE_DIR}/RenderingEngine/RenderingEngine.csproj
     DESTINATION ${CMAKE_INSTALL_DATADIR}/RenderingEngine/csharp/RenderingEngine)

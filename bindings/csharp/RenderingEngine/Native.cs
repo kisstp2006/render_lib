@@ -74,6 +74,160 @@ internal static class Native
         internal uint DrawBatchCount, InstanceCount, DrawCallsSaved;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ShaderDefine
+    {
+        internal nint Name;
+        internal nint Value;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ShaderModuleDesc
+    {
+        internal uint StructSize;
+        internal ShaderStage Stage;
+        internal ShaderLanguage Language;
+        internal nint SourcePath;
+        internal nint SourceData;
+        internal nuint SourceSize;
+        internal nint EntryPoint;
+        internal nint Defines;
+        internal nuint DefineCount;
+        internal int Optimize;
+        internal int GenerateDebugInfo;
+        internal int EnableHotReload;
+        internal nint DebugName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct ShaderReflectionInfo
+    {
+        internal ShaderStage Stage;
+        internal fixed byte EntryPoint[64];
+        internal fixed byte PermutationKey[65];
+        internal ulong Generation;
+        internal uint ResourceCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct ShaderResource
+    {
+        internal fixed byte Name[128];
+        internal ShaderResourceType Type;
+        internal uint Set;
+        internal uint Binding;
+        internal uint Location;
+        internal uint ArrayCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct VertexBindingDesc
+    {
+        internal uint Binding;
+        internal uint Stride;
+        internal VertexInputRate InputRate;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct VertexAttributeDesc
+    {
+        internal uint Location;
+        internal uint Binding;
+        internal VertexFormat Format;
+        internal uint Offset;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct GraphicsPipelineDesc
+    {
+        internal uint StructSize;
+        internal ulong VertexShader;
+        internal ulong FragmentShader;
+        internal nint VertexBindings;
+        internal nuint VertexBindingCount;
+        internal nint VertexAttributes;
+        internal nuint VertexAttributeCount;
+        internal PrimitiveTopology Topology;
+        internal CullMode Cull;
+        internal FrontFace Winding;
+        internal int DepthTest;
+        internal int DepthWrite;
+        internal CompareOperation DepthCompare;
+        internal int BlendEnabled;
+        internal nint ColorFormats;
+        internal nuint ColorFormatCount;
+        internal int HasDepthFormat;
+        internal TextureFormat DepthFormat;
+        internal nint DebugName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ComputePipelineDesc
+    {
+        internal uint StructSize;
+        internal ulong ComputeShader;
+        internal nint DebugName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BufferDesc
+    {
+        internal uint StructSize;
+        internal ulong Size;
+        internal BufferUsage Usage;
+        internal int CpuWritable;
+        internal nint DebugName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct TextureDesc
+    {
+        internal uint StructSize;
+        internal uint Width;
+        internal uint Height;
+        internal uint MipLevels;
+        internal TextureFormat Format;
+        internal TextureUsage Usage;
+        internal nint DebugName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SamplerDesc
+    {
+        internal uint StructSize;
+        internal Filter MinFilter;
+        internal Filter MagFilter;
+        internal AddressMode AddressU;
+        internal AddressMode AddressV;
+        internal AddressMode AddressW;
+        internal float MaxAnisotropy;
+        internal nint DebugName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RenderTargetDesc
+    {
+        internal uint StructSize;
+        internal nint ColorAttachments;
+        internal nuint ColorAttachmentCount;
+        internal ulong DepthAttachment;
+        internal nint DebugName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct RenderPassDesc
+    {
+        internal uint StructSize;
+        internal ulong Target;
+        internal LoadAction ColorLoad;
+        internal StoreAction ColorStore;
+        internal fixed float ClearColor[4];
+        internal LoadAction DepthLoad;
+        internal StoreAction DepthStore;
+        internal float ClearDepth;
+        internal nint DebugName;
+    }
+
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     internal static extern uint re_get_api_version();
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
@@ -144,6 +298,91 @@ internal static class Native
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int re_renderer_request_screenshot(nint renderer,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_shader_module(nint renderer, in ShaderModuleDesc desc);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_shader_permutation(nint renderer, ulong shader,
+        nint defines, nuint defineCount);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_destroy_shader_module(nint renderer, ulong shader);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_get_shader_reflection(nint renderer, ulong shader,
+        out ShaderReflectionInfo reflection);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_get_shader_resource(nint renderer, ulong shader, uint index,
+        out ShaderResource resource);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_graphics_pipeline(nint renderer,
+        in GraphicsPipelineDesc desc);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_compute_pipeline(nint renderer,
+        in ComputePipelineDesc desc);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_destroy_graphics_pipeline(nint renderer, ulong pipeline);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_destroy_compute_pipeline(nint renderer, ulong pipeline);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_buffer(nint renderer, in BufferDesc desc,
+        nint initialData, nuint initialSize);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_update_buffer(nint renderer, ulong buffer, ulong offset,
+        nint data, nuint size);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_destroy_buffer(nint renderer, ulong buffer);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_texture(nint renderer, in TextureDesc desc,
+        nint initialData, nuint initialSize);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_update_texture(nint renderer, ulong texture, uint mipLevel,
+        nint data, nuint size);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_destroy_texture(nint renderer, ulong texture);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_sampler(nint renderer, in SamplerDesc desc);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_destroy_sampler(nint renderer, ulong sampler);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ulong re_renderer_create_render_target(nint renderer, in RenderTargetDesc desc);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_destroy_render_target(nint renderer, ulong target);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_begin_render_pass(nint renderer, in RenderPassDesc desc);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_end_render_pass(nint renderer);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_graphics_pipeline(nint renderer, ulong pipeline);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_compute_pipeline(nint renderer, ulong pipeline);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_vertex_buffer(nint renderer, uint binding, ulong buffer, ulong offset);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_index_buffer(nint renderer, ulong buffer, IndexType type, ulong offset);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_uniform_buffer(nint renderer, uint set, uint binding,
+        ulong buffer, ulong offset, ulong size);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_storage_buffer(nint renderer, uint set, uint binding,
+        ulong buffer, ulong offset, ulong size);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_texture(nint renderer, uint set, uint binding,
+        ulong texture, ulong sampler);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_sampler(nint renderer, uint set, uint binding, ulong sampler);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_bind_storage_texture(nint renderer, uint set, uint binding, ulong texture);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_draw(nint renderer, uint vertexCount, uint instanceCount,
+        uint firstVertex, uint firstInstance);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_draw_indexed(nint renderer, uint indexCount, uint instanceCount,
+        uint firstIndex, int vertexOffset, uint firstInstance);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int re_renderer_dispatch(nint renderer, uint x, uint y, uint z);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void re_renderer_reset_graphics_commands(nint renderer);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint re_renderer_reload_changed_shaders(nint renderer);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void re_compose_transform([In] float[] translation,
         [In] float[] rotationDegrees, [In] float[] scale, [Out] float[] transform);

@@ -86,7 +86,8 @@ public sealed class Renderer : IDisposable
 {
     private nint _handle;
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
-    public const uint ApiVersion = 1;
+    public const uint ApiVersion = 2;
+    public GraphicsDevice GraphicsDevice { get; }
 
     public Renderer(RendererOptions? options = null)
     {
@@ -110,6 +111,7 @@ public sealed class Renderer : IDisposable
             };
             _handle = Native.re_renderer_create(in desc);
             if (_handle == 0) ThrowLastError("Could not create renderer");
+            GraphicsDevice = new GraphicsDevice(this);
         }
         finally
         {
@@ -188,7 +190,7 @@ public sealed class Renderer : IDisposable
         if (_handle != 0) { Native.re_renderer_destroy(_handle); _handle = 0; }
     }
 
-    private nint Handle
+    internal nint NativeHandle
     {
         get
         {
@@ -196,13 +198,14 @@ public sealed class Renderer : IDisposable
             return _handle != 0 ? _handle : throw new ObjectDisposedException(nameof(Renderer));
         }
     }
+    private nint Handle => NativeHandle;
     private void EnsureOwnerThread()
     {
         if (Environment.CurrentManagedThreadId != _ownerThreadId)
             throw new InvalidOperationException(
                 "Renderer creation, rendering and disposal must use the same thread.");
     }
-    private static void Check(int success) { if (success == 0) ThrowLastError("Native renderer call failed"); }
+    internal static void Check(int success) { if (success == 0) ThrowLastError("Native renderer call failed"); }
     private static bool BoolResult(int value)
     {
         if (value != 0) return true;
@@ -210,8 +213,8 @@ public sealed class Renderer : IDisposable
         if (!string.IsNullOrWhiteSpace(error)) throw new InvalidOperationException(error);
         return false;
     }
-    private static ulong HandleResult(ulong value) { if (value == 0) ThrowLastError("Native renderer returned an invalid handle"); return value; }
-    private static void ThrowLastError(string fallback)
+    internal static ulong HandleResult(ulong value) { if (value == 0) ThrowLastError("Native renderer returned an invalid handle"); return value; }
+    internal static void ThrowLastError(string fallback)
     {
         string? error = Marshal.PtrToStringUTF8(Native.re_get_last_error());
         throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? fallback : error);
